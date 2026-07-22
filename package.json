@@ -1,0 +1,17 @@
+{
+  "name": "claude-dashboard",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,frontend -c blue,green \"npm run dev -w server\" \"npm run dev -w frontend\"",
+    "build": "npm run build -w frontend && npm run build -w server",
+    "test": "npm run test -w server && npm run test -w frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
