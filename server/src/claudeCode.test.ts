@@ -13,10 +13,12 @@ afterEach(async () => {
   }
 });
 
-async function writeSession(dir: string, project: string, file: string, lines: object[]) {
+async function writeSession(dir: string, project: string, file: string, lines: Array<object | string>) {
   const projectDir = path.join(dir, project);
   await mkdir(projectDir, { recursive: true });
-  const content = lines.map((line) => JSON.stringify(line)).join("\n");
+  const content = lines
+    .map((line) => (typeof line === "string" ? line : JSON.stringify(line)))
+    .join("\n");
   await writeFile(path.join(projectDir, file), content, "utf-8");
 }
 
