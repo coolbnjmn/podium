@@ -7,13 +7,23 @@ import { Sparkline } from "./Sparkline";
 
 export const HOOKS_NOTE = "Reported by Claude Code settings hooks, not the reporter mod: context, cost, tokens and the plan are unavailable.";
 
-export function waitText(s: Pick<SessionView, "waitReason" | "waitNote">): string {
-  if (s.waitReason === "permission") return `Permission prompt: ${s.waitNote ?? "a tool call needs your approval"}`;
-  if (s.waitReason === "input") return s.waitNote ? `Waiting for your input: ${s.waitNote}` : CARD_WAIT_TEXT;
-  return s.waitNote ?? "Waiting on you.";
+// The reporter clips a wait note at this many characters (LIMITS.waitNote); a note that long is cut off.
+const WAIT_NOTE_LIMIT = 160;
+
+/** The orchestrator page's callout: a plain lead, plus the tool or question as a secondary line when there is one. */
+export function waitSummary(s: Pick<SessionView, "waitReason" | "waitNote">): { lead: string; detail: string | null } {
+  const lead = s.waitReason === "permission" ? "Waiting for your approval." : s.waitReason === "input" ? "Waiting for your input." : "Waiting on you.";
+  const note = s.waitNote?.trim() ?? "";
+  if (!note) return { lead, detail: null };
+  // "Tool(input...)" from the mod, or a bare tool name from a settings hook's PermissionRequest.
+  const tool = /^([A-Za-z][\w.:-]*)\(/.exec(note) ?? (s.waitReason === "permission" ? /^([A-Za-z][\w.:-]*)$/.exec(note) : null);
+  if (tool) return { lead, detail: `Tool: ${tool[1]}` };
+  // Anything else is shown only if it arrived whole; a clipped note would read as the full prompt.
+  // Measure the raw note: the clip happens before the trim above.
+  return { lead, detail: (s.waitNote?.length ?? 0) >= WAIT_NOTE_LIMIT ? null : note };
 }
 
-// The card stays short; the full note is on the orchestrator page (waitText).
+// The card stays short; the orchestrator page has the tool name or question (waitSummary).
 const CARD_WAIT_TEXT = "Waiting for your input.";
 
 export function riskText(s: SessionView): string {
