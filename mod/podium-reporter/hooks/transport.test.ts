@@ -93,6 +93,15 @@ describe('transport', () => {
     expect(logs).toHaveLength(1)
   })
 
+  test('a 409 (the session belongs to someone else) is a rejection, not an outage', async () => {
+    const f = fake([{ status: 409, ok: false, text: '{"ok":false,"error":"that session belongs to someone else"}' }])
+    const t = new Transport(f.fetch, { serverUrl: 'http://h', token: '', heartbeatMs: 5000 })
+    t.enqueue([ev(1)])
+    expect(await t.send(build, 0)).toBe('rejected')
+    expect(t.queue).toEqual([])
+    expect(t.failures).toBe(0)
+  })
+
   test('a rejected report backs off like a failure, so a persistently rejected snapshot is not re-posted every tick', async () => {
     const bad: HttpResult = { status: 400, ok: false, text: '{"ok":false}' }
     const f = fake([bad, bad, bad, ok()])
@@ -109,6 +118,27 @@ describe('transport', () => {
     expect(await t.send(build, 8100)).toBe('ok')
     expect(t.nextAttemptAt).toBe(0)
     expect(t.due(8101, true)).toBe(true)
+  })
+
+  test('a 401 keeps the events, logs once, waits a minute, and a later success clears the refusal', async () => {
+    const no: HttpResult = { status: 401, ok: false, text: '{"ok":false,"error":"missing or wrong X-Podium-Token","path":"$"}' }
+    const f = fake([no, no, ok()])
+    const logs: string[] = []
+    const t = new Transport(f.fetch, { serverUrl: 'http://h', token: 'pdm_x', heartbeatMs: 5000 }, (l) => logs.push(l))
+    t.enqueue([ev(1)])
+    expect(await t.send(build, 100)).toBe('refused')
+    expect(t.queue.map((e) => e.id)).toEqual(['e1'])
+    expect(t.nextAttemptAt).toBe(100 + 60_000)
+    expect(t.due(100 + 59_999, true)).toBe(false)
+    expect(t.due(100 + 60_000, true)).toBe(true)
+    expect(t.statusText()).toBe('podium ○ token refused')
+    expect(t.refusalNotice()).toContain('token')
+    expect(await t.send(build, 60_100)).toBe('refused')
+    expect(logs).toHaveLength(1)
+    expect(logs.join('')).not.toContain('pdm_x')
+    expect(await t.send(build, 120_100)).toBe('ok')
+    expect(t.refusalNotice()).toBeNull()
+    expect(t.queue).toEqual([])
   })
 
   test('a network error keeps the events and backs off 1, 2, 5, 10, 10 s', async () => {
