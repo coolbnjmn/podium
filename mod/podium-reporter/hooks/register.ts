@@ -29,6 +29,8 @@ import {
   setFiles,
   setGit,
   setExplanation,
+  markTextSent,
+  type SentTexts,
   setIdentity,
   skillLoaded,
   step,
@@ -44,7 +46,7 @@ import { explainPrompt } from './failures.ts';
 import { hostOf, isMachineId, MACHINE_ID_KEY, machineInfo, newMachineId } from './machine.ts';
 import type { MachineInfo } from './protocol.ts';
 
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 const GIT_POLL_MS = 10_000;
 /** session.end has one ~1.5 s bound for every hook and core together; stay well inside it. */
 const END_FLUSH_MS = 1000;
@@ -61,6 +63,7 @@ interface Options {
   userName: string;
   showStatus: boolean;
   explainFailures: boolean;
+  fullPrompts: boolean;
 }
 
 interface HookStat {
@@ -102,6 +105,7 @@ export function readOptions(o: Record<string, unknown>): Options {
     userName: s(o.userName, ''),
     showStatus: typeof o.showStatus === 'boolean' ? o.showStatus : true,
     explainFailures: o.explainFailures === true,
+    fullPrompts: o.fullPrompts === true,
   };
 }
 
@@ -165,6 +169,7 @@ function metaOf(r: Runtime, now: number) {
     optionName: opts.sessionName || null,
     userName: opts.userName || null,
     machine: r.machine,
+    fullText: opts.fullPrompts,
   };
 }
 
@@ -228,7 +233,12 @@ async function flushOnce($: Engine, r: Runtime, now: number, force: boolean): Pr
   if (!force && !r.transport.due(now, r.state.dirty)) return;
   const snapshot = r.state;
   r.state = { ...r.state, dirty: false };
-  const outcome = await r.transport.send((evs) => buildReport(snapshot, evs, metaOf(r, now)), now);
+  let sentTexts: SentTexts = {};
+  const outcome = await r.transport.send((evs) => {
+    const report = buildReport(snapshot, evs, metaOf(r, now));
+    sentTexts = Object.fromEntries(report.agents.map((a) => [a.id, { promptText: a.promptText, answerText: a.answerText }]));
+    return report;
+  }, now);
   if (outcome === 'failed') {
     r.state = { ...r.state, dirty: true };
     toastOnce($, r, false);
@@ -236,6 +246,7 @@ async function flushOnce($: Engine, r: Runtime, now: number, force: boolean): Pr
     r.state = { ...r.state, dirty: true };
     toastRefusalOnce($, r);
   } else if (outcome === 'ok') {
+    if (opts.fullPrompts) r.state = markTextSent(r.state, sentTexts);
     r.toastedRefusal = null; // accepted again: a later refusal is news again
     toastOnce($, r, true);
   }

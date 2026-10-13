@@ -10,6 +10,8 @@ import { resolveOwners, type AgentState, type LoopStats, type SessionState } fro
 export const REPORTER_NAME = 'podium-reporter';
 export const MAX_EVENTS_PER_REPORT = 100;
 export const MAX_AGENTS_PER_REPORT = 200;
+/** Full prompt and answer characters in one report; the server accepts a 512 kB body. The rest goes in later reports. */
+export const MAX_FULL_TEXT_PER_REPORT = 120_000;
 
 export interface ReportMeta {
   version: string;
@@ -24,6 +26,8 @@ export interface ReportMeta {
   userName?: string | null;
   /** This machine; sent only together with a userName. */
   machine?: MachineInfo | null;
+  /** The `fullPrompts` option: send each agent's whole prompt and answer, once. */
+  fullText?: boolean;
 }
 
 /** Display name (SPEC 6.6): /podium name, the option, a worktree's branch or folder, the repo folder, the id. */
@@ -73,7 +77,7 @@ function loopFields(l: LoopStats): LoopReport {
   };
 }
 
-export function agentReport(a: AgentState): AgentReport {
+export function agentReport(a: AgentState, fullText = false): AgentReport {
   const window = a.window ?? (a.model ? windowOf(a.model) : null);
   return {
     id: clip(a.id, 200),
@@ -95,8 +99,27 @@ export function agentReport(a: AgentState): AgentReport {
     blowouts: a.blowouts,
     promptExcerpt: excerpt(a.promptExcerpt),
     answerExcerpt: a.answerExcerpt ? excerpt(a.answerExcerpt) : null,
+    ...(fullText && a.promptText && !a.promptSent ? { promptText: a.promptText } : {}),
+    ...(fullText && a.answerText && !a.answerSent ? { answerText: a.answerText } : {}),
     failure: cleanFailure(a.failure),
   };
+}
+
+/** Drops full texts past the per-report budget (oldest agents first kept); they are still unsent, so a later report carries them. */
+function withinTextBudget(reports: AgentReport[]): AgentReport[] {
+  let left = MAX_FULL_TEXT_PER_REPORT;
+  return reports.map((r) => {
+    const { promptText, answerText, ...rest } = r;
+    const out: AgentReport = rest;
+    for (const [k, v] of [['promptText', promptText], ['answerText', answerText]] as const) {
+      if (v === undefined) continue;
+      if (v.length <= left || left === MAX_FULL_TEXT_PER_REPORT) {
+        out[k] = v;
+        left -= v.length;
+      }
+    }
+    return out;
+  });
 }
 
 /** A full snapshot of the session plus the events given (at most 100). */
@@ -137,7 +160,7 @@ export function buildReport(s0: SessionState, events: readonly ActivityEvent[], 
       attached: s.attached,
       files: { ...s.files, files: s.files.files.map((f) => ({ ...f, path: clip(f.path, 300), from: f.from === null ? null : clip(f.from, 300) })) },
     },
-    agents: agents.map(agentReport),
+    agents: withinTextBudget(agents.map((a) => agentReport(a, meta.fullText === true))),
     events: events.slice(0, MAX_EVENTS_PER_REPORT).map((e) => ({ ...e, text: clip(e.text, 240) })),
   };
 }
