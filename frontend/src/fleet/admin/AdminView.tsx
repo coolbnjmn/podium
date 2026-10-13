@@ -13,13 +13,15 @@ import { GroupsTab } from "./GroupsTab";
 import { LogTab } from "./LogTab";
 import { PeopleTab, type Created } from "./PeopleTab";
 import { ReportingTab } from "./ReportingTab";
+import { SettingsTab } from "./SettingsTab";
 
 type Status = "checking" | "locked" | "open" | "disabled";
-type TabId = "people" | "groups" | "reporting" | "log";
+type TabId = "people" | "groups" | "reporting" | "settings" | "log";
 const TABS: { id: TabId; name: string }[] = [
   { id: "people", name: "People" },
   { id: "groups", name: "Groups" },
   { id: "reporting", name: "Reporting and security" },
+  { id: "settings", name: "Settings" },
   { id: "log", name: "Admin log" },
 ];
 
@@ -28,7 +30,7 @@ export function AdminView({ base = "/api/admin" }: { base?: string }) {
   const api = useMemo(() => makeApi(base), [base]);
   const [status, setStatus] = useState<Status>("checking");
   const [notice, setNotice] = useState("");
-  const [tab, setTab] = useState<TabId>("people");
+  const [tab, setTab] = useState<TabId>(() => (window.location.hash === "#/admin/settings" ? "settings" : "people"));
   const [created, setCreated] = useState<Created | null>(null);
   const [counts, setCounts] = useState<Partial<Record<TabId, number>>>({});
   const [paging, setPaging] = useState({
@@ -39,6 +41,12 @@ export function AdminView({ base = "/api/admin" }: { base?: string }) {
 
   useEffect(() => {
     document.title = `${APP_NAME} admin`;
+  }, []);
+  // Following #/admin/settings while Admin is already open (the link in the wall's confirmation) switches the tab.
+  useEffect(() => {
+    const onHash = () => window.location.hash === "#/admin/settings" && setTab("settings");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
   useEffect(() => {
     let live = true;
@@ -146,6 +154,7 @@ export function AdminView({ base = "/api/admin" }: { base?: string }) {
                   )}
                   {tab === "groups" && <GroupsTab api={api} {...paging.groups} onPaging={onGroupPaging} onCount={onCountGroups} onLocked={onLocked} />}
                   {tab === "reporting" && <ReportingTab api={api} onLocked={onLocked} />}
+                  {tab === "settings" && <SettingsTab api={api} onLocked={onLocked} />}
                   {tab === "log" && <LogTab api={api} {...paging.log} onPaging={onLogPaging} onCount={onCountLog} onLocked={onLocked} />}
                 </div>
               </section>
