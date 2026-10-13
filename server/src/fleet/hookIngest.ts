@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import type { AgentRow, SessionRow } from './db.js';
 import { agentView } from './derive.js';
-import type { ActivityEvent, AgentReport, Effort, Report, SessionReport } from './protocol.js';
+import { backgroundSummary, type ActivityEvent, type AgentReport, type BackgroundKind, type BackgroundTask, type BackgroundWait, type Effort, type Report, type SessionReport } from './protocol.js';
 
 export const HOOKS_REPORTER_VERSION = 'hooks';
 const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -22,6 +22,32 @@ const effortOf = (v: unknown): Effort | null => {
   const level = isObj(v) ? v.level : v;
   return typeof level === 'string' && (EFFORTS as readonly string[]).includes(level) ? (level as Effort) : null;
 };
+const IN_FLIGHT_DONE = /^(completed|complete|done|failed|killed|stopped|cancelled|canceled|error)$/i;
+const BACKGROUND_TYPES: Record<string, BackgroundKind> = { shell: 'shell', bash: 'shell', subagent: 'agent', agent: 'agent', monitor: 'monitor', workflow: 'workflow' };
+
+/**
+ * The work a Stop hook says is still in flight: its background tasks (finished ones are skipped) and its
+ * scheduled wake-ups. A shell's command is never kept; a task with no description is named by the first word
+ * of its command at most. The wake time is left null: the hook gives a cron schedule in the machine's local
+ * time, and the server may not share its zone.
+ */
+function backgroundOf(payload: Record<string, unknown>): BackgroundWait | null {
+  const tasks: BackgroundTask[] = [];
+  const list = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v.filter(isObj) : []);
+  for (const t of list(payload.background_tasks).slice(0, 20)) {
+    const status = str(t.status, 40) ?? 'running';
+    if (IN_FLIGHT_DONE.test(status)) continue;
+    const type = BACKGROUND_TYPES[(str(t.type, 40) ?? '').toLowerCase()] ?? 'other';
+    // The first word that is not an NAME=value assignment, so an inline secret is never kept.
+    const word = str(t.command, 400)?.split(/\s+/).find((w) => w !== '' && !w.includes('='))?.split('/').pop() || null;
+    tasks.push({ type, description: str(t.description, 120) ?? word ?? type, status });
+  }
+  for (const c of list(payload.session_crons).slice(0, Math.max(0, 20 - tasks.length))) {
+    tasks.push({ type: 'wakeup', description: str(c.prompt, 120) ?? 'scheduled wake-up', status: 'scheduled' });
+  }
+  return tasks.length ? { tasks, wakeAt: null } : null;
+}
+
 const lastSegment = (p: string) => p.split('/').filter(Boolean).pop() ?? p;
 
 function storedSession(row: SessionRow | undefined, id: string, cwd: string, now: number): SessionReport {
@@ -56,6 +82,7 @@ function storedSession(row: SessionRow | undefined, id: string, cwd: string, now
     loop: null,
     files: parse(row?.files_json ?? null, null),
     attached: row?.attached == null ? null : row.attached === 1,
+    background: parse(row?.background_json ?? null, null),
   };
 }
 
@@ -96,9 +123,11 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
       data: { source: 'settings-hook' },
     });
   const anyRunning = () => [...agents.values()].some((a) => a.status === 'running');
-  const idle = () => {
+  const idle = (background: BackgroundWait | null = null) => {
     session.status = anyRunning() ? 'running' : 'waiting';
-    session.waitReason = session.status === 'waiting' ? 'input' : null;
+    // Idle on a background shell or a wake-up is not a wait on the person (#119).
+    session.background = session.status === 'waiting' ? background : null;
+    session.waitReason = session.status === 'waiting' && !session.background ? 'input' : null;
     session.waitNote = null;
   };
 
@@ -110,6 +139,7 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
 
   switch (event) {
     case 'SessionStart': {
+      session.background = null;
       session.name = str(payload.session_title, 80) ?? session.name;
       session.model = str(payload.model, 120) ?? session.model;
       session.effort = effortOf(payload.effort) ?? session.effort;
@@ -120,13 +150,18 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
       break;
     }
     case 'UserPromptSubmit':
+      session.background = null;
       session.status = 'running';
       session.waitReason = null;
       session.waitNote = null;
       break;
-    case 'Stop':
-      idle();
+    case 'Stop': {
+      const before = session.background ? backgroundSummary(session.background) : null;
+      idle(backgroundOf(payload));
+      // One row each time what it waits on changes, not one per Stop (as the mod does).
+      if (session.background && backgroundSummary(session.background) !== before) ev('wait', `waiting on background: ${backgroundSummary(session.background)}`);
       break;
+    }
     case 'SubagentStart': {
       if (!agentId) return { ok: false, error: 'missing agent_id', path: '$.agent_id' };
       const prev = agents.get(agentId);
@@ -182,6 +217,8 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
       // are heartbeats.
       const reason: SessionReport['waitReason'] = /permission/i.test(type) ? 'permission' : /idle|elicitation|input/i.test(type) ? 'input' : null;
       if (!reason) break;
+      // The idle prompt while background work or a wake-up is in flight is not a wait on the person.
+      if (reason === 'input' && session.status === 'waiting' && session.background) break;
       session.status = 'waiting';
       session.waitReason = reason;
       session.waitNote = message;
@@ -210,9 +247,11 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
         session.waitNote = null;
       }
       if (session.status !== 'done') session.status = session.waitReason === 'permission' ? 'waiting' : 'running';
+      if (session.status === 'running') session.background = null;
       break;
     }
     case 'SessionEnd': {
+      session.background = null;
       session.status = 'done';
       session.waitReason = null;
       session.waitNote = null;

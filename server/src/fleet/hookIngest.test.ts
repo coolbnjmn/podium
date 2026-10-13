@@ -193,4 +193,72 @@ describe('POST /api/fleet/hook', () => {
     expect(fleet.events({ sessionId: 'hk-1', limit: 20 }).filter((e) => e.text.includes('first ask'))).toHaveLength(1);
     fleet.close();
   });
+
+  // A turn that ends with a background shell running is not waiting on the person (#119).
+  it('a Stop with a background shell in flight is a background wait, not "input"', async () => {
+    const { app, fleet, tick } = setup();
+    const send = async (p: object) => {
+      tick(1000);
+      expect((await request(app).post('/api/fleet/hook').send(p)).status).toBe(200);
+    };
+    await send(P.start);
+    await send(P.prompt);
+    await send({ ...P.stop, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'nightly build', command: 'curl -H "Authorization: Bearer sk-live-123" https://x' }], session_crons: [] });
+    const v = fleet.view('hk-1')!;
+    expect(v.status).toBe('waiting');
+    expect(v.waitReason).toBeNull();
+    expect(v.background).toEqual({ tasks: [{ type: 'shell', description: 'nightly build', status: 'running' }], wakeAt: null });
+    expect(JSON.stringify(v)).not.toContain('sk-live-123');
+    // the next prompt starts a turn, and the work is no longer what it waits on
+    await send(P.prompt);
+    expect(fleet.view('hk-1')!.background ?? null).toBeNull();
+    // a Stop with nothing in flight is a wait on the person again
+    await send(P.stop);
+    expect(fleet.view('hk-1')).toMatchObject({ status: 'waiting', waitReason: 'input' });
+    expect(fleet.view('hk-1')!.background ?? null).toBeNull();
+  });
+
+  it('a Stop that lists only a finished task is still a wait on the person', async () => {
+    const { app, fleet, tick } = setup();
+    for (const p of [P.start, P.prompt, { ...P.stop, background_tasks: [{ id: 'b1', type: 'shell', status: 'completed', description: 'done' }] }]) {
+      tick(1000);
+      await request(app).post('/api/fleet/hook').send(p);
+    }
+    expect(fleet.view('hk-1')).toMatchObject({ status: 'waiting', waitReason: 'input' });
+  });
+
+  it('a Stop with only a scheduled wake-up is a background wait', async () => {
+    const { app, fleet, tick } = setup();
+    for (const p of [P.start, P.prompt, { ...P.stop, background_tasks: [], session_crons: [{ id: 'c1', schedule: '30 14 * * *', recurring: false, prompt: 'check the deploy' }] }]) {
+      tick(1000);
+      await request(app).post('/api/fleet/hook').send(p);
+    }
+    const v = fleet.view('hk-1')!;
+    expect(v.waitReason).toBeNull();
+    expect(v.background!.tasks).toMatchObject([{ type: 'wakeup', description: 'check the deploy' }]);
+  });
+
+  it('never names a background task by an inline NAME=value secret, and does not repeat a feed row for an unchanged Stop', async () => {
+    const { app, fleet, tick } = setup();
+    const stop = { ...P.stop, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: '', command: 'API_KEY=sk-live-123 /usr/bin/node build.js' }] };
+    for (const p of [P.start, P.prompt, stop, stop]) {
+      tick(1000);
+      await request(app).post('/api/fleet/hook').send(p);
+    }
+    const v = fleet.view('hk-1')!;
+    expect(v.background!.tasks[0]!.description).toBe('node');
+    expect(JSON.stringify(v)).not.toContain('sk-live-123');
+    expect(fleet.events({ sessionId: 'hk-1', limit: 50 }).filter((e) => e.text.startsWith('waiting on background')).length).toBe(1);
+  });
+
+  it('an idle-prompt Notification while background work is in flight is not a wait on the person', async () => {
+    const { app, fleet, tick } = setup();
+    const stop = { ...P.stop, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'nightly build' }] };
+    for (const p of [P.start, P.prompt, stop, { ...base, hook_event_name: 'Notification', message: 'Claude is waiting for your input', notification_type: 'idle_prompt' }]) {
+      tick(1000);
+      await request(app).post('/api/fleet/hook').send(p);
+    }
+    expect(fleet.view('hk-1')).toMatchObject({ status: 'waiting', waitReason: null });
+    expect(fleet.view('hk-1')!.background).not.toBeNull();
+  });
 });
