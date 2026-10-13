@@ -64,11 +64,11 @@ export function FactsBar({ s, now, onAgent }: { s: SessionView; now: number; onA
           <BlowBadge n={s.blowouts.orchestrator} />
         </div>
       </div>
-      <div className="fact">
+      <div className="fact agents">
         <div className="k">Agents</div>
         <div className="v mono">
-          {c.running} running
-          <span style={{ color: "var(--muted)", fontWeight: 500 }}> · {c.done} done</span>
+          <span className="n-running">{c.running} running</span>
+          <span className="n-done">{` / ${c.done} done`}</span>
           {firstFail && (
             <button type="button" className="blow l2" onClick={() => onAgent(firstFail.id)} title="Show the first failure">
               <IconX />
@@ -77,15 +77,15 @@ export function FactsBar({ s, now, onAgent }: { s: SessionView; now: number; onA
           )}
         </div>
       </div>
-      <div className="fact">
+      <div className="fact slim">
         <div className="k">Est. cost</div>
         <div className="v mono"><Cost usd={s.costUsd} family={s.modelFamily} /></div>
       </div>
-      <div className="fact">
+      <div className="fact slim">
         <div className="k">Tokens</div>
         <div className="v mono">{fmtTok(s.tokensTotal)}</div>
       </div>
-      <div className="fact">
+      <div className="fact slim">
         <div className="k">Running for</div>
         <div className="v mono">{fmtDur(sessionElapsedSec(s, now))}</div>
       </div>
