@@ -321,9 +321,26 @@ export function agentLabel(a: AgentView): string {
   return `${a.kind === "fork" ? "fork" : a.type} · ${familyName(a.modelFamily, a.model)}${a.effort ? ` ${a.effort}` : ""}`;
 }
 
+/**
+ * The version in a Claude model id, "5.5" for `claude-sonnet-5-5`, "4" for `claude-opus-4-20250514`, "3.5" for
+ * `claude-3-5-sonnet-20241022`. Null for an alias (`sonnet`, `opus[1m]`), a non-Claude name and anything with no
+ * version digits: it never invents one. Version parts are one or two digits, so a date stamp is not one.
+ */
+export function modelVersion(model: string | null | undefined): string | null {
+  const m = (model ?? "").toLowerCase();
+  if (!m.includes("claude")) return null;
+  const fam = "(?:opus|sonnet|haiku|fable)";
+  const ver = "(\\d{1,2}(?:-\\d{1,2})?)";
+  const v = new RegExp(`${fam}-${ver}(?!\\d)`).exec(m)?.[1] ?? new RegExp(`claude-${ver}-${fam}`).exec(m)?.[1];
+  return v ? v.replace("-", ".") : null;
+}
+
+/** "Sonnet 5.5": the family and, when the id carries one, the version. An alias is the family alone; a non-Claude model its raw name. */
 export function familyName(f: ModelFamily, model: string | null): string {
   if (f === "other") return model ?? "unknown";
-  return f[0]!.toUpperCase() + f.slice(1);
+  const name = f[0]!.toUpperCase() + f.slice(1);
+  const v = modelVersion(model);
+  return v ? `${name} ${v}` : name;
 }
 
 /** When a heartbeat-lost session goes away by itself: the server's `dropAt`, else counted from the last heartbeat. */
