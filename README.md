@@ -124,8 +124,10 @@ session comes from the token that sent it: with the shared admin secret every se
 and with the server's auth turned off every session is Unassigned, because then anyone could claim any
 name. Per-person read permissions are not part of Podium.
 
-Other settings (`STALE_AFTER_MS`, `RETAIN_*`, and so on, see the table below) are set with
-`podiumctl config set KEY=VALUE` and applied on `restart`. Set `PODIUMCTL_HOME` to keep the files
+Other settings (`STALE_AFTER_MS`, `RETAIN_*`, the `PODIUM_LOG_*` logging settings, and so on, see the table
+below) are set with `podiumctl config set KEY=VALUE` and applied on `restart`. "Logs" in the
+[user guide](docs/USER_GUIDE.md#logs) covers what the server logs, sending it to VictoriaLogs, and pointing an
+agent at it. Set `PODIUMCTL_HOME` to keep the files
 somewhere other than `~/.podium`. `podiumctl --help` lists everything.
 
 Start on boot: in container mode the boot service runs `podiumctl start`, which also starts the Podman
@@ -270,6 +272,11 @@ and it chooses `PORT`, `HOST` and `PODIUM_DB` itself.
 | `RETAIN_SAMPLES_MS` | 24 hours | Per-second chart samples kept |
 | `RETAIN_EVENTS_MS` | 30 days | Activity events kept |
 | `RETAIN_SESSIONS_MS` | 30 days | Ended sessions kept |
+| `PODIUM_LOG_LEVEL` | `info` | Lowest log level printed and shipped: `debug`, `info`, `warn` or `error`. `debug` adds one line per HTTP request, and in the text format the session, reporter, sweep and Admin lines |
+| `PODIUM_LOG_FORMAT` | `text` | `text` prints each line's message, as before; `json` prints one JSON object per line |
+| `PODIUM_LOG_SHIP_URL` | empty | Also push every log line to this endpoint, such as a VictoriaLogs server (`http://HOST:9428`; `/insert/jsonline` is added). Empty means nothing leaves the machine |
+| `PODIUM_LOG_SHIP_HEADERS` | empty | Headers for that endpoint, `Name=Value;Name2=Value2` (for example `Authorization=Bearer ...;AccountID=1`). Never printed or logged |
+| `PODIUM_LOG_SHIP_BUFFER` | `2000` | Log lines kept while the endpoint is down; past that the oldest are dropped |
 
 Sessions, agents and events are stored in SQLite (Node's built-in `node:sqlite`), so a server restart
 loses nothing that was reported: sessions come back as stale and recover when their reporters send again.
