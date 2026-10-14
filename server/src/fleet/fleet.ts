@@ -11,6 +11,8 @@ import type { ActivityView, HistoryRow, Kpis, RemovedReason, Report, ReporterSup
 import { formatSse, SseHub } from './sse.js';
 import { ModelPriceStore } from './modelPrices.js';
 import { WallSettings } from './wallSettings.js';
+import { ActivityStore } from './activity.js';
+import { ACTIVITY_FEED, FeatureFlags } from './featureFlags.js';
 
 export interface FleetConfig {
   staleAfterMs: number;
@@ -83,6 +85,10 @@ export class Fleet {
   readonly wall: WallSettings;
   /** The Admin's model prices; every cost figure follows them (issue #117). */
   readonly prices: ModelPriceStore;
+  /** The agent activity feed (#118): in memory only, and only for loops a viewer is watching. */
+  readonly activity: ActivityStore;
+  /** The Admin's feature flags. Turning the activity feed off drops what it held; any change reaches open browsers. */
+  readonly features: FeatureFlags;
   private readonly live = new Map<string, LiveEntry>();
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly startedAt: number;
@@ -95,6 +101,11 @@ export class Fleet {
     readonly now: () => number = Date.now,
   ) {
     this.startedAt = now();
+    this.features = new FeatureFlags(db.db, (id, on) => {
+      if (id === ACTIVITY_FEED && !on) this.activity.clear();
+      this.hub.broadcast('snapshot', this.state());
+    });
+    this.activity = new ActivityStore(now, () => this.features.featureOn(ACTIVITY_FEED));
     this.wall = new WallSettings(db.db, () => this.hub.broadcast('wall', this.wall.view()));
     // A price change moves every cost on the wall, so open browsers get a fresh snapshot.
     this.prices = new ModelPriceStore(db.db, () => this.hub.broadcast('snapshot', this.state()));
@@ -134,6 +145,7 @@ export class Fleet {
   ingest(report: Report, owner: string | null = null): IngestResult {
     const res = ingestReport(this.db, report, this.now(), owner);
     this.clockSkew.set(res.sessionId, res.clockSkewMs);
+    this.activity.ingest(report, res.clockSkewMs);
     const entry = this.live.get(res.sessionId);
     if (entry) {
       entry.heard = true;
@@ -204,6 +216,7 @@ export class Fleet {
         hideAt: row.attached === 0 && row.detached_at !== null ? row.detached_at + this.cfg.detachedHideAfterMs : null,
         ownerGroup: this.db.groupOfOwner(row.owner),
         pricing: this.prices.pricing(),
+        activityFeed: this.activity.feedOn(row.id),
       },
       now,
       this.derive,
@@ -300,6 +313,7 @@ export class Fleet {
       events: this.events({ limit: STATE_EVENTS }),
       server: { version: serverVersion(), reporterSupport: REPORTER_SUPPORT },
       wall: this.wall.view(),
+      features: this.features.view(),
     };
   }
 
@@ -329,6 +343,7 @@ export class Fleet {
   deleteSession(id: string): boolean {
     const wasLive = this.live.delete(id);
     this.clockSkew.delete(id);
+    this.activity.dropSession(id);
     const t = this.pending.get(id);
     if (t) clearTimeout(t);
     this.pending.delete(id);
@@ -354,6 +369,7 @@ export class Fleet {
     const now = this.now();
     this.live.delete(row.id);
     this.clockSkew.delete(row.id);
+    this.activity.dropSession(row.id);
     const t = this.pending.get(row.id);
     if (t) clearTimeout(t);
     this.pending.delete(row.id);
@@ -380,6 +396,7 @@ export class Fleet {
   /** Once a second: stale transitions, drops, lingering done sessions, carry-forward samples. */
   sweep(): void {
     const now = this.now();
+    this.activity.expire();
     const nowSec = Math.floor(now / 1000);
     for (const [id, entry] of [...this.live]) {
       const row = this.db.getSession(id);

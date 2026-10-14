@@ -59,8 +59,38 @@ accepted report (`markTextSent`); the server stores them in `agent_texts` (migra
 `SELECT` on `agents` and the SSE state stay small) and the view carries only `promptChars`/`answerChars`. The
 modal fetches the text when it opens. `Markdown.tsx` builds React elements and never an HTML string, which
 keeps SPEC 7.7's rule that reported strings reach the page only as text nodes, and it needs no dependency. The
-modal is portaled to `<body>` inside its own `.podium` wrapper (for the theme tokens), and blurs `#root`; a
+modal shell is `components/Modal.tsx`, shared with the activity feed's modal (#118); it is portaled to `<body>` inside its own `.podium` wrapper (for the theme tokens), and blurs `#root`; a
 capturing key listener keeps Esc and the shell shortcuts from reaching the page behind it.
+
+**The activity feed** (`server/src/fleet/activity.ts`, issue #118). Observed only: nothing about an agent's
+activity is captured, sent or kept unless a viewer is watching that loop. `ActivityStore` lives on the `Fleet`
+and holds two maps in process memory: leases (session, then loop key: an agent id or `@orchestrator`), each with
+its start, its expiry and a ring of the last 20 entries numbered by `seq`; and whether each session's reporter
+has the option on (`SessionView.activityFeed`). `GET .../agents/:agentId/activity?every=` takes or renews a lease
+for `every` seconds plus `ACTIVITY_LEASE_SLACK_MS` (15 s); the report route answers with `watch`, the loops under
+a live lease; `Fleet.ingest` hands each validated report to the store, which merges only watched loops' entries,
+skipping any stamped (through the session's clock skew) before the lease began and any it already has. The sweeper
+expires leases every second, and a session leaving the live set or being deleted drops its leases. The Admin's
+`activity-feed` flag (`server/src/fleet/featureFlags.ts`, a `feature.<id>` row in the settings table, on unless set to
+'0') sits above all of this: the store asks `Fleet.features` on each call, so while it is off `watched` is empty,
+`ingest` keeps only the reporter's option and no entries, and the route answers `enabled: false` without a lease. The
+flag's `onChange` in `Fleet` calls `ActivityStore.clear()` when it goes off and sends every browser a fresh snapshot,
+whose `features` map tells the panels. No table for the feed itself, no migration, no entries in the state or the stream; `ingest.ts` never sees the entries, because it copies named
+fields only. In the mod (0.13.0, option `activityFeed`), `transport.ts` keeps the reply's `watch` list and
+`flushOnce` hands it to `setWatched` in `state.ts` (an empty list when the option is off); a loop dropping off the
+list forgets its ring. `tool.call` adds an entry (`activityCall` in `failures.ts`) and a watched `turn.step` reads
+its text chunks as they pass (`activityText`), both through `addActivity`, which does nothing for a loop that is not
+watched. `report.ts` sends `session.activityFeed` always, and a loop's `activity` only when the option is on and
+the ring is not empty, within a 60,000-character budget per report. In the UI, `useActivityFeed.ts` runs the
+fetch loop (only while `ActivityFeed.tsx` is mounted, the feed is on and `usePageVisible` says the tab is shown;
+once more and then stop for a finished loop) and keeps a cursor: the first answer's highest `seq` is skipped, so a
+viewer never sees entries from before they looked, and a changed `since` means the lease was started again. A reply
+with `enabled: false` empties the hook's list and sets `adminOff`; the loop keeps running, and `FleetApp` passes the
+flag from `StateBody.features` down through `SidePanel` (`activityFeedOn`) as the section's `adminOn`, which shows the
+Admin's note ahead of the reporter notes and, when it changes, makes the hook ask again at once. The
+section sits in `AgentDetail` and `OrchestratorDetail` (loop `@orchestrator`, which is also `ORCHESTRATOR_ROW`). The
+simulator (`scripts/podium-sim.ts`) reads `watch` from each reply too and sends a scripted entry a second for each
+watched loop that is still working, so the panel can be seen filling without a real session.
 
 **The people view** (`frontend/src/fleet/people.ts`, `components/People.tsx`, `components/SpendPanel.tsx`,
 `usePeoplePrefs.ts`, issue #34). The server adds three things and stores nothing new about people:

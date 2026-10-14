@@ -284,3 +284,40 @@ that sends usage (0.12.0 and later); a person who sets a contracted rate in Clau
 here too. Reports grow by a few rows per model. The cost-per-minute sparkline still comes from the ledger's samples
 and does not follow the Admin's prices. Cache writes count at the 5-minute rate unless Claude Code reports the
 1-hour part; the `turn.step` usage fields in SPEC 5 carry no such split, so until it does the 1-hour price has no effect.
+
+## 24. An agent's activity is sent only while someone watches it, and never kept
+
+**Choice.** The activity feed (#118) has its own reporter option, `activityFeed`, off by default and separate from
+`fullPrompts`. With it on, nothing is captured, sent or stored for a loop until a viewer opens its panel: the panel's
+fetch takes a short lease on the server, the reply to each report lists the leased loops (`watch`), and the mod
+captures only those. The server keeps the last 20 entries in memory, drops them when the lease lapses (the viewer's
+interval plus 15 seconds), when the session leaves or on restart, and never keeps an entry older than the lease, so a
+viewer who comes back starts empty. There is no table and no history. The panel fetches on the viewer's interval (5
+seconds by default) only while it is open and the tab is visible. Tool calls and the text between them are sent; the
+model's thinking is not.
+**Why.** What an agent is doing right now is more sensitive than its task prompt or answer, and everyone who can open
+the console can read it, so it gets its own switch and is off unless asked for. Capturing only what someone is looking
+at keeps the cost at zero for the many agents nobody watches, keeps the reports small, and means there is nothing to
+retain, export or leak afterwards. The question it answers, "where is this agent in its work", is about now, so a
+history adds little. Thinking may come summarized or not at all depending on the model, and is the most private part.
+**Cost.** A viewer sees nothing from before they opened the panel, and the first entries arrive one report cycle
+after the lease starts (about a second, more on a long interval). Two viewers share one lease, so a slow viewer keeps
+a loop watched for longer than a fast one alone would. A restart of the server loses every feed. The reports of a
+watched loop carry up to 20 entries of 300 characters again on every report, because reports are full snapshots.
+
+## 25. The Admin can switch the activity feed off for the whole server
+
+**Choice.** On top of the reporter's `activityFeed` option (24), Admin > Settings > Feature flags has an **Agent
+activity feed** switch (`activity-feed`), on by default, kept in the `settings` table with the other Admin settings
+and written to the admin log. The feed needs both. With the flag off the server grants no lease, lists nothing in
+`watch`, keeps nothing a mod sends and drops what it held when the flag goes off; the activity route answers
+`enabled: false`. Open panels keep asking on their interval and say the Admin turned it off, so turning it back on
+resumes the feed without a reload. The store is a generic list of flags, `FEATURES`, so the next feature that needs
+an off switch adds one entry.
+**Why.** The reporter option belongs to whoever runs each machine, and the feed is read by everyone who can open the
+console. The person who runs the server needs a way to stop it for everyone without asking every machine to change a
+setting, and to have that recorded. Default on, because the reporter option is already off by default, so a flag
+that also started off would make the feature take two steps to try for no added safety.
+**Cost.** A machine with the option on still captures nothing while the flag is off, which can puzzle its owner
+until the panel's note explains it. Open panels keep making one small request per interval while the flag is off.
+A flip sends every browser a full snapshot, which is fine for a switch that changes rarely.
