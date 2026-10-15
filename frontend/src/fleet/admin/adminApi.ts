@@ -33,13 +33,19 @@ export interface LogRow {
   source: string;
 }
 export type ReporterState = "reporting" | "idle" | "silent" | "restart";
-export type ReporterSort = "state" | "name" | "who" | "ver" | "last" | "sessions";
+export type ReporterSort = "state" | "name" | "who" | "token" | "ver" | "last" | "sessions";
 /** Issue #142: one row per machine that has reported, kept after its sessions are deleted. */
 export interface ReporterRow {
   key: string;
   state: ReporterState;
   name: string;
+  /** False when `name` is made up (newest project or address) because the reporter sends no machine name. */
+  named: boolean;
   who: string;
+  /** The token's key id, or "admin secret"; null when the server had no authentication. Never a token. */
+  credential: string | null;
+  /** Reports with the admin secret instead of a person's token (issue #166). */
+  adminSecret: boolean;
   version: string;
   compat: "ok" | "outdated" | "newer" | "unknown";
   firstSeenAt: number;
@@ -48,14 +54,17 @@ export interface ReporterRow {
   live: number;
 }
 export interface ReporterList extends Paged<ReporterRow> {
+  serverStartedAt: number;
+  /** How many reporters use the admin secret, whatever filter is on. */
+  adminSecret: number;
   counts: Record<"all" | ReporterState, number>;
   serverTime: number;
 }
 export interface ReporterDetail extends ReporterRow {
+  serverStartedAt: number;
   kind: "mod" | "hooks";
   machineId: string | null;
   source: string | null;
-  credential: string | null;
   engineVersion: string | null;
   recent: { id: string; name: string; status: string; lastSeenAt: number; costUsd: number | null }[];
   rejected: { t: number; reason: string }[];

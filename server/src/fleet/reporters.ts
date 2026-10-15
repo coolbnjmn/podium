@@ -17,8 +17,10 @@ const SHOWN_SESSIONS = 10;
 
 export type ReporterState = 'reporting' | 'idle' | 'silent' | 'restart';
 export const REPORTER_STATES: readonly ReporterState[] = ['reporting', 'idle', 'silent', 'restart'];
-export type ReporterSort = 'state' | 'name' | 'who' | 'ver' | 'last' | 'sessions';
-const SORTS: readonly ReporterSort[] = ['state', 'name', 'who', 'ver', 'last', 'sessions'];
+export type ReporterSort = 'state' | 'name' | 'who' | 'token' | 'ver' | 'last' | 'sessions';
+const SORTS: readonly ReporterSort[] = ['state', 'name', 'who', 'token', 'ver', 'last', 'sessions'];
+/** The credential the server records for a report made with the admin secret. */
+export const ADMIN_SECRET = 'admin secret';
 
 /** What one accepted report says about its sender. Never a token: `credential` is a key id or the words "admin secret". */
 export interface ReporterSeen {
@@ -37,7 +39,13 @@ export interface ReporterRow {
   key: string;
   state: ReporterState;
   name: string;
+  /** False when the reporter sends no machine name and `name` is made up from its newest project or its address (issue #166). */
+  named: boolean;
   who: string;
+  /** The token's key id (`pdm_...`) or the words "admin secret"; null when the server had no authentication. Never a token. */
+  credential: string | null;
+  /** True when it reports with the admin secret instead of a token made for a person (issue #166). Always warned about. */
+  adminSecret: boolean;
   version: string;
   compat: ReporterCompat;
   firstSeenAt: number;
@@ -46,13 +54,17 @@ export interface ReporterRow {
   live: number;
 }
 export interface ReporterList extends Paged<ReporterRow> {
+  /** When this server started: what "not since restart" is counted from. */
+  serverStartedAt: number;
+  /** How many reporters use the admin secret, whatever filter is on. */
+  adminSecret: number;
   counts: Record<'all' | ReporterState, number>;
 }
 export interface ReporterDetail extends ReporterRow {
+  serverStartedAt: number;
   kind: 'mod' | 'hooks';
   machineId: string | null;
   source: string | null;
-  credential: string | null;
   engineVersion: string | null;
   recent: { id: string; name: string; status: string; lastSeenAt: number; costUsd: number | null }[];
   rejected: { t: number; reason: string }[];
@@ -73,13 +85,17 @@ interface DbReporter {
   state: ReporterState;
   sessions: number;
   live: number;
+  project: string | null;
 }
 
 /** The state, in SQL, from the last report, the time the server started and now. */
 const STATE_SQL = `CASE WHEN r.last_seen_at < :started THEN 'restart'
   WHEN :now - r.last_seen_at < ${REPORTING_MS} THEN 'reporting'
   WHEN :now - r.last_seen_at < ${IDLE_MS} THEN 'idle' ELSE 'silent' END`;
-const NAME_SQL = `COALESCE(r.machine_name, CASE r.kind WHEN 'hooks' THEN 'Hooks only' ELSE 'Unnamed reporter' END)`;
+/** The project of the newest session a reporter reported: what an unnamed reporter is called. */
+const PROJECT_SQL = `SELECT COALESCE(s.repo_name, s.name) FROM reporter_sessions x JOIN sessions s ON s.id = x.session_id
+  WHERE x.reporter_key = r.key ORDER BY s.last_seen_at DESC LIMIT 1`;
+const NAME_SQL = `COALESCE(r.machine_name, CASE r.kind WHEN 'hooks' THEN 'Hooks only' ELSE COALESCE((${PROJECT_SQL}), r.source_address, 'Unnamed reporter') END)`;
 const SESSIONS_SQL = 'SELECT COUNT(*) FROM reporter_sessions x WHERE x.reporter_key = r.key';
 const LIVE_SQL = `SELECT COUNT(*) FROM reporter_sessions x JOIN sessions s ON s.id = x.session_id
   WHERE x.reporter_key = r.key AND s.ended_at IS NULL AND s.dropped_at IS NULL`;
@@ -87,6 +103,7 @@ const ORDER: Record<ReporterSort, string> = {
   state: `CASE state WHEN 'reporting' THEN 0 WHEN 'idle' THEN 1 WHEN 'silent' THEN 2 ELSE 3 END`,
   name: `lower(${NAME_SQL.replace(/r\./g, 'q.')})`,
   who: `lower(COALESCE(q.owner, 'Unassigned'))`,
+  token: `CASE WHEN q.credential = '${ADMIN_SECRET}' THEN 0 ELSE 1 END, q.credential`,
   ver: 'q.reporter_version',
   last: 'q.last_seen_at',
   sessions: 'q.sessions',
@@ -117,9 +134,28 @@ export class ReporterStore {
     return `${s.kind === 'hooks' ? 'hooks' : 'addr'}:${s.source ?? 'unknown'}`;
   }
 
+  /**
+   * The key an earlier report of the same session was filed under, for a reporter that sends no machine id. A session
+   * belongs to one reporter, so a report from a new source address that carries a known session is the same reporter
+   * on a new address (a container that restarted), not a new one (issue #166). The oldest row wins.
+   */
+  private knownKey(s: ReporterSeen): string | undefined {
+    if (s.machineId) return undefined;
+    const prefix = s.kind === 'hooks' ? 'hooks:' : 'addr:';
+    const hit = this.stmt(
+      `SELECT r.key FROM reporter_sessions x JOIN reporters r ON r.key = x.reporter_key
+       WHERE x.session_id = ? AND r.machine_id IS NULL AND r.kind = ? AND r.key LIKE ? ORDER BY r.first_seen_at, r.key LIMIT 1`,
+    ).get(s.sessionId, s.kind, `${prefix}%`) as { key: string } | undefined;
+    return hit?.key;
+  }
+
   /** Notes one accepted report: creates the reporter or updates it, and links the session. */
   record(s: ReporterSeen, now: number): void {
-    const key = ReporterStore.keyOf(s);
+    const own = ReporterStore.keyOf(s);
+    const known = this.knownKey(s);
+    const key = known ?? own;
+    // A row made for this address before a known session turned up here is the same reporter: fold it in.
+    if (known && known !== own) this.merge(own, known);
     this.stmt(
       `INSERT INTO reporters (key, kind, machine_id, machine_name, source_address, owner, credential, reporter_version, engine_version, first_seen_at, last_seen_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -142,6 +178,13 @@ export class ReporterStore {
     this.stmt('INSERT OR IGNORE INTO reporter_sessions (reporter_key, session_id) VALUES (?, ?)').run(key, s.sessionId);
   }
 
+  /** Moves `from`'s session links to `into`, keeps the earlier first-seen time, and drops `from`. */
+  private merge(from: string, into: string): void {
+    this.stmt('INSERT OR IGNORE INTO reporter_sessions (reporter_key, session_id) SELECT ?, session_id FROM reporter_sessions WHERE reporter_key = ?').run(into, from);
+    this.stmt('UPDATE reporters SET first_seen_at = MIN(first_seen_at, COALESCE((SELECT first_seen_at FROM reporters WHERE key = ?), first_seen_at)) WHERE key = ?').run(from, into);
+    this.stmt('DELETE FROM reporters WHERE key = ?').run(from);
+  }
+
   /** Keeps a short, memory-only list of refused reports by source address, for the detail view. The reason is one of the server's own fixed phrases. */
   rejected(source: string | null, reason: string, now: number): void {
     if (!source) return;
@@ -153,8 +196,11 @@ export class ReporterStore {
     return {
       key: r.key,
       state: r.state,
-      name: r.machine_name ?? (r.kind === 'hooks' ? 'Hooks only' : 'Unnamed reporter'),
+      name: r.machine_name ?? (r.kind === 'hooks' ? 'Hooks only' : (r.project ?? r.source_address ?? 'Unnamed reporter')),
+      named: r.machine_name !== null,
       who: r.owner ?? 'Unassigned',
+      credential: r.credential,
+      adminSecret: r.credential === ADMIN_SECRET,
       version: r.reporter_version,
       compat: checkReporter(r.reporter_version),
       firstSeenAt: r.first_seen_at,
@@ -164,7 +210,7 @@ export class ReporterStore {
     };
   }
 
-  list(opts: { page?: number; pageSize?: number; q?: string; state?: string; sort?: string; dir?: number }, now: number): ReporterList {
+  list(opts: { page?: number; pageSize?: number; q?: string; state?: string; sort?: string; dir?: number; admin?: boolean }, now: number): ReporterList {
     const { page, pageSize } = clampPage(opts);
     const q = (opts.q ?? '').trim().slice(0, 100);
     const state = REPORTER_STATES.find((s) => s === opts.state);
@@ -180,13 +226,17 @@ export class ReporterStore {
 
     const where: string[] = [];
     const params: Record<string, string | number> = { ...base };
+    if (opts.admin) {
+      where.push('r.credential = :adminSecret');
+      params.adminSecret = ADMIN_SECRET;
+    }
     if (q) {
       where.push(`(lower(${NAME_SQL}) LIKE :like ESCAPE '\\' OR lower(COALESCE(r.owner, 'unassigned')) LIKE :like ESCAPE '\\'
         OR lower(COALESCE(r.source_address, '')) LIKE :like ESCAPE '\\' OR lower(COALESCE(r.machine_id, '')) LIKE :like ESCAPE '\\'
         OR lower(r.reporter_version) LIKE :like ESCAPE '\\')`);
       params.like = likeTerm(q);
     }
-    const sub = `SELECT r.*, ${STATE_SQL} AS state, (${SESSIONS_SQL}) AS sessions, (${LIVE_SQL}) AS live FROM reporters r${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`;
+    const sub = `SELECT r.*, ${STATE_SQL} AS state, (${SESSIONS_SQL}) AS sessions, (${LIVE_SQL}) AS live, (${PROJECT_SQL}) AS project FROM reporters r${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`;
     const filter = state ? ' WHERE q.state = :state' : '';
     if (state) params.state = state;
     const total = (this.stmt(`SELECT COUNT(*) AS n FROM (${sub}) q${filter}`).get(params) as { n: number }).n;
@@ -195,12 +245,12 @@ export class ReporterStore {
       limit: pageSize,
       offset: (page - 1) * pageSize,
     }) as unknown as DbReporter[];
-    return { total, page, pageSize, rows: rows.map((r) => this.toRow(r)), counts };
+    return { total, page, pageSize, rows: rows.map((r) => this.toRow(r)), counts, serverStartedAt: this.startedAt, adminSecret: (this.stmt('SELECT COUNT(*) AS n FROM reporters WHERE credential = ?').get(ADMIN_SECRET) as { n: number }).n };
   }
 
   get(key: string, now: number): ReporterDetail | undefined {
     const r = this.stmt(
-      `SELECT r.*, ${STATE_SQL} AS state, (${SESSIONS_SQL}) AS sessions, (${LIVE_SQL}) AS live FROM reporters r WHERE r.key = :key`,
+      `SELECT r.*, ${STATE_SQL} AS state, (${SESSIONS_SQL}) AS sessions, (${LIVE_SQL}) AS live, (${PROJECT_SQL}) AS project FROM reporters r WHERE r.key = :key`,
     ).get({ key, now, started: this.startedAt }) as unknown as DbReporter | undefined;
     if (!r) return undefined;
     const recent = this.stmt(
@@ -216,6 +266,7 @@ export class ReporterStore {
       : [];
     return {
       ...this.toRow(r),
+      serverStartedAt: this.startedAt,
       kind: r.kind,
       machineId: r.machine_id,
       source: r.source_address,

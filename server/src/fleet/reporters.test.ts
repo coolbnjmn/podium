@@ -51,9 +51,62 @@ describe('reporters', () => {
     store.record(seen({ kind: 'hooks', machineId: null, machineName: null, version: 'hooks', engineVersion: null, sessionId: 'h1' }), START + MIN);
     const rows = store.list({}, START + MIN).rows;
     expect(rows.map((r) => r.key).sort()).toEqual(['addr:192.168.1.24', 'hooks:192.168.1.24']);
-    expect(rows.find((r) => r.key.startsWith('addr:'))!.name).toBe('Unnamed reporter');
+    expect(rows.find((r) => r.key.startsWith('addr:'))!.name).toBe('192.168.1.24');
     expect(rows.find((r) => r.key.startsWith('hooks:'))!.name).toBe('Hooks only');
     expect(rows.find((r) => r.key.startsWith('hooks:'))!.compat).toBe('unknown');
+  });
+
+  it('keeps one row for a reporter with no machine id that moves to a new source address (issue #166)', () => {
+    const anon = (over: Partial<ReporterSeen> = {}) => seen({ machineId: null, machineName: null, owner: null, ...over });
+    store.record(anon({ source: '10.88.0.133', sessionId: 's1' }), START + MIN);
+    // The container restarted and came back on another address, still reporting the same session.
+    store.record(anon({ source: '10.88.0.134', sessionId: 's1' }), START + 2 * MIN);
+    store.record(anon({ source: '10.88.0.135', sessionId: 's2' }), START + 3 * MIN);
+    store.record(anon({ source: '10.88.0.135', sessionId: 's1' }), START + 4 * MIN);
+    const rows = store.list({}, START + 4 * MIN).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'addr:10.88.0.133', firstSeenAt: START + MIN, lastSeenAt: START + 4 * MIN, sessions: 2 });
+    expect(store.get('addr:10.88.0.133', START + 4 * MIN)!.source).toBe('10.88.0.135');
+  });
+
+  it('calls an unnamed reporter by its newest project, else its address, and says it is not named', () => {
+    store.record(seen({ machineId: null, machineName: null, source: '10.88.0.133', sessionId: 's1' }), START + MIN);
+    expect(store.list({}, START + MIN).rows[0]).toMatchObject({ name: '10.88.0.133', named: false });
+    const add = db.prepare(`INSERT INTO sessions (id, name, status, started_at, last_seen_at, cwd, repo_name) VALUES (?, ?, 'running', ?, ?, '/x', ?)`);
+    add.run('s1', 'older', START, START, null);
+    expect(store.list({}, START + MIN).rows[0]!.name).toBe('older');
+    store.record(seen({ machineId: null, machineName: null, source: '10.88.0.133', sessionId: 's2' }), START + 2 * MIN);
+    add.run('s2', 'newer', START, START + MIN, 'podium');
+    expect(store.list({ q: 'podium' }, START + 2 * MIN).rows[0]).toMatchObject({ name: 'podium', named: false });
+    expect(store.get('addr:10.88.0.133', START + 2 * MIN)!.serverStartedAt).toBe(START);
+    store.record(seen({ sessionId: 's3' }), START + 2 * MIN);
+    expect(store.list({ q: 'studio' }, START + 2 * MIN).rows[0]).toMatchObject({ name: 'studio-m2', named: true });
+  });
+
+  it('flags a reporter that uses the admin secret, counts them and filters to them (issue #166)', () => {
+    store.record(seen({ machineId: null, machineName: null, owner: 'Admin', credential: 'admin secret', source: '10.88.0.1', sessionId: 'a1' }), START + MIN);
+    store.record(seen({ machineId: null, machineName: null, owner: 'Admin', credential: 'admin secret', source: '10.88.0.2', sessionId: 'a2' }), START + MIN);
+    store.record(seen(), START + MIN);
+    store.record(seen({ machineId: 'bbbbbbbbbbbb', machineName: 'open', owner: null, credential: null, sessionId: 's9' }), START + MIN);
+    const l = store.list({}, START + MIN);
+    expect(l.adminSecret).toBe(2);
+    const by = Object.fromEntries(l.rows.map((r) => [r.key, r]));
+    expect(by['addr:10.88.0.1']).toMatchObject({ adminSecret: true, credential: 'admin secret' });
+    expect(by['9f3a1c7d2e40']).toMatchObject({ adminSecret: false, credential: 'pdm_3f9a1c07b2e4' });
+    // With authentication off there is no credential, so there is nothing to warn about.
+    expect(by['bbbbbbbbbbbb']).toMatchObject({ adminSecret: false, credential: null });
+    const only = store.list({ admin: true }, START + MIN);
+    expect(only.rows.map((r) => r.key).sort()).toEqual(['addr:10.88.0.1', 'addr:10.88.0.2']);
+    expect(only.total).toBe(2);
+    expect(only.adminSecret).toBe(2);
+    expect(store.list({ sort: 'token', dir: 1 }, START + MIN).rows.slice(0, 2).every((r) => r.adminSecret)).toBe(true);
+    expect(store.get('addr:10.88.0.1', START + MIN)!.adminSecret).toBe(true);
+  });
+
+  it('does not fold a hooks-only report into a mod reporter that shares its session', () => {
+    store.record(seen({ machineId: null, machineName: null, source: '10.88.0.133' }), START + MIN);
+    store.record(seen({ kind: 'hooks', machineId: null, machineName: null, source: '10.88.0.134', version: 'hooks', engineVersion: null }), START + MIN);
+    expect(store.list({}, START + MIN).total).toBe(2);
   });
 
   it('keeps a reporter after the sessions it reported are removed', () => {

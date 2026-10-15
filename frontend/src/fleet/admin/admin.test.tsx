@@ -37,9 +37,9 @@ function fakeServer(opts: { people?: number; enabled?: boolean; unlocked?: boole
     builtin: { "sonnet-5-5": 2, "haiku-5-5": 0.1 } as Record<string, number>,
     priceError: "" as string,
     reporters: [
-      { key: "9f3a1c7d2e40", state: "reporting", name: "studio-m2", who: "Dana", version: "0.13.0", compat: "ok", firstSeenAt: 1_000, lastSeenAt: 40_000, sessions: 142, live: 3 },
-      { key: "addr:10.4.0.52", state: "silent", name: "Unnamed reporter", who: "Admin", version: "0.9.2", compat: "outdated", firstSeenAt: 1_000, lastSeenAt: 1_000, sessions: 9, live: 0 },
-    ] as { key: string; state: string; name: string; who: string; version: string; compat: string; firstSeenAt: number; lastSeenAt: number; sessions: number; live: number }[],
+      { key: "9f3a1c7d2e40", state: "reporting", name: "studio-m2", named: true, who: "Dana", credential: "pdm_3f9a1c07b2e4", adminSecret: false, version: "0.13.0", compat: "ok", firstSeenAt: 1_000, lastSeenAt: 40_000, sessions: 142, live: 3 },
+      { key: "addr:10.4.0.52", state: "silent", name: "10.4.0.52", named: false, who: "Admin", credential: "admin secret", adminSecret: true, version: "0.9.2", compat: "outdated", firstSeenAt: 1_000, lastSeenAt: 1_000, sessions: 9, live: 0 },
+    ] as { key: string; state: string; name: string; named: boolean; who: string; credential: string | null; adminSecret: boolean; version: string; compat: string; firstSeenAt: number; lastSeenAt: number; sessions: number; live: number }[],
   };
   const json = (status: number, body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
   const row = (p: P) => ({ id: p.id, name: p.name, last4: "ab12", groupId: p.groupId, groupName: state.groups.find((g) => g.id === p.groupId)?.name ?? null, createdAt: 1, rotatedAt: null, revokedAt: p.revokedAt, lastReportAt: null, machines: [] });
@@ -78,10 +78,11 @@ function fakeServer(opts: { people?: number; enabled?: boolean; unlocked?: boole
     if (path === "/reporters" && method === "GET") {
       const st = url.searchParams.get("state") ?? "";
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
-      const rows = state.reporters.filter((r) => (!st || r.state === st) && (!q || r.name.toLowerCase().includes(q)));
+      const adminOnly = url.searchParams.get("admin") === "1";
+      const rows = state.reporters.filter((r) => (!st || r.state === st) && (!q || r.name.toLowerCase().includes(q)) && (!adminOnly || r.adminSecret));
       const counts = { all: state.reporters.length, reporting: 0, idle: 0, silent: 0, restart: 0 } as Record<string, number>;
       for (const r of state.reporters) counts[r.state]! += 1;
-      return json(200, { total: rows.length, page: 1, pageSize: 50, rows, counts, serverTime: 100_000 });
+      return json(200, { total: rows.length, page: 1, pageSize: 50, rows, counts, adminSecret: state.reporters.filter((r) => r.adminSecret).length, serverTime: 100_000, serverStartedAt: 50_000 });
     }
     if (path.startsWith("/reporters/")) {
       const key = decodeURIComponent(path.slice("/reporters/".length));
@@ -91,7 +92,7 @@ function fakeServer(opts: { people?: number; enabled?: boolean; unlocked?: boole
         state.reporters = state.reporters.filter((x) => x.key !== key);
         return json(200, { ok: true });
       }
-      return json(200, { ...r, kind: "mod", machineId: key.includes(":") ? null : key, source: "192.168.1.24", credential: "pdm_3f9a1c07b2e4", engineVersion: "2.1.299", recent: [{ id: "s1", name: "api-gateway", status: "running", lastSeenAt: 99_000, costUsd: 1.84 }], rejected: [{ t: 50_000, reason: "wrong token" }], serverTime: 100_000 });
+      return json(200, { ...r, kind: "mod", machineId: key.includes(":") ? null : key, source: "192.168.1.24", credential: "pdm_3f9a1c07b2e4", engineVersion: "2.1.299", recent: [{ id: "s1", name: "api-gateway", status: "running", lastSeenAt: 99_000, costUsd: 1.84 }], rejected: [{ t: 50_000, reason: "wrong token" }], serverTime: 100_000, serverStartedAt: 50_000 });
     }
     if (path === "/groups") return json(200, { total: 0, page: 1, pageSize: 50, rows: [] });
     if (path === "/log") return json(200, { total: 1, page: 1, pageSize: 50, rows: [{ id: 1, t: 1, kind: "unlock_failed", detail: "Wrong secret (1)", source: "10.0.0.1" }] });
@@ -455,8 +456,54 @@ describe("Reporters tab (#142)", () => {
     expect(rows[2]).toHaveTextContent("no machine id, matched by address 10.4.0.52");
     expect(rows[2]).toHaveTextContent("0.9.2 outdated");
     expect(screen.getByText(/does not mean the reporter is turned off/)).toBeInTheDocument();
+    expect(screen.getByText(/is what every reporter reads after this server restarts/)).toBeInTheDocument();
     const strip = screen.getByRole("group", { name: "Filter by state" });
     expect(within(strip).getByRole("button", { name: /Silent/ })).toHaveTextContent("1");
+  });
+
+  it("explains each row's state and an unnamed reporter on hover and on keyboard focus (issue #166)", async () => {
+    await openReporters();
+    const rows = within(screen.getByRole("table")).getAllByRole("row");
+    const silent = within(rows[2]!).getByText("Silent");
+    expect(silent).toHaveAttribute("tabindex", "0");
+    expect(silent).toHaveAttribute("title", expect.stringContaining("Last heard"));
+    const why = within(rows[2]!).getByText("no name set");
+    expect(why).toHaveAttribute("tabindex", "0");
+    expect(why).toHaveAttribute("title", expect.stringContaining("userName"));
+    expect(why).toHaveAttribute("title", expect.stringContaining("10.4.0.52"));
+    expect(within(rows[1]!).queryByText("no name set")).toBeNull();
+    fireEvent.click(within(rows[2]!).getByRole("button", { name: /Open details/ }));
+    expect(await screen.findByText("Why unnamed")).toBeInTheDocument();
+  });
+
+  it("warns about a reporter that uses the admin secret: a badge, a banner that filters, and a callout in the detail (issue #166)", async () => {
+    const state = await openReporters();
+    const rows = within(screen.getByRole("table")).getAllByRole("row");
+    expect(within(rows[1]!).queryByText("Admin secret")).toBeNull();
+    expect(within(rows[1]!).getByText("pdm_3f9a1c07b2e4")).toBeInTheDocument();
+    const badge = within(rows[2]!).getByText("Admin secret");
+    expect(badge).toHaveAttribute("tabindex", "0");
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Admin > People"));
+    expect(within(rows[2]!).getByText("Admin")).toBeInTheDocument();
+    const banner = screen.getByRole("status", { name: "Reporters using the admin secret" });
+    expect(banner).toHaveTextContent("1 reporter uses the admin secret.");
+    fireEvent.click(within(banner).getByRole("button", { name: "Show only these" }));
+    await waitFor(() => expect(state.calls.some((c) => c.includes("/reporters") && c.includes("admin=1"))).toBe(true));
+    await waitFor(() => expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(2));
+    expect(within(screen.getByRole("status", { name: "Reporters using the admin secret" })).getByRole("button", { name: "Show all reporters" })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("table")).getByRole("button", { name: /Open details/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This reporter is using the admin secret");
+    expect(alert).toHaveTextContent("/plugin configure podium-reporter");
+  });
+
+  it("shows no admin-secret warning when no reporter uses it", async () => {
+    const state = await openReporters();
+    state.reporters = state.reporters.map((r) => ({ ...r, adminSecret: false, credential: "pdm_3f9a1c07b2e4" }));
+    expect(screen.getByRole("status", { name: "Reporters using the admin secret" })).toBeInTheDocument();
+    // The next fetch (here, picking a state) comes back with no admin-secret reporter, and the banner goes.
+    fireEvent.click(within(screen.getByRole("group", { name: "Filter by state" })).getByRole("button", { name: /Silent/ }));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Reporters using the admin secret" })).toBeNull());
   });
 
   it("filters by state through the server, and searches after a pause", async () => {
