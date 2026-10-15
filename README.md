@@ -14,7 +14,7 @@ Two dashboards for Claude Code on one machine, served by one local server:
 New here? [docs/USER_GUIDE.md](docs/USER_GUIDE.md) walks through setup and reading the dashboard.
 
 Cost in Podium is an estimate from token counts and a price table. The table starts as Anthropic's list
-prices and you can change any price in Admin > Settings > Model prices. It is never a bill.
+prices and you can change any price in Admin > Model prices. It is never a bill.
 
 ## Run it
 
@@ -96,7 +96,7 @@ setup, you can also enter it in the mod's `token` option (see "Report a real ses
 (empty on purpose). Admin is switched off then, because nothing would protect it.
 
 **Admin and per-person tokens.** When several people report to one Podium, open **Admin** (the button in the
-top bar's upper right, or `#/admin`) and enter the admin secret. Add a person and Podium makes a token for
+top bar's upper right, or `#/admin`) and enter the admin secret. Create a user and Podium makes a token for
 them, shown once with the settings to paste: their name and the token. A token only works with the name it
 was made for, so a leaked token alone cannot claim someone else's name. From Admin you can also rotate or
 revoke a token, put people in groups (a label for arranging the console, nothing more), turn off reporting
