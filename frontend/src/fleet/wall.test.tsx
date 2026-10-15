@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, within, fireEvent, cleanup } from "@testing-library/react";
 import { FleetView } from "./FleetApp";
@@ -114,7 +116,7 @@ describe("session card", () => {
     expect(container.querySelector(".path")?.getAttribute("title")).toBe(project);
   });
 
-  it("level 1: amber badge, no red edge, no callout", () => {
+  it("level 1: amber badge, no red edge, no sentence", () => {
     const { container } = renderCard(makeSession({ blowouts: blow(1, 0, 1) }));
     const badge = container.querySelector(".blow")!;
     expect(badge.className).not.toContain("l2");
@@ -122,11 +124,13 @@ describe("session card", () => {
     expect(container.textContent).not.toContain("Likely losing context");
   });
 
-  it("level 2: red badge, red edge and the callout", () => {
+  it("level 2: red badge and red edge; the sentence is the context readout's tooltip, not card text (#144)", () => {
     const { container } = renderCard(makeSession({ blowouts: blow(0, 2, 2) }));
     expect(container.querySelector(".blow")!.className).toContain("l2");
     expect(container.querySelector(".card")!.className).toContain("risk");
-    expect(container.textContent).toContain("Context exceeded 2× (1 of 3 loops). Likely losing context");
+    expect(container.querySelector(".alert")).toBeNull();
+    expect(container.textContent).not.toContain("Likely losing context");
+    expect(container.querySelector(".z3 .ctx")!.getAttribute("title")).toContain("Context exceeded 2× (1 of 3 loops). Likely losing context");
   });
 
   it("agent strip: fork circle, done faded, failed outline, queued dashed, running blinks", () => {
@@ -148,28 +152,76 @@ describe("session card", () => {
 
   it("waiting and stale callouts", () => {
     const w = renderCard(makeSession({ status: "waiting", waitReason: "permission", waitNote: "Bash(npm run e2e)" }));
-    expect(w.container.querySelector(".alert")!.textContent).toBe("Waiting for your approval.");
+    expect(w.container.querySelector(".band")!.textContent).toBe("Waiting for your approval.");
     expect(w.container.textContent).not.toContain("Bash(npm run e2e)");
     cleanup();
     // A question arrives as a permission wait too; it reads as input everywhere (#68).
     const ask = renderCard(makeSession({ status: "waiting", waitReason: "permission", waitNote: 'AskUserQuestion([{"question":"Which?"}])' }));
-    expect(ask.container.querySelector(".alert")!.textContent).toBe("Waiting for your input.");
+    expect(ask.container.querySelector(".band")!.textContent).toBe("Waiting for your input.");
     cleanup();
     const q = renderCard(makeSession({ status: "waiting", waitReason: "input", waitNote: "Which branch should I use?" }));
-    expect(q.container.querySelector(".alert")!.textContent).toBe("Waiting for your input.");
+    expect(q.container.querySelector(".band")!.textContent).toBe("Waiting for your input.");
     expect(q.container.textContent).not.toContain("Which branch should I use?");
     cleanup();
     const s = renderCard(makeSession({ status: "stale", lastSeenAt: 2_000_000 - 38_000, dropAt: 2_000_000 + 37_000 }));
-    expect(s.container.textContent).toContain("Last heartbeat 0:38 ago. Goes away in 37 s.");
+    expect(s.container.textContent).toContain("Last heartbeat 0:38 ago. Goes away in 37s.");
   });
 
-  it("the heartbeat-lost message is one flex child, so the alert's gap cannot split the sentence (#87)", () => {
+  it("Remove is its own element laid over the right end of the band, so the countdown text cannot move it (#144)", () => {
+    const draw = (s = makeSession()) => render(<SessionCard s={s} now={2_000_000} config={CFG} entering={false} leaving={false} onOpen={() => {}} onRemove={() => {}} />);
+    const stale = draw(makeSession({ status: "stale", dropAt: 2_037_000 }));
+    expect(stale.container.querySelectorAll(".z3 .c")).toHaveLength(4);
+    expect(stale.container.querySelector(".card-slot > .remove-bar .remove")).not.toBeNull();
+    expect(stale.container.querySelector(".band .remove")).toBeNull();
+    cleanup();
+    const live = draw(makeSession({ status: "running" }));
+    expect(live.container.querySelector(".remove-bar")).toBeNull();
+  });
+
+  it("a countdown under a minute has no space before the s, so the monospace face cannot open a wide gap", () => {
+    const { container } = renderCard(makeSession({ status: "stale", lastSeenAt: 2_000_000 - 38_000, dropAt: 2_000_000 + 37_000 }));
+    const monos = [...container.querySelectorAll(".band .mono")].map((e) => e.textContent);
+    expect(monos).toEqual(["0:38", "37s"]);
+    expect(container.querySelector(".band")!.textContent).toBe("Last heartbeat 0:38 ago. Goes away in 37s.");
+  });
+
+  it("the status band is the last thing in every card, whatever the card holds (#144)", () => {
+    const cases = [
+      makeSession({ status: "running" }),
+      makeSession({ status: "running", plan: null, agents: [] }),
+      makeSession({ status: "waiting", waitReason: "input" }),
+      makeSession({ status: "stale", dropAt: 2_037_000 }),
+      makeSession({ status: "done" }),
+      makeSession({ status: "running", blowouts: blow(0, 2, 2), attached: false, hideAt: 2_100_000, reporter: "hooks" }),
+    ];
+    for (const s of cases) {
+      const { container } = renderCard(s);
+      const card = container.querySelector(".card")!;
+      expect(card.lastElementChild!.className).toContain("band");
+      expect(card.querySelectorAll(".band")).toHaveLength(1);
+      cleanup();
+    }
+  });
+
+  it("every status reads in the band, and a calm one is not 'hot'", () => {
+    const run = renderCard(makeSession({ status: "running" }));
+    expect(run.container.querySelector(".band")!.textContent).toBe("Running");
+    expect(run.container.querySelector(".band")!.className).not.toContain("hot");
+    cleanup();
+    const done = renderCard(makeSession({ status: "done" }));
+    expect(done.container.querySelector(".band")!.textContent).toBe("Done");
+    cleanup();
+    const stale = renderCard(makeSession({ status: "stale", dropAt: 2_037_000 }));
+    expect(stale.container.querySelector(".band")!.className).toBe("band stale hot");
+  });
+
+  it("the heartbeat-lost message is one flex child, so the band's gap cannot split the sentence (#87)", () => {
     const { container } = renderCard(makeSession({ status: "stale", lastSeenAt: 2_000_000 - 34_000, dropAt: 2_000_000 + 41_000 }));
-    const alert = container.querySelector(".alert.stale")!;
-    expect(alert.textContent).toBe("Last heartbeat 0:34 ago. Goes away in 41 s.");
-    // .alert is display: flex with a gap; every text run or element directly inside it gets that gap around it.
-    expect(alert.childNodes).toHaveLength(1);
-    expect(alert.firstChild!.nodeType).toBe(Node.ELEMENT_NODE);
+    const band = container.querySelector(".band.stale")!;
+    expect(band.textContent).toBe("Last heartbeat 0:34 ago. Goes away in 41s.");
+    // .band is display: flex with a gap; the icon and the sentence are its only children, and the sentence is one element.
+    expect(band.childNodes).toHaveLength(2);
+    expect(band.querySelector(".bl")!.textContent).toBe("Last heartbeat 0:34 ago. Goes away in 41s.");
   });
 
   it("a heartbeat-lost card counts down to the server's drop time, which can be later than the last heartbeat plus 75 s (#41)", () => {
@@ -180,7 +232,7 @@ describe("session card", () => {
 
   it("falls back to the lifecycle windows when the server sent no drop time", () => {
     const { container } = renderCard(makeSession({ status: "stale", lastSeenAt: 2_000_000 - 38_000, dropAt: null }));
-    expect(container.textContent).toContain("Goes away in 37 s.");
+    expect(container.textContent).toContain("Goes away in 37s.");
   });
 
   it("Remove is on a heartbeat-lost card only, and does not open the card (#41)", () => {
@@ -192,19 +244,21 @@ describe("session card", () => {
     expect(screen.queryByRole("button", { name: /^Remove / })).not.toBeInTheDocument();
     cleanup();
     const { container } = draw(makeSession({ id: "lost", name: "billing", status: "stale", dropAt: 2_037_000 }));
-    expect(container.textContent).toContain("Goes away in 37 s.");
+    expect(container.textContent).toContain("Goes away in 37s.");
     fireEvent.click(screen.getByRole("button", { name: "Remove billing from the fleet" }));
     expect(removed).toEqual(["lost"]);
     expect(opened).toEqual([]);
   });
 
-  it("footer keeps the cost, tokens and duration each in one unbreakable value (#18)", () => {
+  it("the readouts keep the cost, tokens, time and context each in one unbreakable value (#18, #144)", () => {
     const { container } = renderCard(makeSession({ costUsd: 8.55, context: { tokens: 283_200, window: 1_000_000, percent: 28 }, agents: [], startedAt: 2_000_000 - (15 * 3600 + 54 * 60) * 1000 }));
-    const values = [...container.querySelectorAll(".foot .v")].map((e) => e.textContent?.replace(/\s*·$/, ""));
-    expect(values).toHaveLength(3);
+    const labels = [...container.querySelectorAll(".z3 .k")].map((e) => e.textContent);
+    expect(labels).toEqual(["Cost", "Tokens", "Time", "Context"]);
+    const values = [...container.querySelectorAll(".z3 .v")].map((e) => e.textContent);
     expect(values[0]).toBe("$8.55");
-    expect(values[1]).toBe("283k tok");
+    expect(values[1]).toBe("283k");
     expect(values[2]).toMatch(/^15h\s?54m$/);
+    expect(values[3]).toBe("28%");
   });
 
   it("shows the no-plan text and plan progress", () => {
@@ -470,5 +524,23 @@ describe("wall columns (#145)", () => {
     measured(1600);
     const { container } = render(<FleetView state={stateFrom({ sessions: [makeSession()] })} />);
     expect(wallArea(container).style.getPropertyValue("--wall-cols")).toBe("2");
+  });
+});
+
+describe("card layout CSS (#144)", () => {
+  const css = readFileSync(resolve(process.cwd(), "src/fleet/fleet.css"), "utf8");
+  const rule = (sel: string) => css.split("\n").find((l) => l.startsWith(`${sel} {`)) ?? "";
+
+  it("spare height opens between the first two layers, so readouts and band stay together at the bottom", () => {
+    expect(rule(".podium .card.sc .z2")).toContain("margin-top: auto");
+    expect(rule(".podium .band")).not.toContain("margin-top");
+    expect(rule(".podium .card.sc .z3")).not.toContain("margin-top");
+  });
+
+  it("the band has a fixed minimum height, so Remove can be laid over its right end from the bottom edge", () => {
+    expect(rule(".podium .band")).toContain("min-height: 52px");
+    const bar = rule(".podium .card-slot.has-remove > .remove-bar");
+    expect(bar).toContain("position: absolute");
+    expect(bar).toContain("bottom: 1px");
   });
 });
