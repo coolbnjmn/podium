@@ -53,7 +53,7 @@ export function GroupsTab(props: {
   const rows = list.data?.rows ?? [];
   return (
     <>
-      <Section id="admin-create-group-h" title="Create group" help="A person belongs to one group at most. Groups only change how the console is arranged; they grant nothing.">
+      <Section id="admin-create-group-h" title="Create group" help="A person belongs to one group at most. Groups arrange the console, and the built-in Administrators group also lets its people open Admin with their own token.">
         <Panel>
           <form className="tool alone" onSubmit={create} autoComplete="off">
             <div className="f grow">
@@ -98,24 +98,33 @@ export function GroupsTab(props: {
                       <tr key={g.id}>
                         <td>
                           <span className="who">{g.name}</span>
+                          {g.builtIn && <span className="atag">built in</span>}
                         </td>
                         <td>
-                          {g.members.length ? (
+                          {g.members.length || g.builtIn ? (
                             <>
                               <span className="mchips">
+                                {g.builtIn && <span className="chip dashed" title="The admin secret is always a member">Admin (secret)</span>}
                                 {g.members.slice(0, 5).map((m) => (
                                   <span key={m} className="chip">{m}</span>
                                 ))}
                                 {g.members.length > 5 && <span className="hint">and {g.members.length - 5} more</span>}
                               </span>
-                              <span className="hint gap">{g.members.length} in total</span>
+                              <span className="hint gap">{g.builtIn ? `${g.members.length} ${g.members.length === 1 ? "person" : "people"} can also open Admin with their own token` : `${g.members.length} in total`}</span>
                             </>
                           ) : (
                             <span className="hint">No one yet. Pick this group for a person on the People page.</span>
                           )}
                         </td>
                         <td>
-                          {pending === g.id ? (
+                          {g.builtIn ? (
+                            <div className="acts">
+                              <button type="button" className="btn sm" disabled aria-describedby={`admin-grp-note-${g.id}`}>
+                                Delete
+                              </button>
+                              <span className="hint" id={`admin-grp-note-${g.id}`}>Built in. It cannot be renamed or deleted.</span>
+                            </div>
+                          ) : pending === g.id ? (
                             <div className="confirm">
                               <span>
                                 Delete? {g.members.length ? `${g.members.length} ${g.members.length === 1 ? "person goes" : "people go"} to No group.` : "No one is in it."}
