@@ -21,6 +21,8 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 ### Changed
 
 - **A documentation-only or chore PR is no longer a release.** `CLAUDE.md` and `CONTRIBUTING.md` now say that from 1.0.0 on only a PR that changes code or behavior carries a release. A PR that changes only documentation, comments, CI or chores bumps no version, adds its entry under `[Unreleased]` and gets no tag. The bump is chosen by what the PR changes, not by its issue's label, and the maintainer may bundle several issues into one release: each PR adds its entry under `[Unreleased]`, and a final release PR cuts the version once they have all merged. This replaces the 1.0.0 rule that made documentation-only PRs patch releases.
+- **The fleet store no longer keeps `lastMessageAt` (#278).** Nothing read it since #184 removed the "synced" counter. The field, its test assertion and the argument that fed it are gone; no behavior changes.
+- **The plan panel's empty state uses the shared sentence (#278).** It read "No plan reported. Agents were launched ad hoc, so only the agent tree is available."; it now reads "No plan reported. Agents were launched ad hoc.", as the card and the focus header do and as SPEC 7.x says. The user guide is updated.
 
 ## [1.0.1] - 2026-10-16
 
