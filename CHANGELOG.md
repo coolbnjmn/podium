@@ -14,6 +14,12 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-16
+
+### Changed
+
+- **The README opens with the problem Podium solves and a logo.** The lead-in now describes a session waiting on you with no way to tell which one, and presents Podium as a single pane of glass for one person or a whole team. The feature description became a short list under the screenshot, and "Run it" is now "Quick start". Adds `docs/images/podium-logo.png`. Documentation only; no behavior changes.
+
 ## [1.0.0] - 2026-10-16
 
 This is the first stable release. From here on every PR to `main` is its own release (see #241 below).
@@ -409,7 +415,8 @@ and a plugin you can install from a marketplace.
 - The project was renamed from `claude-dashboard` to `podium`
   (`eengelking/podium`). (PR #5)
 
-[Unreleased]: https://github.com/eengelking/podium/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/eengelking/podium/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/eengelking/podium/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/eengelking/podium/compare/v0.14.3...v1.0.0
 [0.14.3]: https://github.com/eengelking/podium/compare/v0.14.2...v0.14.3
 [0.14.2]: https://github.com/eengelking/podium/compare/v0.14.1...v0.14.2

@@ -1,23 +1,39 @@
-# podium
+<p align="center">
+  <img src="docs/images/podium-logo.png" alt="Podium" width="480">
+</p>
+
+**A Claude Code session is waiting on you...**
+
+Run a few sessions at once and it happens fast. One is stopped at a permission prompt. One has filled its
+context window. A subagent failed ten minutes ago and nothing told you. The only way to find out is to
+click through every terminal, and that takes more effort than the work itself.
+
+Podium is a single pane of glass for Claude Code. Whether it's just you or your whole team, every session
+shows up in one browser tab, so you can see what all of them are doing at a glance. Each session appears
+within about two seconds of its first prompt and leaves when it ends, with no refresh.
 
 ![Podium showing nine simulated Claude Code sessions: running, stale and failing orchestrators, context blowouts, and the activity feed](docs/images/podium-chaos.png)
 
-Two dashboards for Claude Code on one machine, served by one local server:
+For every session you see:
 
-- **Podium** (`#/`, the default): a live fleet console. Every Claude Code session running with the
-  Podium reporter mod shows up in one browser tab within about two seconds of its first prompt, with its model and effort,
-  its plan, the agents it launched (subagents and forks), what each costs, how full each context window
-  is, how often a window blew out, why anything failed, and which git branch or worktree it works in.
-  Sessions appear when they start and leave when they end, with no refresh. Podium watches; the one thing it
-  can send is an answer to a session that waits on you (a question, a plan, a tool's permission prompt, a message,
-  `/clear` or `/compact`), and only once the server's Admin and the session's owner have both turned that on.
+- its model, effort and plan, and the git branch or worktree it works in
+- the agents it launched (subagents and forks), and what each one costs
+- how full each context window is, and how often one blew out
+- why anything failed
+
+Podium watches. The one thing it can send is an answer to a session that waits on you (a question, a plan,
+a tool's permission prompt, a message, `/clear` or `/compact`), and only once the server's Admin and the
+session's owner have both turned that on. It never types into a terminal.
+
+Run it for yourself on one machine, or point a whole team's sessions at one server and the console groups
+the wall by person. The Claude Code mod, `podium-reporter`, sends the data.
 
 New here? [docs/USER_GUIDE.md](docs/USER_GUIDE.md) walks through setup and reading the dashboard.
 
 Cost in Podium is an estimate from token counts and a price table. The table starts as Anthropic's list
 prices and you can change any price in Admin > Model prices. It is never a bill.
 
-## Run it
+## Quick start
 
 Requires Node 24 and npm.
 
