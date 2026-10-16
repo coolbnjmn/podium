@@ -214,6 +214,7 @@ body.modal-open { overflow: hidden; }
 .out b { font-weight: 600; }
 .out .od { grid-column: 2; color: var(--ink2); font-size: 12.5px; }
 .out .od q { color: var(--ink); font-weight: 600; quotes: none; }
+.out .od .nt { display: block; margin-top: 6px; color: var(--warn-text); font-weight: 600; }
 .out.ok .oi { color: var(--good-text); } .out.info .oi { color: var(--deleg-text); } .out.bad .oi { color: var(--crit-text); } .out.wait .oi { color: var(--warn-text); }
 .out .acts { grid-column: 2; display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .spin { width: 14px; height: 14px; border: 2px solid var(--axis); border-top-color: var(--warn); border-radius: 50%; animation: spin .9s linear infinite; }
@@ -263,6 +264,36 @@ body.modal-open { overflow: hidden; }
 .levels li b { font-family: var(--font-mono); font-weight: 500; color: var(--ink); }
 @media (max-width: 560px) { .levels li { grid-template-columns: minmax(0, 1fr); gap: 0; } }
 
+/* signing in: the form in the answer panel, and the top bar once signed in */
+.signnote { font-size: 12.5px; color: var(--ink2); margin: 0 0 10px; padding: 7px 10px; border: 1px solid var(--grid); border-radius: 6px; background: var(--bg); }
+.signlead { font-size: 12.5px; color: var(--ink2); margin: -4px 0 12px; max-width: 70ch; }
+.signin { display: grid; grid-template-columns: 70px minmax(0, 300px); gap: 8px 12px; align-items: center; margin-bottom: 10px; }
+.signin label { font-size: 12.5px; font-weight: 600; }
+.signin input { width: 100%; font-size: 13px; background: var(--bg); border: 1px solid var(--axis); border-radius: 6px; padding: 6px 9px; }
+.signin input.mono { font-family: var(--font-mono); }
+.signin input:disabled { opacity: .5; cursor: not-allowed; }
+.signerr { font-size: 12.5px; color: var(--crit-text); margin: 0 0 10px; }
+@media (max-width: 560px) { .signin { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+.tb { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; }
+.tb-brand { font-weight: 700; font-size: 14px; margin-right: 4px; }
+.tb-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--ink2); }
+.tb-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.tb-sp { flex: 1; }
+.tb-sep { align-self: stretch; width: 1px; min-height: 22px; background: var(--axis); margin: 0 4px; }
+button.tb-btn { font-size: 12.5px; color: var(--ink); cursor: pointer; }
+button.tb-btn:hover { background: var(--sel); }
+.modal.sm { width: min(440px, 100%); height: auto; }
+.sm .sbody { padding: 14px 18px 4px; }
+.sm .sfoot { display: flex; align-items: center; gap: 8px; padding: 10px 18px 14px; flex-wrap: wrap; }
+.sm .sfoot .grow { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); }
+.sm .signin { grid-template-columns: 70px minmax(0, 1fr); }
+.tb-btn { padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); }
+#tbMe { display: inline-flex; align-items: center; gap: 8px; }
+#tbMe:empty { display: none; }
+.tb-me { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); }
+.tb-me b { color: var(--ink); font-weight: 600; }
+.signrules { margin-top: 14px; max-width: 80ch; }
+
 /* gallery: the modal drawn once per case, on a stand-in for the blurred page */
 .casenav { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 20px; }
 .casenav a { text-decoration: none; }
@@ -279,8 +310,6 @@ body.modal-open { overflow: hidden; }
 .stage .mpad { height: 14px; }
 @media (max-width: 560px) { .stage { padding: 10px; } }
 
-.tests { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 12.5px; color: var(--ink2); max-width: 80ch; }
-.tests b { color: var(--ink); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -299,7 +328,7 @@ body.modal-open { overflow: hidden; }
 <div id="app">
 <div class="wrap">
   <h1>Respond to a waiting session from Podium</h1>
-  <p class="note">When a session stops to ask something, the amber band gets a <b>Respond</b> button. It opens the Activity modal, where you can answer the question, approve or reject a plan, allow or deny a tool, or send a new message or <code>/clear</code>. The answer goes to the session through podium-reporter. The terminal or desktop app still works the whole time, and whichever answers first wins. Section 3 shows the modal in every case. To click through one yourself, pick a kind of wait and a state, then press Respond on the card.</p>
+  <p class="note">When a session stops to ask something, the amber band gets a <b>Respond</b> button. It opens the Activity modal, where you can answer the question, approve or reject a plan, allow or deny a tool, or send a new message or <code>/clear</code>. The answer goes to the session through podium-reporter, and only after you sign in with your name and token (section 6). The terminal or desktop app still works the whole time, and whichever answers first wins. Section 3 shows the modal in every case. To click through one yourself, pick a kind of wait and a state, then press Respond on the card.</p>
 
   <div class="controls" role="group" aria-label="Mockup controls">
     <div class="row" role="radiogroup" aria-label="What the session waits on">
@@ -313,6 +342,7 @@ body.modal-open { overflow: hidden; }
       <span class="rl">State</span>
       <label class="seg"><input type="radio" name="edge" value="ready" checked> Ready to answer</label>
       <label class="seg"><input type="radio" name="edge" value="sending"> Sent, not confirmed yet</label>
+      <label class="seg"><input type="radio" name="edge" value="nottaken"> Approval not taken</label>
       <label class="seg"><input type="radio" name="edge" value="terminal"> Answered in the terminal</label>
       <label class="seg"><input type="radio" name="edge" value="other"> Answered by someone else</label>
       <label class="seg"><input type="radio" name="edge" value="closed"> Closed in the session</label>
@@ -320,6 +350,11 @@ body.modal-open { overflow: hidden; }
       <label class="seg"><input type="radio" name="edge" value="old"> Reporter can't answer</label>
       <label class="seg"><input type="radio" name="edge" value="off"> Turned off</label>
       <label class="seg"><input type="radio" name="edge" value="owner"> Someone else's session</label>
+    </div>
+    <div class="row" role="radiogroup" aria-label="Signed in">
+      <span class="rl">Signed in</span>
+      <label class="seg"><input type="radio" name="signed" value="yes" checked> As Ed</label>
+      <label class="seg"><input type="radio" name="signed" value="no"> Signed out</label>
     </div>
     <div class="row"><span class="rl">Theme</span><button class="chipbtn" id="theme" type="button">Switch theme</button></div>
   </div>
@@ -355,6 +390,7 @@ body.modal-open { overflow: hidden; }
       <ul>
         <li>Shown only while the session waits on you, and only when every switch in section 5 is on.</li>
         <li>One name in every case: <b>Respond</b>. The modal says what kind of answer is needed.</li>
+        <li>Signed out, it is shown on every waiting card and leads to signing in (section 6).</li>
         <li>Not on a card that waits on background work (blue band), since nothing there needs you.</li>
         <li>The card's own click target is unchanged: it still opens the orchestrator page. Respond opens the modal straight from the wall.</li>
       </ul>
@@ -387,9 +423,10 @@ body.modal-open { overflow: hidden; }
   <p class="note">Each frame is the modal as it opens from Respond in that case, with the feed cut to its last few rows. The page behind it is blurred in the real thing. To click through one, use the controls at the top and press Respond on the card.</p>
   <nav class="casenav" id="caseNav" aria-label="Jump to a case"></nav>
   <div class="gallery" id="gallery"></div>
+  <p class="note">When the server refuses an answer for any other reason, the message box shows one line instead of the server's own words: "This session doesn't take that from Podium now. Answer it in the terminal." (a kind the session no longer takes), "20 messages are already waiting for this session. Send more once it has caught up.", "Podium won't take this from you: it isn't your session, or responding was turned off.", or "Podium couldn't send that. Try again."</p>
 
   <h2 class="s">4. What the terminal shows</h2>
-  <p class="note">podium-reporter writes one line above the prompt while the question is also open in Podium, and one line in the transcript when it was answered from there, naming who answered. Someone at the terminal is never surprised by an answer they didn't give.</p>
+  <p class="note">podium-reporter writes one line above the prompt while the question is also open in Podium, and one line in the transcript when it was answered from there, naming who answered. Someone at the terminal is never surprised by an answer they didn't give. A Deny sent with no reason reaches Claude as "Denied from Podium.", and No, keep planning with nothing typed as "No, keep planning."</p>
   <div class="terms">
     <div>
       <div class="term" id="termOpen"></div>
@@ -399,7 +436,12 @@ body.modal-open { overflow: hidden; }
       <div class="term" id="termDone"></div>
       <p class="cap">After an answer from Podium. The dialog closes by itself.</p>
     </div>
+    <div>
+      <div class="term" id="termMore"></div>
+      <p class="cap">The other answers from Podium: a Deny, a plan sent back, and a message in place of an answer.</p>
+    </div>
   </div>
+  <p class="note">While responding is on and the session is idle, podium-reporter writes <b>messages from Podium are on.</b> once, the first time the session is idle with messages from Podium allowed. It writes it again after <code>/clear</code>, which empties the transcript, and after responding was turned off and back on.</p>
 
   <h2 class="s">5. The switches</h2>
   <p class="note">Off by default, and every one is needed. The Admin decides whether this server may send anything; the person running the session decides how much their session accepts, and can always say no. Answering also needs the activity feed, which already has both kinds of switch.</p>
@@ -410,27 +452,42 @@ body.modal-open { overflow: hidden; }
       <span class="fc"><button class="sw" type="button" role="switch" aria-checked="false" aria-label="Respond from Podium" id="flagSw"></button></span>
     </div>
     <div class="flag">
-      <span class="ft">podium-reporter option <code>respond</code></span>
+      <span class="ft">podium-reporter option <code>respond</code>, titled Respond from Podium</span>
       <span class="fd">Set in Claude Code with <code>/plugin configure podium-reporter@eengelking-marketplace</code>. What this session accepts from Podium:
         <ul class="levels">
           <li><b>off</b><span>Nothing. The default.</span></li>
           <li><b>questions</b><span>Answers to questions, and new messages while idle.</span></li>
           <li><b>questions-and-plans</b><span>The above, plus approving or rejecting a plan.</span></li>
-          <li><b>everything</b><span>The above, plus allowing or denying a tool (allow once only), and <code>/clear</code>, <code>/compact</code>, <code>/model</code>, <code>/effort</code>.</span></li>
+          <li><b>everything</b><span>The above, plus allowing or denying a tool (allow once only), and <code>/clear</code>, <code>/compact</code>.</span></li>
         </ul>
+        In Claude Code's settings the option's description is this list on one line, each level followed by its text.
       </span>
       <span class="fc"><select aria-label="respond option" id="optSel"><option>off</option><option>questions</option><option>questions-and-plans</option><option selected>everything</option></select></span>
     </div>
   </div>
 
-  <h2 class="s">6. Still to test before any code</h2>
-  <ol class="tests">
-    <li><b>Answering a question from a mod.</b> Whether a <code>tool.call</code> hook on AskUserQuestion can return the answer and close the open terminal dialog at the same moment.</li>
-    <li><b>Messages in place of an answer.</b> How a message sent in place of an answer, and a typed answer, reach Claude (the tool's <code>response</code> and <code>answers</code> fields).</li>
-    <li><b>Plan approval.</b> Whether the mode can be chosen on approval, and whether "keep planning" can carry your feedback.</li>
-    <li><b><code>/clear</code> from a mod.</b> Whether <code>$.command.run</code> runs it, and how Podium follows the session to its new id.</li>
-    <li><b>Tool permissions.</b> Whether a permission prompt can be raced the same way, and with what reply.</li>
-  </ol>
+  <h2 class="s">6. Signing in</h2>
+  <p class="note">Anyone can watch, but answering needs Podium to know who you are. You sign in with the same name and token your podium-reporter uses, from either of two places: Respond, when you're signed out (section 3, "Signing in"), or Sign in at the far right of the top bar, past a divider after History, Hide top bar and Admin. Signed in, that spot shows your name and Sign out.</p>
+  <div class="tb" id="topbar" aria-label="Top bar">
+    <span class="tb-brand">Podium</span><span class="tb-pill">Fleet</span><span class="tb-pill"><i class="dot"></i>Live · 4 reporters</span>
+    <span class="tb-sp"></span>
+    <span class="tb-btn">History</span><span class="tb-btn">Hide top bar</span><span class="tb-btn">Admin</span>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <span id="tbMe"></span>
+  </div>
+  <p class="cap" id="tbCap"></p>
+  <figure class="case" id="case-s-dialog"><figcaption><b>Sign in from the top bar</b><span>The same form as in the modal, in a small dialog of its own. It closes once you're signed in and leaves the page as it was.</span></figcaption><div class="stage" inert id="signDlgStage"></div></figure>
+  <div class="aside-note signrules">
+    <h3>Rules for signing in</h3>
+    <ul>
+      <li><b>Name</b> is your name as Admin &gt; People shows it, the same as the reporter's <code>userName</code> option. Upper or lower case doesn't matter.</li>
+      <li><b>Token</b> is your own token, the reporter's <code>token</code> option. Someone in Administrators signs in the same way and can respond to every session. The admin secret signs in with the name <b>Admin</b>.</li>
+      <li>One sign-in per browser, shared by its tabs. It ends after 12 hours without use, on Sign out, when the server restarts, and when your token is revoked or rotated.</li>
+      <li>The page never keeps your token. Five wrong tries from one address lock signing in for 15 minutes, counted together with wrong Admin unlocks.</li>
+      <li>Signed out, every card still shows Respond, because Podium doesn't know which sessions are yours. Signed in, other people's sessions show Respond dimmed, with their name.</li>
+      <li>Sign in and Sign out stay at the far right of the top bar, after the divider, so the buttons before it don't move when you sign in or out.</li>
+    </ul>
+  </div>
 </div>
 </div>
 
@@ -456,6 +513,10 @@ body.modal-open { overflow: hidden; }
       <div class="compose" id="compose"></div>
     </div>
   </div>
+</div>
+
+<div class="scrim" id="signScrim" hidden>
+  <div class="modal sm" role="dialog" aria-modal="true" aria-labelledby="sTitle" id="signDlg"></div>
 </div>
 
 <script>
@@ -514,7 +575,7 @@ const FEED_KIND = {
 
 // Every piece of the modal is a pure function of a state object `st`, so the live modal and the gallery of cases
 // draw from the same code. `st.p` prefixes ids and radio names, so the gallery's copies never collide with the live one.
-const BASE = { kind: "question", edge: "ready", tab: 0, answers: {}, other: {}, plan: "auto", planFb: "", perm: "allow", permFb: "", draft: "", sent: [], confirmClear: false, ta: 0, submitted: false, p: "", feed: null, tail: 0 };
+const BASE = { kind: "question", edge: "ready", tab: 0, answers: {}, other: {}, plan: "auto", planFb: "", perm: "allow", permFb: "", draft: "", sent: [], confirmClear: false, ta: 0, submitted: false, p: "", feed: null, tail: 0, signed: true, signErr: "", expired: false, signName: "", signTok: "" };
 let S = { ...BASE, answers: {}, other: {}, sent: [] };
 
 /* ---------- the band on the card and the page ---------- */
@@ -526,9 +587,11 @@ function renderBands() {
     const sub = $("[data-sub]", b); if (sub) sub.textContent = k.sub;
     const btn = $("[data-respond]", b), why = $("[data-why]", b);
     btn.hidden = off;
-    btn.disabled = S.edge === "owner";
-    btn.title = S.edge === "owner" ? "Only Alex, who owns this session, or an Admin can respond." : "";
-    why.hidden = S.edge !== "owner";
+    // Signed out, Podium doesn't know whose session this is, so the button stays live and leads to signing in.
+    const notYours = S.edge === "owner" && S.signed;
+    btn.disabled = notYours;
+    btn.title = notYours ? "Only Alex, who owns this session, or an Admin can respond." : "";
+    why.hidden = !notYours;
     why.textContent = "Alex's session";
     const n = $("[data-count]", b); n.textContent = k.count; n.hidden = !k.count;
   });
@@ -544,7 +607,7 @@ function feedHTML(st) {
     return `<li class="txt"><span class="at">${at}</span><span class="k" title="Text">${icon("text", 12)}</span><span class="body">${esc(text)}</span></li>`;
   });
   for (const m of st.sent) {
-    rows.push(`<li class="you"><span class="at">${m.at}</span><span class="k" title="Sent from Podium">${icon("you", 12)}</span><span class="body"><span class="who">You, from Podium:</span> ${esc(m.text)}${m.note ? ` <span class="q">${esc(m.note)}</span>` : ""}</span></li>`);
+    rows.push(`<li class="you"><span class="at">${m.at}</span><span class="k" title="Sent from Podium">${icon("you", 12)}</span><span class="body"><span class="who">${m.who ? esc(m.who) : "You"}, from Podium:</span> ${esc(m.text)}${m.note ? ` <span class="q">${esc(m.note)}</span>` : ""}</span></li>`);
     if (m.then) rows.push(`<li class="txt"><span class="at">${m.thenAt}</span><span class="k" title="Text">${icon("text", 12)}</span><span class="body">${esc(m.then)}</span></li>`);
   }
   if (st.tail) rows = rows.slice(-st.tail);
@@ -574,15 +637,29 @@ const WHAT = { question: "question", plan: "plan", permission: "request", idle: 
 function askParts(st) {
   const k = KIND[st.kind];
   const r = { hidden: st.kind === "idle" || st.edge === "off" || st.edge === "old", lead: k.lead, ago: st.kind === "permission" ? "asked 0:54 ago" : "asked 0:42 ago", also: "Also open in the terminal", body: "", foot: "" };
+  // Signed out, the panel asks you to sign in first, even for a turn that ended, since sending a message needs it too.
+  if (!st.signed && st.edge !== "off" && st.edge !== "old") {
+    r.hidden = false;
+    if (st.kind === "idle") r.ago = r.also = "";
+    signInParts(st, r);
+    return r;
+  }
   if (r.hidden) return r;
   const what = WHAT[st.kind];
-  if (st.edge === "sending" || st.submitted) {
-    r.also = "";
-    r.body = outcome("wait", `<span class="spin" role="img" aria-label="Sending"></span>`, "Sending to claude-dashboard.", `Your answer, <q>${esc(answerSummary(st))}</q>, goes out with the reporter's next check-in. It counts as answered once the session confirms it, usually within 2 seconds.`);
+  if (st.edge === "sending" || st.edge === "nottaken" || st.submitted) {
+    // An approval Claude Code didn't take keeps the sending frame, adds one line, and leaves the ask open.
+    const approval = (st.kind === "plan" && st.plan !== "keep") || (st.kind === "permission" && st.perm === "allow");
+    const notTaken = st.edge === "nottaken" && approval && !st.submitted;
+    if (!notTaken) r.also = "";
+    r.body = outcome("wait", `<span class="spin" role="img" aria-label="Sending"></span>`, "Sending to claude-dashboard.", `Your answer, <q>${esc(answerSummary(st))}</q>, goes out with the reporter's next check-in. It counts as answered once the session confirms it, usually within 2 seconds.${notTaken ? `<span class="nt">Claude Code didn't take this approval. Approve it in the terminal.</span>` : ""}`);
     r.foot = `<span class="grow">If the terminal answers first, that answer stands and this one is dropped.</span>`;
   } else if (st.edge === "terminal") {
     r.also = "";
-    r.body = outcome("info", icon("info"), "Answered in the terminal at 12:23.", `The answer there was <q>${esc(st.kind === "question" ? "25/50/100, default 50; Keep it, page within the day; The page number" : st.kind === "plan" ? "Yes, manually approve edits" : "Allow once")}</q>. Nothing from here was sent, and your draft was dropped.`);
+    // The mod can't see which plan option the terminal picked, so an approval there names no mode.
+    const there = st.kind === "plan"
+      ? (st.termPlan === "keep" ? "The answer there was <q>No, keep planning</q>." : "The plan was approved there.")
+      : `The answer there was <q>${esc(st.kind === "question" ? "25/50/100, default 50; Keep it, page within the day; The page number" : st.termPerm === "deny" ? "Denied" : "Allowed")}</q>.`;
+    r.body = outcome("info", icon("info"), "Answered in the terminal at 12:23.", `${there} Nothing from here was sent, and your draft was dropped.`);
     r.foot = `<span class="grow">The session has moved on.</span>`;
   } else if (st.edge === "other") {
     r.also = "";
@@ -590,7 +667,7 @@ function askParts(st) {
     r.foot = `<span class="grow">Only the first answer to a ${what} is accepted.</span>`;
   } else if (st.edge === "closed") {
     r.also = "";
-    r.body = outcome("bad", icon("x"), `This ${what} was closed in the session before you answered.`, "Someone pressed Esc in the terminal at 12:23, so Claude stopped waiting. Nothing was sent. Send a message below if you want to pick it up again.");
+    r.body = outcome("bad", icon("x"), `This ${what} was closed in the session before you answered.`, "It was closed without an answer at 12:23, so Claude stopped waiting. Nothing was sent. Send a message below if you want to pick it up again.");
     r.foot = `<span class="grow">The session is now waiting for a new message.</span>`;
   } else if (st.edge === "undelivered") {
     r.also = "Last check-in 0:45 ago";
@@ -603,6 +680,30 @@ function askParts(st) {
   else if (st.kind === "plan") planParts(st, r);
   else permissionParts(st, r);
   return r;
+}
+
+// The form is the same in the modal's panel and in the top bar's dialog; `p` keeps their ids apart.
+const SIGN_LEAD = `Use your name and token, the same ones as your podium-reporter's <code>userName</code> and <code>token</code> options. Only the session's owner, or an Admin, can respond.`;
+const SIGN_HINT = "Signs in this browser. An Admin can use the name Admin with the admin secret.";
+function signFields(st, p) {
+  const locked = st.signErr === "locked";
+  const err = { wrong: "That name and token don't match. Check the userName and token options in podium-reporter.", empty: "Enter your name and your token.", locked: "Too many wrong tries from this address. Try again in 15 minutes." }[st.signErr];
+  return `<div class="signin">
+      <label for="${p}signName">Name</label><input id="${p}signName" type="text" autocomplete="username" spellcheck="false" value="${esc(st.signName)}" ${locked ? "disabled" : ""}>
+      <label for="${p}signTok">Token</label><input id="${p}signTok" class="mono" type="password" autocomplete="off" value="${esc(st.signTok)}" ${locked ? "disabled" : ""}>
+    </div>
+    ${err ? `<div class="signerr" role="alert">${err}</div>` : ""}`;
+}
+const signBtn = (st, p) => `<button class="btn pri" type="button" data-act="signin" data-p="${p}" ${st.signErr === "locked" ? "disabled" : ""}>Sign in</button>`;
+function signInParts(st, r) {
+  r.body = `${st.expired ? `<p class="signnote">You were signed out. A sign-in ends after 12 hours without use, when the server restarts, and when your token changes.</p>` : ""}<p class="qh">Sign in to respond</p>
+    <p class="signlead">${SIGN_LEAD}</p>${signFields(st, st.p)}`;
+  r.foot = `<span class="grow">${SIGN_HINT}</span>${signBtn(st, st.p)}`;
+}
+function signDialogHTML(st, p) {
+  return `<div class="mh"><div class="ttl"><h2 id="${p}sTitle">Sign in</h2><div class="sub2">To answer and message your own sessions</div></div><button type="button" class="x" data-act="sign-close" aria-label="Close (Esc)">&#x2715;</button></div>
+    <div class="sbody"><p class="signlead">${SIGN_LEAD}</p>${signFields(st, p)}</div>
+    <div class="sfoot"><span class="grow">${SIGN_HINT}</span>${signBtn(st, p)}</div>`;
 }
 
 function questionParts(st, r) {
@@ -629,6 +730,14 @@ function questionParts(st, r) {
 
 function planParts(st, r) {
   const p = st.p;
+  // Where Claude Code doesn't run podium-reporter's permission hooks, only "No, keep planning" can be sent from here.
+  if (st.backOnly) {
+    r.body = `<p class="qh">Ready to code?</p><p class="planfile">~/.claude/plans/wise-beaming-token.md</p><div class="planbox">${PLAN}</div>
+    <p class="signnote">This session can't take an approval from Podium, because Claude Code doesn't run podium-reporter's permission hooks on this computer. That happens where an organization manages Claude Code. Approve the plan in the terminal, or send it back from here.</p>
+    <fieldset class="opts" aria-label="Send the plan back"><label class="opt"><input type="radio" name="${p}plan" value="keep" checked id="${p}plan-keep"><span class="ol">No, keep planning</span><textarea id="${p}planFb" rows="2" placeholder="Tell Claude what to change" aria-label="Tell Claude what to change">${esc(st.planFb)}</textarea></label></fieldset>`;
+    r.foot = `<span class="grow">Editing the plan text (Ctrl+G) is only in the terminal.</span><button class="btn pri" type="button" data-act="submit">Send feedback</button>`;
+    return;
+  }
   const o = (v, label, d) => `<label class="opt"><input type="radio" name="${p}plan" value="${v}" ${st.plan === v ? "checked" : ""} id="${p}plan-${v}"><span class="ol">${label}</span>${d ? `<span class="od">${d}</span>` : ""}${v === "keep" && st.plan === "keep" ? `<textarea id="${p}planFb" rows="2" placeholder="Tell Claude what to change" aria-label="Tell Claude what to change">${esc(st.planFb)}</textarea>` : ""}</label>`;
   r.body = `<p class="qh">Ready to code?</p><p class="planfile">~/.claude/plans/wise-beaming-token.md</p><div class="planbox">${PLAN}</div>
     <fieldset class="opts" aria-label="Approve the plan">${o("auto", "Yes, and use auto mode", "Claude decides which tools need asking.")}${o("edits", "Yes, auto-accept edits", "File edits run without asking; commands still ask.")}${o("manual", "Yes, manually approve edits", "Every edit asks first.")}${o("keep", "No, keep planning", "")}</fieldset>`;
@@ -637,25 +746,34 @@ function planParts(st, r) {
 
 function permissionParts(st, r) {
   const p = st.p;
-  r.body = `<p class="qh">Bash wants to run a command</p><div class="cmd">git push -u origin issue/195-history-pages</div><p class="cmdd">Push the branch to GitHub</p>
+  // A command cut to fit can't be allowed from here, since the person can't see all of it: only Deny is offered.
+  const deny = st.perm === "deny" || st.cut;
+  const cmd = st.cut ? "for f in $(git ls-files 'src/**/*.ts'); do npx prettier --check \"$f\" &amp;&amp; ... [cut off at 20,000 characters]" : "git push -u origin issue/195-history-pages";
+  // A tool other than Bash: its name leads, and its input shows as it came, with no description line.
+  const other = st.tool && st.tool !== "Bash";
+  const head = other ? `<p class="qh">${esc(st.tool)} wants your permission</p><div class="cmd">${esc(JSON.stringify({ file_path: "/Users/dev/claude-dashboard/docs/USER_GUIDE.md", content: "# User guide\n..." }, null, 2))}</div>`
+    : `<p class="qh">Bash wants to run a command</p><div class="cmd">${cmd}</div><p class="cmdd">${st.cut ? "Check formatting file by file" : "Push the branch to GitHub"}</p>`;
+  r.body = `${head}
+    ${st.cut ? `<p class="signnote">This command is too long to show in full here, so it can only be allowed in the terminal. You can still deny it from here.</p>` : ""}
     <fieldset class="opts" aria-label="Allow or deny">
-      <label class="opt"><input type="radio" name="${p}perm" value="allow" ${st.perm === "allow" ? "checked" : ""} id="${p}perm-allow"><span class="ol">Allow once</span><span class="od">Runs this command now. The next one asks again.</span></label>
-      <label class="opt"><input type="radio" name="${p}perm" value="deny" ${st.perm === "deny" ? "checked" : ""} id="${p}perm-deny"><span class="ol">Deny</span><span class="od">Claude is told no and keeps going.</span>${st.perm === "deny" ? `<textarea id="${p}permFb" rows="2" placeholder="Tell Claude why, or what to do instead (optional)" aria-label="Tell Claude why">${esc(st.permFb)}</textarea>` : ""}</label>
+      ${st.cut ? "" : `<label class="opt"><input type="radio" name="${p}perm" value="allow" ${!deny ? "checked" : ""} id="${p}perm-allow"><span class="ol">Allow once</span><span class="od">${other ? `Lets ${esc(st.tool)} run this once. The next one asks again.` : "Runs this command now. The next one asks again."}</span></label>`}
+      <label class="opt"><input type="radio" name="${p}perm" value="deny" ${deny ? "checked" : ""} id="${p}perm-deny"><span class="ol">Deny</span><span class="od">Claude is told no and keeps going.</span>${deny ? `<textarea id="${p}permFb" rows="2" placeholder="Tell Claude why, or what to do instead (optional)" aria-label="Tell Claude why">${esc(st.permFb)}</textarea>` : ""}</label>
     </fieldset>`;
-  r.foot = `<span class="grow">"Always allow" changes the session's rules, so it is only in the terminal.</span><button class="btn ${st.perm === "deny" ? "bad" : "pri"}" type="button" data-act="submit">${st.perm === "deny" ? "Deny" : "Allow once"}</button>`;
+  r.foot = `<span class="grow">"Always allow" changes the session's rules, so it is only in the terminal.</span><button class="btn ${deny ? "bad" : "pri"}" type="button" data-act="submit">${deny ? "Deny" : "Allow once"}</button>`;
 }
 
 /* ---------- the message box ---------- */
 const COMMANDS = [
   { name: "/clear", desc: "Start over with an empty conversation" },
-  { name: "/compact", desc: "Summarize the conversation to free context" },
-  { name: "/model", desc: "Switch model, for example /model sonnet" },
-  { name: "/effort", desc: "Set effort, for example /effort high" }
+  { name: "/compact", desc: "Summarize the conversation to free context" }
 ];
 function composeHTML(st) {
   if (st.edge === "off") return `<div class="offnote"><b>Responding from Podium is turned off.</b><span>The Admin's Respond from Podium switch, this session's <code>respond</code> option, or the activity feed is off. Answer in the terminal or desktop app. Admin &gt; Settings &gt; Feature flags has the server's switch.</span></div>`;
+  if (st.edge === "old" && st.why === "managed") return `<div class="offnote"><b>This can't be answered from Podium.</b><span>Claude Code doesn't run podium-reporter's permission hooks on this computer, which happens where an organization manages Claude Code. Answer it in the terminal. Questions and messages still work from here.</span></div>`;
+  if (st.edge === "old" && st.why === "hooks") return `<div class="offnote"><b>This session can't be answered from Podium.</b><span>It reports through the settings hooks, which can't take an answer. Answer in the terminal or desktop app.</span></div>`;
+  if (st.edge === "old" && st.why === "print") return `<div class="offnote"><b>This session can't be answered from Podium.</b><span>It runs with <code>claude -p</code>, which can't take an answer from Podium.</span></div>`;
   if (st.edge === "old") return `<div class="offnote"><b>This session can't be answered from Podium.</b><span>It reports with podium-reporter 0.13.0. Responding needs a newer reporter with the <code>respond</code> option on: run <code>claude plugin update podium-reporter@eengelking-marketplace</code>, then <code>/reload-plugins</code> in that session. Sessions reported by the settings hooks or run with <code>claude -p</code> can't be answered at all.</span></div>`;
-  if (st.edge === "owner") return "";
+  if (st.edge === "owner" || !st.signed) return "";
   const pending = st.kind !== "idle" && st.edge === "ready" && !st.submitted;
   const val = st.draft;
   const slash = val.startsWith("/") ? val.split(/\s/)[0] : null;
@@ -665,7 +783,9 @@ function composeHTML(st) {
   if (st.confirmClear) {
     extra = `<div class="confirm" role="alertdialog" aria-label="Clear the conversation?"><span><b>Clear the conversation?</b> claude-dashboard starts over with an empty context. Podium shows the cleared part as its own session in History, linked to this one.</span><span class="acts"><button class="btn" type="button" data-act="cancel-clear">Cancel</button><button class="btn bad" type="button" data-act="do-clear">Clear conversation</button></span></div>`;
   } else if (slash && !known && val.length > 1 && !matches.length) {
-    extra = `<div class="err">${esc(slash)} runs only in the terminal. From here you can send /clear, /compact, /model and /effort.</div>`;
+    extra = `<div class="err">${esc(slash)} runs only in the terminal. From here you can send /clear and /compact.</div>`;
+  } else if (known && val.trim() !== slash) {
+    extra = `<div class="err">${esc(slash)} takes nothing after it from here. Send ${esc(slash)} on its own, or use the terminal.</div>`;
   } else if (pending && val.trim() && !slash) {
     extra = `<div class="warnline">Sending this closes the ${WHAT[st.kind]} without an answer and gives Claude your message instead, like "Chat about this" in the terminal.</div>`;
   }
@@ -690,32 +810,47 @@ function renderCompose() { const c = $("#compose"); c.innerHTML = composeHTML(S)
 /* ---------- the gallery: the same modal, drawn once per case ---------- */
 const PS = "25/50/100, default 50", DS = "Keep it, page within the day";
 const CASES = [
+  { group: "Signing in" },
+  { id: "s-signin", title: "Signed out", cap: "Respond opens the modal as usual, and the feed shows, but the panel asks you to sign in first. The message box comes back once you're signed in.", st: { kind: "question", signed: false } },
+  { id: "s-wrong", title: "Wrong name or token", cap: "The name stays filled in and the token field is cleared. The message doesn't say which of the two was wrong.", st: { kind: "question", signed: false, signErr: "wrong", signName: "Ed" } },
+  { id: "s-locked", title: "Too many wrong tries", cap: "After five wrong tries from one address, counted with wrong Admin unlocks, signing in is locked for 15 minutes.", st: { kind: "question", signed: false, signErr: "locked", signName: "Ed" } },
+  { id: "s-ended", title: "Signed out by the server", cap: "Your sign-in ended while the page was open. The next Respond says why before asking again.", st: { kind: "idle", signed: false, expired: true } },
   { group: "A question" },
   { id: "q-first", title: "Opened from Respond", cap: "The questions Claude Code shows as tabs in the terminal show as tabs here. The recommended option is marked, and Type something takes your own answer.", st: { kind: "question" } },
   { id: "q-preview", title: "An option with a preview", cap: "When the options come with a preview, it shows beside them for the one selected.", st: { kind: "question", tab: 1, answers: { "Page size": PS, "Day selector": "One paged list, newest first" } } },
   { id: "q-multi", title: "Pick any that apply", cap: "A multi-select question has checkboxes. Answered questions get a tick on their tab.", st: { kind: "question", tab: 2, answers: { "Page size": PS, "Day selector": DS, "Back state": ["The page number", "The rows-per-page choice"] } } },
   { id: "q-own", title: "Your own answer", cap: "Typing in the box selects Type something. The text goes to Claude as the answer to that question.", st: { kind: "question", answers: { "Page size": "__other" }, other: { "Page size": "50, and remember each person's choice" } } },
-  { id: "q-review", title: "Review before sending", cap: "Review lists every answer. A question left blank is marked, and Claude sees it as skipped.", st: { kind: "question", tab: 3, answers: { "Page size": PS, "Day selector": DS } } },
+  { id: "q-review", title: "Review before sending", cap: "Review lists every answer. A question left blank is marked, and Claude sees it as skipped. With one question the footer reads \"Submitting sends it, as Claude Code does.\"; with two, \"Submitting sends both at once, as Claude Code does.\"; with four, \"all four\".", st: { kind: "question", tab: 3, answers: { "Page size": PS, "Day selector": DS } } },
   { id: "q-chat", title: "Chat about this instead", cap: "Writing in the message box while a question is open replaces the answer, like Chat about this in the terminal. The warning says so before you send.", st: { kind: "question", draft: "Before you pick: how many sessions does History hold on a busy day?" } },
   { group: "Plan approval" },
-  { id: "p-approve", title: "Approve the plan", cap: "The plan is shown whole, with the three ways to approve it from Claude Code.", st: { kind: "plan" } },
+  { id: "p-approve", title: "Approve the plan", cap: "The plan is shown whole, with three ways to approve it. The terminal's dialog has two of them; Yes, auto-accept edits is offered here too.", st: { kind: "plan" } },
   { id: "p-keep", title: "Keep planning, with feedback", cap: "No, keep planning opens a box for what to change. The button says what happens.", st: { kind: "plan", plan: "keep", planFb: "Also cover search across days. People will ask for it next." } },
+  { id: "p-backonly", title: "A plan that can only be sent back", cap: "Where Claude Code doesn't run podium-reporter's permission hooks, such as on a computer an organization manages, approving stays in the terminal. No, keep planning still works from here.", st: { kind: "plan", plan: "keep", backOnly: true } },
   { group: "A tool permission" },
   { id: "t-allow", title: "Allow once", cap: "The command and Claude's description of it. Only Allow once is offered here.", st: { kind: "permission" } },
+  { id: "t-other", title: "A tool other than Bash", cap: "The tool's name leads, and its input shows in the box.", st: { kind: "permission", tool: "Write" } },
   { id: "t-deny", title: "Deny, with a reason", cap: "The reason is optional and goes to Claude with the denial.", st: { kind: "permission", perm: "deny", permFb: "Not yet. Run npm run build first." } },
+  { id: "t-cut", title: "A command too long to show", cap: "A command over 20,000 characters is cut to fit. Since you can't see all of it, Allow once isn't offered here; Deny still is.", st: { kind: "permission", cut: true } },
   { group: "Its turn ended" },
   { id: "i-message", title: "Send a new message", cap: "No answer panel, only the message box. The message starts Claude's next turn.", st: { kind: "idle", draft: "Start on issue #205." } },
   { id: "i-commands", title: "Commands", cap: "Typing / lists the commands Podium can send. Anything else runs only in the terminal.", st: { kind: "idle", draft: "/c" } },
-  { id: "i-clear", title: "Confirm /clear", cap: "Clearing asks first, because it empties the session's context.", st: { kind: "idle", draft: "/clear", confirmClear: true } },
+  { id: "i-args", title: "A command with something after it", cap: "/clear and /compact go only on their own. With anything after one, nothing is sent and the box says so.", st: { kind: "idle", draft: "/compact focus on tests" } },
+  { id: "i-clear", title: "Confirm /clear", cap: "Clearing asks first, because it empties the session's context. In History, the earlier part then reads \"continued in 9c1e2f4a\" and the new one \"after /clear of 238da512\".", st: { kind: "idle", draft: "/clear", confirmClear: true } },
   { id: "i-after", title: "After you answer", cap: "Your answer becomes a feed entry marked as yours, and the panel goes away until the session asks again.", st: { kind: "idle", feed: "question", sent: [{ at: "12:23", text: `answered: ${PS}; ${DS}; The page number, The rows-per-page choice`, then: "Thanks. Writing the plan now.", thenAt: "12:24" }] } },
   { id: "i-running", title: "While it is still running", cap: "Expand on the Activity panel opens the modal without a wait. A message sent now is queued until the session is idle.", st: { kind: "idle", feed: "running", sent: [{ at: "31:50", text: "Also update the user guide.", note: "(queued until the session is idle)" }] } },
   { group: "When Podium can't send the answer" },
   { id: "e-sending", title: "Sent, not confirmed yet", cap: "Counted as answered only when the session confirms it, not when the server has it.", st: { kind: "question", edge: "sending", answers: { "Page size": PS, "Day selector": DS, "Back state": ["The page number"] } } },
+  { id: "e-nottaken", title: "Approval not taken", cap: "Claude Code didn't take an approval sent from here. The ask stays open, in Podium and in the terminal.", st: { kind: "plan", edge: "nottaken" } },
   { id: "e-terminal", title: "Answered in the terminal", cap: "The terminal answered first. What was chosen there replaces the form.", st: { kind: "question", edge: "terminal" } },
-  { id: "e-other", title: "Answered by someone else", cap: "Another tab or another person answered first. Only the first answer is accepted.", st: { kind: "question", edge: "other" } },
+  { id: "e-plan-terminal", title: "Plan approved in the terminal", cap: "Podium can't see which mode was picked in the terminal, so none is named. When the terminal sent feedback instead, the detail reads \"The answer there was No, keep planning.\"", st: { kind: "plan", edge: "terminal" } },
+  { id: "e-tool-terminal", title: "Tool answered in the terminal", cap: "Podium learns what the terminal chose when the command ends, so a command the terminal allowed still looks open while it runs. The detail reads Allowed or Denied. A Deny sent from here meanwhile is never shown as taken.", st: { kind: "permission", edge: "terminal" } },
+  { id: "e-other", title: "Answered by someone else", cap: "Another tab or another person answered first. Only the first answer is accepted. Their answer shows in the feed under their name, or \"Someone, from Podium:\" when the name isn't known.", st: { kind: "question", edge: "other", sent: [{ who: "Alex", at: "12:23", text: "answered: Fixed 50, no choice; One paged list, newest first; The page number" }] } },
   { id: "e-closed", title: "Closed in the session", cap: "Esc, an interrupted turn or the end of the session closed the question before you sent anything.", st: { kind: "question", edge: "closed" } },
   { id: "e-undelivered", title: "Session not checking in", cap: "Your answer is kept and sent when the reporter checks in again, unless the terminal answered by then.", st: { kind: "question", edge: "undelivered", answers: { "Page size": PS } } },
-  { id: "e-old", title: "Reporter can't answer", cap: "An older podium-reporter, the settings hooks, or a claude -p run. The card has no Respond button; Expand still opens the feed.", st: { kind: "question", edge: "old" } },
+  { id: "e-old", title: "Reporter can't answer", cap: "An older podium-reporter. The card has no Respond button; Expand still opens the feed. Only here is the person told to update; when the reporter has no version to show, the line reads \"It reports with an older podium-reporter.\"", st: { kind: "question", edge: "old" } },
+  { id: "e-old-hooks", title: "Reported by the settings hooks", cap: "The settings hooks can't take an answer, so there is nothing to update.", st: { kind: "question", edge: "old", why: "hooks" } },
+  { id: "e-old-print", title: "A claude -p run", cap: "A run with claude -p has no dialog to answer.", st: { kind: "question", edge: "old", why: "print" } },
+  { id: "e-managed", title: "A tool prompt where the permission hooks don't run", cap: "On a computer an organization manages, Claude Code doesn't run podium-reporter's permission hooks, so a tool's prompt usually never reaches Podium at all. If one does, this is what shows. Questions and messages still work from Podium.", st: { kind: "permission", edge: "old", why: "managed" } },
   { id: "e-off", title: "Turned off", cap: "Any switch in section 5 is off. The card has no Respond button, and the modal is the feed it is today.", st: { kind: "question", edge: "off" } },
   { id: "e-owner", title: "Someone else's session", cap: "Only the session's owner or an Admin can respond. Everyone else can watch.", st: { kind: "question", edge: "owner" } }
 ];
@@ -743,7 +878,7 @@ function renderTerms() {
   const k = S.kind;
   const open = {
     question: `<span class="dim">Planning: /Users/eengelking/.claude/plans/wise-beaming-token.md</span>\n\n<span class="dim">←</span> <span class="hl"> ☐ Page size </span> ☐ Day selector  ☐ Back state  ✔ Submit <span class="dim">→</span>\n\n<b>How many History rows per page, and can the user change it?</b>\n\n<span class="bl">❯ 1. 25/50/100, default 50 (Recommended)</span>\n     <span class="dim">Same Pager and choices as Admin > Reporters (#167)</span>\n  2. Fixed 50, no choice\n  3. Type something.\n\n  4. Chat about this\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
-    plan: `<b>Ready to code?</b>\n\n<span class="dim">Here is Claude's plan:</span>\n Paginate the History page (#195)\n ...\n\n<span class="bl">❯ 1. Yes, and use auto mode</span>\n  2. Yes, auto-accept edits\n  3. Yes, manually approve edits\n  4. No, keep planning\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
+    plan: `<b>Ready to code?</b>\n\n<span class="dim">Here is Claude's plan:</span>\n Paginate the History page (#195)\n ...\n\n<span class="bl">❯ 1. Yes, and use auto mode</span>\n  2. Yes, manually approve edits\n  3. Tell Claude what to change\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
     permission: `<b>Bash command</b>\n\n  git push -u origin issue/195-history-pages\n  <span class="dim">Push the branch to GitHub</span>\n\nDo you want to proceed?\n<span class="bl">❯ 1. Yes</span>\n  2. Yes, and don't ask again for git push\n  3. No, and tell Claude what to do differently\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
     idle: `<span class="gr">●</span> PR #204 is open: feat: paginate the History page.\n  CI is running. Merging is your call.\n\n<span class="dim">───────────────────────────────────────────</span>\n<span class="bl">❯</span> \n<span class="dim">───────────────────────────────────────────</span>\n<span class="am">▌ podium-reporter: messages from Podium are on.</span>`
   }[k];
@@ -755,11 +890,42 @@ function renderTerms() {
   }[k];
   $("#termOpen").innerHTML = open;
   $("#termDone").innerHTML = done;
+  $("#termMore").innerHTML = `<span class="gr">●</span> Bash(git push -u origin issue/195-history-pages)\n  <span class="dim">⎿</span>  <span class="am">Denied from Podium by Ed at 49:04</span>\n     Error: Not yet. Run npm run build first.\n\n<span class="gr">●</span> User rejected Claude's plan\n  <span class="dim">⎿</span>  <span class="am">Sent back from Podium by Ed at 14:43</span>\n     Also cover search across days.\n\n<span class="gr">●</span> AskUserQuestion\n  <span class="dim">⎿</span>  <span class="am">Replied from Podium by Ed at 12:24</span>\n     Before you pick: how many sessions does History hold on a busy day?`;
+}
+
+function renderTopBar() {
+  $("#tbMe").innerHTML = S.signed
+    ? `<span class="tb-me">${icon("you", 14)}Signed in as <b>Ed</b></span><button class="tb-btn" type="button" data-act="signout">Sign out</button>`
+    : `<button class="tb-btn" type="button" data-act="tb-signin" aria-haspopup="dialog">Sign in</button>`;
+  $("#tbCap").textContent = S.signed ? "Signed in. Sign out ends the sign-in for every tab in this browser." : "Signed out. Sign in opens the dialog below.";
+}
+function openSignDialog() {
+  S.signErr = ""; $("#signDlg").innerHTML = signDialogHTML(S, "d-");
+  $("#signScrim").hidden = false; document.body.classList.add("modal-open"); $("#d-signName").focus();
+}
+function closeSignDialog() {
+  if ($("#signScrim").hidden) return;
+  $("#signScrim").hidden = true; document.body.classList.remove("modal-open"); $("[data-act='tb-signin'], [data-act='signout']")?.focus();
 }
 
 // The live modal's own elements, so a lookup never lands in one of the gallery's copies.
 const M = () => $("#modal");
-function render() { renderBands(); renderFeed(); renderAsk(); renderCompose(); renderTerms(); }
+function render() { renderBands(); renderFeed(); renderAsk(); renderCompose(); renderTerms(); renderTopBar(); }
+function syncSigned() { $$('input[name="signed"]').forEach(r => r.checked = r.value === (S.signed ? "yes" : "no")); }
+// `p` is "" for the form in the Activity modal and "d-" for the top bar's dialog.
+function signIn(p) {
+  const name = $(`#${p}signName`)?.value.trim() || "", tok = $(`#${p}signTok`)?.value || "";
+  S.signName = name;
+  if (!name || !tok) {
+    S.signErr = "empty";
+    if (p) $("#signDlg").innerHTML = signDialogHTML(S, p); else renderAsk();
+    $(`#${p}${name ? "signTok" : "signName"}`).focus(); return;
+  }
+  // The mockup takes any name and token. The real check is the server's.
+  S.signed = true; S.signErr = ""; S.expired = false; syncSigned(); render();
+  if (p) closeSignDialog();
+  else ($("#askBody input, #askBody button") || $("#draft") || $("#close")).focus();
+}
 
 /* ---------- events ---------- */
 function syncDraft() {
@@ -770,6 +936,8 @@ function syncDraft() {
 function send() {
   const text = S.draft.trim(); if (!text) return;
   if (text === "/clear") { S.confirmClear = true; renderCompose(); $("[data-act='do-clear']", M()).focus(); return; }
+  // Only /clear and /compact, and only on their own; anything else stays in the box with its error line.
+  if (text.startsWith("/") && !COMMANDS.some(c => c.name === text)) return;
   const pending = S.kind !== "idle" && S.edge === "ready" && !S.submitted;
   const note = pending ? `(in place of an answer; the ${S.kind === "question" ? "question" : S.kind === "plan" ? "plan" : "request"} closes)` : (S.kind === "idle" ? "" : "(queued until the session is idle)");
   S.sent.push({ at: S.kind === "question" ? "12:24" : S.kind === "plan" ? "14:43" : S.kind === "permission" ? "49:05" : "50:20", text, note });
@@ -777,12 +945,13 @@ function send() {
   S.draft = ""; render(); $("#draft")?.focus();
 }
 function syncRadios() { $$('input[name="kind"]').forEach(r => r.checked = r.value === S.kind); }
+function syncEdge() { $$('input[name="edge"]').forEach(r => r.checked = r.value === S.edge); }
 
 document.addEventListener("click", e => {
   const t = e.target.closest("[data-act],[data-tab],[data-cmd],[data-respond]"); if (!t) return;
   if (t.matches("[data-respond]")) return openModal(t);
   if (t.dataset.tab !== undefined) { S.tab = Number(t.dataset.tab); renderAsk(); $(`[data-tab="${S.tab}"]`, M()).focus(); return; }
-  if (t.dataset.cmd) { S.draft = t.dataset.cmd + (t.dataset.cmd === "/clear" || t.dataset.cmd === "/compact" ? "" : " "); renderCompose(); const d = $("#draft"); d.focus(); d.setSelectionRange(S.draft.length, S.draft.length); return; }
+  if (t.dataset.cmd) { S.draft = t.dataset.cmd; renderCompose(); const d = $("#draft"); d.focus(); d.setSelectionRange(S.draft.length, S.draft.length); return; }
   const a = t.dataset.act;
   if (a === "next") { S.tab = Math.min(S.tab + 1, QUESTIONS.length); renderAsk(); }
   else if (a === "back") { S.tab = Math.max(S.tab - 1, 0); renderAsk(); }
@@ -795,15 +964,29 @@ document.addEventListener("click", e => {
       $("#draft")?.focus();
     }, 1600);
   }
-  else if (a === "discard") { S.edge = "ready"; $$('input[name="edge"]').forEach(r => r.checked = r.value === "ready"); S.answers = {}; render(); }
+  else if (a === "discard") { S.edge = "ready"; syncEdge(); S.answers = {}; render(); }
   else if (a === "send") send();
+  else if (a === "signin") signIn(t.dataset.p || "");
+  else if (a === "signout") { S.signed = false; S.signErr = ""; syncSigned(); render(); $("[data-act='tb-signin']").focus(); }
+  else if (a === "tb-signin") openSignDialog();
+  else if (a === "sign-close") closeSignDialog();
   else if (a === "cancel-clear") { S.confirmClear = false; renderCompose(); $("#draft").focus(); }
   else if (a === "do-clear") { S.confirmClear = false; S.sent.push({ at: "50:12", text: "/clear", note: "(the conversation was cleared; a new session id follows)" }); S.draft = ""; render(); $("#draft").focus(); }
 });
 document.addEventListener("change", e => {
   const t = e.target;
-  if (t.name === "kind") { S.kind = t.value; S.tab = 0; S.submitted = false; S.confirmClear = false; render(); return; }
-  if (t.name === "edge") { S.edge = t.value; S.submitted = false; render(); return; }
+  // "Approval not taken" exists only for a plan or a tool permission, so the two controls keep each other valid.
+  if (t.name === "kind") {
+    S.kind = t.value; S.tab = 0; S.submitted = false; S.confirmClear = false;
+    if (S.edge === "nottaken" && (S.kind === "question" || S.kind === "idle")) { S.edge = "sending"; syncEdge(); }
+    render(); return;
+  }
+  if (t.name === "signed") { S.signed = t.value === "yes"; S.signErr = ""; S.expired = false; render(); return; }
+  if (t.name === "edge") {
+    S.edge = t.value; S.submitted = false;
+    if (S.edge === "nottaken" && (S.kind === "question" || S.kind === "idle")) { S.kind = "plan"; syncRadios(); }
+    render(); return;
+  }
   if (/^q\d$/.test(t.name)) {
     const q = QUESTIONS[Number(t.name.slice(1))];
     if (q.multi) S.answers[q.header] = $$(`input[name="${t.name}"]:checked`).map(x => x.value);
@@ -824,6 +1007,9 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("focusin", e => { if (/^q\dtext$/.test(e.target.id)) { const r = $(`#q${S.tab}other`); if (r && !r.checked) { r.checked = true; S.answers[QUESTIONS[S.tab].header] = "__other"; } } });
 document.addEventListener("keydown", e => {
+  const sm = /^(d-)?sign(Name|Tok)$/.exec(e.target.id);
+  if (sm && e.key === "Enter") { e.preventDefault(); signIn(sm[1] || ""); return; }
+  if (!$("#signScrim").hidden && e.key === "Escape") { e.preventDefault(); closeSignDialog(); return; }
   if (e.target.id === "draft") {
     const list = $$(".typeahead [data-cmd]", M());
     if (list.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); S.ta = (S.ta + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length; list.forEach((b, i) => b.classList.toggle("on", i === S.ta)); return; }
@@ -855,6 +1041,8 @@ function closeModal() {
 }
 $("#close").addEventListener("click", closeModal);
 $("#scrim").addEventListener("mousedown", e => { if (e.target === $("#scrim")) closeModal(); });
+$("#signScrim").addEventListener("mousedown", e => { if (e.target === $("#signScrim")) closeSignDialog(); });
+$("#signDlgStage").innerHTML = `<div class="modal sm" aria-hidden="true">${signDialogHTML({ ...BASE, signName: "Ed" }, "g-dlg-")}</div>`;
 $("#flagSw").addEventListener("click", e => { const b = e.currentTarget; b.setAttribute("aria-checked", b.getAttribute("aria-checked") === "true" ? "false" : "true"); });
 
 $("#theme").addEventListener("click", () => {

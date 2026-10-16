@@ -47,12 +47,29 @@ import {
   type SessionState,
 } from './state.ts';
 import { nextCronAt } from './cron.ts';
-import { Transport, type FetchLike } from './transport.ts';
+import { isDelivery, Transport, type FetchLike } from './transport.ts';
 import { activityCall, activityText, explainPrompt } from './failures.ts';
 import { hostOf, isMachineId, MACHINE_ID_KEY, machineInfo, newMachineId } from './machine.ts';
-import type { MachineInfo } from './protocol.ts';
+import type { Ask, Delivery, DeliveryResult, MachineInfo, RespondInfo, RespondKind, RespondLevel } from './protocol.ts';
+import {
+  answeredLine,
+  answersMap,
+  LINE_MESSAGES_ON,
+  LINE_OPEN,
+  planApproval,
+  planAsk,
+  planFeedback,
+  planRejection,
+  questionAsk,
+  respondInfo,
+  respondLevel,
+  terminalAnswers,
+  toolAsk,
+  toolDecision,
+  toolDenied,
+} from './respond.ts';
 
-export const VERSION = '0.13.0';
+export const VERSION = '0.14.0';
 const GIT_POLL_MS = 10_000;
 /** session.end has one ~1.5 s bound for every hook and core together; stay well inside it. */
 const END_FLUSH_MS = 1000;
@@ -73,6 +90,8 @@ interface Options {
   explainFailures: boolean;
   fullPrompts: boolean;
   activityFeed: boolean;
+  /** What this session accepts from Podium (#206). */
+  respond: RespondLevel;
 }
 
 interface HookStat {
@@ -100,6 +119,10 @@ interface Runtime {
   skillCalls: number;
   /** This machine, read only when a userName is set; null otherwise, so nothing identifying is sent. */
   machine: MachineInfo | null;
+  /** The session this one continues after a /clear (#206); sent with every report under the new id. */
+  clearedFrom: string | null;
+  /** Whether a person's client is on this session: false for a `claude -p` run, which never responds. */
+  interactive: boolean;
 }
 
 export function readOptions(o: Record<string, unknown>): Options {
@@ -116,6 +139,7 @@ export function readOptions(o: Record<string, unknown>): Options {
     explainFailures: o.explainFailures === true,
     fullPrompts: o.fullPrompts === true,
     activityFeed: o.activityFeed === true,
+    respond: respondLevel(o.respond),
   };
 }
 
@@ -123,10 +147,63 @@ export function readOptions(o: Record<string, unknown>): Options {
 
 let opts: Options = readOptions({});
 let rt: Runtime | null = null;
+/** Bumped by each register (a reload, or a new test): a wait for an answer started under an older one stops. */
+let generation = 0;
 let errors: { at: number; where: string; message: string }[] = [];
 let stats: Record<string, HookStat> = {};
 /** Agents whose failure was sent for an explanation: at most one call per failure, never retried. */
 let explained = new Set<string>();
+
+// ---- responding (#206, SPEC 5.3) --------------------------------------------------------------
+
+/** One ask open in this session, and what each of its hooks knows about it. */
+interface OpenAsk {
+  ask: Ask;
+  sessionId: string;
+  /** The questions as Claude asked them, unredacted: Podium's answers by position are turned back into these. */
+  questions?: { question: string; options: { label: string }[] }[];
+  /** The race is over (answered, closed, or the tool call ended): every loop on it stops. */
+  done: boolean;
+  announced: boolean;
+  /** A plan: the approval handed to the PermissionRequest hook, and whoever waits for it. */
+  approval: Delivery | null;
+  approvalWaiters: ((d: Delivery | null) => void)[];
+  /** The approval was reported not taken: whatever the terminal does next is the terminal's. */
+  notTaken: boolean;
+  /** A tool: the answer the PermissionRequest hook returned. */
+  answered: Delivery | null;
+  /**
+   * Something still waits on the server for this ask's answer. Once the wait gives up (responding turned off, the ask
+   * closed there) the ask stops riding in reports, so the server never learns it again and takes an answer nobody collects.
+   */
+  listening: boolean;
+}
+
+/** A close or a result for the server, sent from the flush timer (Esc aborts a hook's own fetches). */
+interface OutItem {
+  path: string;
+  body: Record<string, unknown>;
+}
+
+const OUTBOX_MAX = 50;
+const ACTED_KEPT = 100;
+const ACTED_KEY = 'respond:acted';
+const HOLD_SECONDS = 20;
+/** How long an approval has to take before it is reported not taken. */
+const APPROVAL_CONFIRM_MS = 5000;
+/** How long after tool.check says `ask` a PermissionRequest must fire before the hooks are taken as not running. */
+const PERMISSION_CHECK_MS = 2000;
+
+let asks = new Map<string, OpenAsk>();
+let outbox: OutItem[] = [];
+let acted: string[] = [];
+/** null until known; false once a prompt showed with no PermissionRequest; true once one fired. */
+let permissionHooks: boolean | null = null;
+let lastPermissionAt = 0;
+let checks = new Map<string, { cancel: () => void }>();
+/** Each loop's latest tool call, so a PermissionRequest (which has no tool_use_id) can be paired with it. */
+let lastCalls = new Map<string, { tool: string; input: string; id: string }>();
+let messagesLineShown = false;
 const EXPLAIN_MODEL = 'haiku';
 
 const perf = typeof performance !== 'undefined' && typeof performance.now === 'function' ? () => performance.now() : () => Date.now();
@@ -169,6 +246,23 @@ function safe(where: string, fn: (r: Runtime) => void): void {
   }
 }
 
+/**
+ * What the session says about responding in its reports. Sent with level `off` too: only a reporter older than 0.14.0
+ * leaves it out, which Podium reads as "Reporter can't answer" (SPEC 6.2), so off has to say so.
+ */
+function respondNow(r: Runtime): RespondInfo {
+  return respondInfo(opts.respond, opts.activityFeed, r.interactive, permissionHooks);
+}
+
+/** Whether the mod answers anything from Podium now: its own switches, and the server's last word. */
+function responding(r: Runtime | null, kind: RespondKind): boolean {
+  return !!r && r.transport.respond && !r.state.ended && respondNow(r).accepts.includes(kind);
+}
+
+function openAsks(r: Runtime): Ask[] {
+  return [...asks.values()].filter((a) => !a.done && a.listening && a.sessionId === r.state.id).map((a) => a.ask);
+}
+
 function metaOf(r: Runtime, now: number) {
   return {
     version: VERSION,
@@ -181,6 +275,9 @@ function metaOf(r: Runtime, now: number) {
     machine: r.machine,
     fullText: opts.fullPrompts,
     activity: opts.activityFeed,
+    respond: respondNow(r),
+    asks: r.transport.respond && opts.respond !== 'off' ? openAsks(r) : null,
+    clearedFrom: r.clearedFrom,
   };
 }
 
@@ -262,6 +359,8 @@ async function flushOnce($: Engine, r: Runtime, now: number, force: boolean): Pr
     r.state = setWatched(r.state, opts.activityFeed ? r.transport.watch : []);
     r.toastedRefusal = null; // accepted again: a later refusal is news again
     toastOnce($, r, true);
+    handleDeliveries($, r);
+    messagesLine($, r);
   }
   else if (outcome === 'busy') r.state = { ...r.state, dirty: true };
   toastVersionOnce($, r);
@@ -343,6 +442,9 @@ async function loadName($: Engine, id: string): Promise<string | null> {
 
 /** A /clear happened: the old id gets its final report, then reporting starts under the new id. */
 async function switchSession($: Engine, r: Runtime, newId: string, now: number): Promise<void> {
+  const oldId = r.state.id;
+  const cleared = !r.state.ended || r.state.endReason === 'clear';
+  for (const a of asks.values()) if (a.sessionId === oldId) a.done = true;
   if (!r.state.ended) {
     r.state = sessionEnd(r.state, 'clear', r.state.id, now);
     await r.transport.idle();
@@ -358,6 +460,8 @@ async function switchSession($: Engine, r: Runtime, newId: string, now: number):
   const effort = r.state.main.effort;
   r.state = addEvent(resetForNewId(r.state, newId, startedAt), 'start', null, `session.start · ${shortName(r.state.main.model)}${effort ? ` ${effort}` : ''}`, now);
   r.storedName = await loadName($, newId);
+  r.clearedFrom = cleared ? oldId : null;
+  messagesLineShown = false;
 }
 
 /** The flush timer: notice a session id change, refresh usage and agents, post a report if due. */
@@ -375,6 +479,7 @@ async function flush($: Engine): Promise<void> {
       record($, 'session.id', err);
     }
     if (id && id !== r.state.id) await switchSession($, r, id, now);
+    await sendOutbox($);
     if (r.state.ended) return;
     await readUsage($, r);
     await readSurfaces($, r);
@@ -457,6 +562,431 @@ async function attempt<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
+// ---- responding: talking to the server (#206) -------------------------------------------------
+
+function serverBase(): string {
+  return opts.serverUrl.replace(/\/+$/, '');
+}
+
+function sessionPath(sessionId: string): string {
+  return `/api/fleet/sessions/${encodeURIComponent(sessionId)}`;
+}
+
+/** One request to the server with the reporter's token; null when it could not be made (offline, or aborted by Esc). */
+async function podiumCall($: Engine, method: string, path: string, body?: unknown): Promise<{ status: number; text: string } | null> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (opts.token) headers['X-Podium-Token'] = opts.token;
+  try {
+    const res = await $.http.fetch(serverBase() + path, body === undefined ? { method, headers } : { method, headers, body: JSON.stringify(body) });
+    return { status: res.status, text: res.text };
+  } catch {
+    return null;
+  }
+}
+
+/** A line in the transcript; the engine draws it as `podium-reporter: <text>`. */
+function transcriptLine($: Engine, text: string): void {
+  try {
+    $.ui.log(text);
+  } catch {
+    // no transcript on this host
+  }
+}
+
+function queueOut(item: OutItem): void {
+  outbox.push(item);
+  if (outbox.length > OUTBOX_MAX) outbox.splice(0, outbox.length - OUTBOX_MAX);
+}
+
+function queueResult(sessionId: string, deliveryId: string, result: DeliveryResult): void {
+  queueOut({ path: `${sessionPath(sessionId)}/deliveries/${encodeURIComponent(deliveryId)}/result`, body: { result, at: nowMs() } });
+}
+
+function queueClose(a: OpenAsk, outcome: 'terminal' | 'closed' | 'ended', extra: { answer?: string | null; planApproved?: boolean } = {}): void {
+  queueOut({ path: `${sessionPath(a.sessionId)}/asks/${encodeURIComponent(a.ask.id)}/close`, body: { outcome, at: nowMs(), ...extra } });
+}
+
+/** The flush timer sends what the hooks queued. A failure keeps the rest for the next tick; a refusal drops the item. */
+async function sendOutbox($: Engine): Promise<void> {
+  while (outbox.length) {
+    const item = outbox[0]!;
+    const res = await podiumCall($, 'POST', item.path, item.body);
+    if (!res) return;
+    outbox.shift();
+  }
+}
+
+async function loadActed($: Engine): Promise<string[]> {
+  const v = await attempt(() => $.store.get(ACTED_KEY), undefined);
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(-ACTED_KEPT) : [];
+}
+
+/** Notes a delivery as acted on, here and in the store, so one handed over twice (a lost reply, a reload) acts once. */
+function markActed($: Engine, id: string): boolean {
+  if (acted.includes(id)) return false;
+  acted.push(id);
+  if (acted.length > ACTED_KEPT) acted.splice(0, acted.length - ACTED_KEPT);
+  void attempt(() => $.store.set(ACTED_KEY, acted), undefined);
+  return true;
+}
+
+/** Announces an ask (PUT). The first time it lands, the terminal says it is also open in Podium. */
+async function announce($: Engine, a: OpenAsk): Promise<number> {
+  const res = await podiumCall($, 'PUT', `${sessionPath(a.sessionId)}/asks/${encodeURIComponent(a.ask.id)}`, a.ask);
+  if (res?.status === 200 && !a.announced) {
+    a.announced = true;
+    transcriptLine($, LINE_OPEN);
+  }
+  return res?.status ?? 0;
+}
+
+function openAsk(r: Runtime, ask: Ask, questions?: OpenAsk['questions']): OpenAsk {
+  const a: OpenAsk = { ask, sessionId: r.state.id, questions, done: false, announced: false, approval: null, approvalWaiters: [], notTaken: false, answered: null, listening: true };
+  asks.set(ask.id, a);
+  r.state = { ...r.state, dirty: true };
+  return a;
+}
+
+function finish(a: OpenAsk): void {
+  a.done = true;
+  for (const w of a.approvalWaiters.splice(0)) w(null);
+  asks.delete(a.ask.id);
+  if (rt) rt.state = { ...rt.state, dirty: true };
+}
+
+/**
+ * Waits on the server for the next answer to an ask that `wanted` takes, until one comes, the ask is done, or the server
+ * stops taking answers. An answer of another kind is refused (or, for a plan, handed to `other`); one that `skip` names
+ * is left alone for another wait on the same ask to act on.
+ */
+async function waitForAnswer($: Engine, a: OpenAsk, wanted: (d: Delivery) => boolean, other?: (d: Delivery) => void, skip?: (d: Delivery) => boolean): Promise<Delivery | null> {
+  const d = await pollAnswer($, a, wanted, other, skip);
+  if (!d && !a.done) {
+    a.listening = false;
+    if (rt) rt.state = { ...rt.state, dirty: true };
+  }
+  return d;
+}
+
+/**
+ * Waits `ms` on the engine's clock. False when the sleep fails: its dispatch was aborted or let go, so the engine
+ * behind this wait is gone, and a loop that went round again would never wait at all.
+ */
+async function pause($: Engine, ms: number): Promise<boolean> {
+  try {
+    await $.clock.sleep(ms);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pollAnswer($: Engine, a: OpenAsk, wanted: (d: Delivery) => boolean, other?: (d: Delivery) => void, skip?: (d: Delivery) => boolean): Promise<Delivery | null> {
+  // `rt` is module state, so a wait from an older register would otherwise read a newer session's switches.
+  const gen = generation;
+  while (!a.done && gen === generation && rt?.transport.respond) {
+    const res = await podiumCall($, 'GET', `${sessionPath(a.sessionId)}/asks/${encodeURIComponent(a.ask.id)}/answer?wait=${HOLD_SECONDS}`);
+    if (a.done) {
+      const d = deliveryOf(res);
+      if (d && markActed($, d.id)) queueResult(a.sessionId, d.id, 'closed');
+      return null;
+    }
+    if (!res) {
+      if (!(await pause($, Transport.backoff(1)))) return null;
+      continue;
+    }
+    if (res.status === 204) continue;
+    if (res.status === 404) {
+      if ((await announce($, a)) !== 200 && !(await pause($, Transport.backoff(2)))) return null;
+      continue;
+    }
+    const d = deliveryOf(res);
+    if (!d) return null;
+    if (d.askId === a.ask.id && skip?.(d)) {
+      // Another wait on this ask acts on it (a plan's feedback is the tool.call hook's); ask again once it has.
+      if (!(await pause($, 500))) return null;
+      continue;
+    }
+    if (!markActed($, d.id)) {
+      // Already acted on and waiting for its result to reach the server: ask again shortly.
+      if (!(await pause($, 1000))) return null;
+      continue;
+    }
+    if (d.askId === a.ask.id && wanted(d)) return d;
+    if (d.askId === a.ask.id && other) {
+      other(d);
+      continue;
+    }
+    queueResult(a.sessionId, d.id, 'refused');
+  }
+  return null;
+}
+
+function deliveryOf(res: { status: number; text: string } | null): Delivery | null {
+  if (!res || res.status !== 200) return null;
+  try {
+    const d = (JSON.parse(res.text) as { delivery?: unknown }).delivery;
+    return isDelivery(d) ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---- responding: the hooks' races --------------------------------------------------------------
+
+type ToolResult = { result?: unknown; text?: string; isError?: boolean; deny?: string };
+type Race = { res: ToolResult; d: null } | { res: null; d: Delivery };
+
+/** Whichever comes first: the terminal's answer, or one from Podium. A Podium wait that ends empty leaves the terminal. */
+function race(terminal: Promise<ToolResult>, podium: Promise<Delivery | null>): Promise<Race> {
+  const t: Promise<Race> = terminal.then((res) => ({ res, d: null }));
+  const p: Promise<Race> = podium.then((d) => (d ? { res: null, d } : t));
+  return Promise.race([t, p]);
+}
+
+/** AskUserQuestion: the terminal's dialog (`next(e)`) against an answer from Podium. The first wins. */
+async function questionRace($: Engine, r: Runtime, e: { tool_use_id: string; agentId?: string; questions?: unknown }, terminal: Promise<ToolResult>): Promise<ToolResult> {
+  const input = e as unknown as Record<string, unknown>;
+  const ask = questionAsk(e.tool_use_id, e.agentId ?? null, input, nowMs());
+  if (!ask) return terminal;
+  const raw = (Array.isArray(e.questions) ? e.questions : []) as OpenAsk['questions'];
+  const a = openAsk(r, ask, raw);
+  await announce($, a);
+  const podium = waitForAnswer($, a, (d) => (d.kind === 'question' || d.kind === 'reply') && responding(rt, 'question'));
+  const first = await race(terminal, podium);
+  if (first.d) {
+    const d = first.d;
+    finish(a);
+    queueResult(a.sessionId, d.id, 'took');
+    transcriptLine($, answeredLine(d, nowMs()));
+    const questions = e.questions;
+    return d.kind === 'reply' ? { result: { questions, answers: {}, response: d.text ?? '' } } : { result: { questions, answers: answersMap(a.questions ?? [], d.answers ?? []) } };
+  }
+  const res = first.res as ToolResult;
+  finish(a);
+  // A rejection is Esc, an aborted turn, or the terminal's own "Chat about this": closed without an answer.
+  if (res.isError || res.deny !== undefined) queueClose(a, 'closed');
+  else queueClose(a, 'terminal', { answer: terminalAnswers(res) });
+  return res;
+}
+
+/**
+ * ExitPlanMode: one ask, two hooks. Feedback ("No, keep planning", or a message in its place) is answered here as
+ * `{ deny }`; an approval is handed to the waiting PermissionRequest hook, and counts only once the call resolves as
+ * approved, within APPROVAL_CONFIRM_MS.
+ */
+async function planRace($: Engine, r: Runtime, e: { tool_use_id: string; agentId?: string }, terminal: Promise<ToolResult>): Promise<ToolResult> {
+  const a = openAsk(r, planAsk(e.tool_use_id, e.agentId ?? null, e as unknown as Record<string, unknown>, nowMs()));
+  await announce($, a);
+  const podium = waitForAnswer($, a, (d) => (d.kind === 'plan-feedback' || d.kind === 'reply') && responding(rt, 'plan-feedback'), (d) => takeApproval($, a, d));
+  const first = await race(terminal, podium);
+  if (first.d) {
+    finish(a);
+    queueResult(a.sessionId, first.d.id, 'took');
+    transcriptLine($, answeredLine(first.d, nowMs()));
+    return planFeedback(first.d);
+  }
+  const res = first.res as ToolResult;
+  const approved = !res.isError && res.deny === undefined;
+  const approval = a.notTaken ? null : a.approval;
+  finish(a);
+  if (approval && approved) {
+    queueResult(a.sessionId, approval.id, 'took');
+    // Only now, once Claude Code took it: the terminal never reads "Approved from Podium" for one that didn't.
+    transcriptLine($, answeredLine(approval, nowMs()));
+  } else {
+    if (approval) queueResult(a.sessionId, approval.id, 'closed');
+    if (approved) queueClose(a, 'terminal', { planApproved: true });
+    else if (planRejection(res.text) === 'feedback') queueClose(a, 'terminal', { answer: 'No, keep planning' });
+    else queueClose(a, 'closed');
+  }
+  return res;
+}
+
+/** A plan's approval, from either wait on its ask: handed to the PermissionRequest hook, and checked that it took. */
+function takeApproval($: Engine, a: OpenAsk, d: Delivery): void {
+  if (d.kind !== 'plan-approve' || !responding(rt, 'plan-approve') || a.approval) {
+    queueResult(a.sessionId, d.id, 'refused');
+    return;
+  }
+  a.approval = d;
+  for (const w of a.approvalWaiters.splice(0)) w(d);
+  void confirmApproval($, a, d);
+}
+
+/**
+ * The PermissionRequest hook's wait for a plan's approval. It polls the server itself, so a held request is in flight
+ * the whole time: that stops the hook's 10-second budget (HookBudget), where waiting on a promise alone would not, and
+ * an approval sent long after the dialog opened still finds the hook. An approval the tool.call hook's wait got first
+ * arrives through `approvalOf`; feedback and replies are left to that wait.
+ */
+async function approvalFromPodium($: Engine, a: OpenAsk): Promise<Delivery | null> {
+  const fromServer = waitForAnswer(
+    $,
+    a,
+    (d) => d.kind === 'plan-approve',
+    undefined,
+    (d) => d.kind === 'plan-feedback' || d.kind === 'reply',
+  ).then((d) => {
+    if (d) takeApproval($, a, d);
+    return a.approval;
+  });
+  return Promise.race([approvalOf(a), fromServer]);
+}
+
+/** An approval that the plan's tool call has not resolved as approved within the confirm window did not take. */
+async function confirmApproval($: Engine, a: OpenAsk, d: Delivery): Promise<void> {
+  await attempt(() => $.clock.sleep(APPROVAL_CONFIRM_MS), undefined);
+  if (a.done) return;
+  a.notTaken = true;
+  queueResult(a.sessionId, d.id, 'not-taken');
+}
+
+/** The plan ask of a loop, for its PermissionRequest hook. */
+function planAskOf(agentId: string | undefined): OpenAsk | undefined {
+  return [...asks.values()].reverse().find((a) => !a.done && a.ask.kind === 'plan' && a.ask.agentId === (agentId ?? null));
+}
+
+/** Waits for the approval of a plan ask, or null once the ask is done. */
+function approvalOf(a: OpenAsk): Promise<Delivery | null> {
+  if (a.approval) return Promise.resolve(a.approval);
+  if (a.done) return Promise.resolve(null);
+  return new Promise((resolve) => a.approvalWaiters.push(resolve));
+}
+
+function loopKey(agentId: string | null | undefined): string {
+  return agentId ?? '@main';
+}
+
+function inputKey(input: unknown): string {
+  try {
+    return JSON.stringify(input ?? null);
+  } catch {
+    return '';
+  }
+}
+
+/** Any PermissionRequest shows the hooks run here: the hooks are no longer taken as missing. */
+function permissionSeen(r: Runtime, id: string | null): void {
+  lastPermissionAt = nowMs();
+  if (id) {
+    checks.get(id)?.cancel();
+    checks.delete(id);
+  }
+  if (permissionHooks !== true) {
+    permissionHooks = true;
+    r.state = { ...r.state, dirty: true };
+  }
+}
+
+/** tool.check said a prompt is about to show: if no PermissionRequest follows, the hooks don't run here (SPEC 5.3). */
+function startPermissionCheck($: Engine, id: string): void {
+  const startedAt = nowMs();
+  checks.get(id)?.cancel();
+  try {
+    const h = $.clock.after(PERMISSION_CHECK_MS, () => {
+      checks.delete(id);
+      if (lastPermissionAt >= startedAt || !rt) return;
+      permissionHooks = false;
+      rt.state = { ...rt.state, dirty: true };
+    });
+    checks.set(id, h);
+  } catch {
+    // no clock: leave it unknown
+  }
+}
+
+/**
+ * A tool's permission prompt: announced under the tool call it pairs with, and answered from Podium if an answer comes
+ * while it is up. The engine does not end this hook when the terminal answers first; the tool call ending does
+ * (`settleToolAsk`).
+ */
+async function permissionAsk($: Engine, r: Runtime, e: { tool_name: string; tool_input: unknown; agent_id?: string }): Promise<{ decision: { behavior: 'allow' } | { behavior: 'deny'; message: string } } | null> {
+  const call = lastCalls.get(loopKey(e.agent_id));
+  if (!call || call.tool !== e.tool_name || call.input !== inputKey(e.tool_input) || asks.has(call.id)) return null;
+  const a = openAsk(r, toolAsk(call.id, e.agent_id ?? null, e.tool_name, e.tool_input, nowMs()));
+  await announce($, a);
+  const d = await waitForAnswer($, a, (x) => (x.kind === 'allow-once' ? !a.ask.tool?.cut : x.kind === 'deny' || x.kind === 'reply') && responding(rt, 'permission'));
+  if (!d || a.done) return null;
+  a.answered = d;
+  transcriptLine($, answeredLine(d, nowMs()));
+  return toolDecision(d.kind === 'reply' ? { ...d, kind: 'deny' } : d);
+}
+
+/**
+ * The tool call of a permission ask ended: what happened is read from how it ended, since nothing else says (SPEC 5.3).
+ * An answer from Podium that matches what happened took; otherwise the terminal answered first.
+ */
+function settleToolAsk(id: string, res: ToolResult | undefined): void {
+  const a = asks.get(id);
+  if (!a || a.ask.kind !== 'permission') return;
+  const d = a.answered;
+  const sent = d && d.kind !== 'allow-once' ? (toolDecision(d.kind === 'reply' ? { ...d, kind: 'deny' } : d).decision as { message?: string }).message : undefined;
+  const denied = toolDenied(res, sent);
+  finish(a);
+  if (d && (d.kind === 'allow-once') === !denied) queueResult(a.sessionId, d.id, 'took');
+  else {
+    if (d) queueResult(a.sessionId, d.id, 'closed');
+    queueClose(a, 'terminal', { answer: denied ? 'denied' : 'allowed' });
+  }
+}
+
+// ---- responding: messages and commands ---------------------------------------------------------
+
+/** Messages and commands from the reply to a report: each acted on once, within the session's own level. */
+function handleDeliveries($: Engine, r: Runtime): void {
+  const list = r.transport.deliveries;
+  r.transport.deliveries = [];
+  for (const d of list) {
+    if (!markActed($, d.id)) continue;
+    const sid = r.state.id;
+    const running = r.state.status === 'running';
+    if (d.kind === 'message' && typeof d.text === 'string' && d.text.trim() && responding(r, 'message')) {
+      if (running) queueResult(sid, d.id, 'queued');
+      void submitMessage($, sid, d);
+    } else if (d.kind === 'command' && (d.command === 'clear' || d.command === 'compact') && responding(r, 'command')) {
+      if (running) queueResult(sid, d.id, 'queued');
+      void runCommand($, sid, d, d.command);
+    } else queueResult(sid, d.id, 'refused');
+  }
+}
+
+/** A message from Podium starts a turn of its own once the session is idle, under the plugin's name (not as the person). */
+async function submitMessage($: Engine, sid: string, d: Delivery): Promise<void> {
+  try {
+    await $.prompt.submit({ text: d.text ?? '' });
+    transcriptLine($, answeredLine(d, nowMs()));
+    queueResult(sid, d.id, 'took');
+  } catch (err) {
+    record($, 'prompt.submit', err);
+    queueResult(sid, d.id, 'refused');
+  }
+}
+
+/** /clear or /compact, as if the person typed it, once the session is idle. Never any other command. */
+async function runCommand($: Engine, sid: string, d: Delivery, command: 'clear' | 'compact'): Promise<void> {
+  try {
+    await $.command.run({ command });
+    transcriptLine($, answeredLine(d, nowMs()));
+    queueResult(sid, d.id, 'took');
+  } catch (err) {
+    record($, 'command.run', err);
+    queueResult(sid, d.id, 'refused');
+  }
+}
+
+/** "messages from Podium are on." once, the first time the session is idle with messages allowed; again after it stopped, or after a /clear (a new, empty transcript). */
+function messagesLine($: Engine, r: Runtime): void {
+  const on = responding(r, 'message');
+  if (!on) {
+    messagesLineShown = false;
+    return;
+  }
+  if (messagesLineShown || !r.state.mainIdle) return;
+  messagesLineShown = true;
+  transcriptLine($, LINE_MESSAGES_ON);
+}
+
 /** session.start (also after a hot reload): build the state, register /podium and the plan tool, start timers. */
 async function start($: Engine, e: { cwd: string; surface: string | null }): Promise<void> {
   for (const t of rt?.timers ?? []) t.cancel();
@@ -492,7 +1022,10 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
     toastedVersion: rt?.toastedVersion ?? null,
     skillCalls: 0,
     machine: rt?.machine ?? (await readMachine($)),
+    clearedFrom: same && rt ? rt.clearedFrom : null,
+    interactive: e.surface !== null,
   };
+  acted = await loadActed($);
   const r = rt;
   await readAgents($, r, now);
   try {
@@ -519,6 +1052,8 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
 async function end($: Engine, e: { reason: string; sessionId: string; resume?: { id: string } }, signal: AbortSignal | undefined): Promise<void> {
   const r = rt;
   if (!r) return;
+  // The server closes a finished session's asks itself; the races here just stop.
+  for (const a of [...asks.values()]) if (a.sessionId === (e.sessionId || r.state.id)) finish(a);
   const now = await engineNow($);
   if (e.sessionId === r.state.id || !e.sessionId) {
     r.state = sessionEnd(r.state, e.reason, e.resume?.id ?? e.sessionId ?? r.state.id, now);
@@ -582,9 +1117,19 @@ async function podiumCommand($: Engine, args: string): Promise<string> {
 export const register: Register = (on, rawOptions) => {
   opts = readOptions(rawOptions as Record<string, unknown>);
   rt = null;
+  generation++;
   errors = [];
   stats = {};
   explained = new Set();
+  asks = new Map();
+  outbox = [];
+  acted = [];
+  permissionHooks = null;
+  lastPermissionAt = 0;
+  for (const c of checks.values()) c.cancel();
+  checks = new Map();
+  lastCalls = new Map();
+  messagesLineShown = false;
 
   on('session.start', async ($, e, next) => {
     const res = await next(e);
@@ -715,10 +1260,19 @@ export const register: Register = (on, rawOptions) => {
       if (opts.activityFeed && isWatched(r.state, e.agentId)) r.state = addActivity(r.state, e.agentId, { at: nowMs(), kind: 'tool', text: activityCall(tool, input) });
       if (tool === 'Agent' && e.tool_use_id) r.state = agentRequested(r.state, e.tool_use_id, input, nowMs());
       if (tool === 'Skill') r.skillCalls++;
+      // The arguments as a PermissionRequest will carry them: the call's own, without the event's fields.
+      if (e.tool_use_id && opts.respond !== 'off') {
+        const { tool: _t, tool_use_id: _id, agentId: _a, ...args } = input;
+        lastCalls.set(loopKey(e.agentId), { tool, input: inputKey(args), id: e.tool_use_id });
+      }
     });
     let res: Awaited<ReturnType<typeof next>>;
     try {
-      res = await next(e);
+      // While the mod responds, a question or a plan races the terminal's dialog against an answer from Podium (#206).
+      const r = rt;
+      if (r && tool === 'AskUserQuestion' && e.tool_use_id && responding(r, 'question')) res = (await questionRace($, r, e as never, next(e) as Promise<ToolResult>)) as typeof res;
+      else if (r && tool === 'ExitPlanMode' && e.tool_use_id && (responding(r, 'plan-feedback') || responding(r, 'plan-approve'))) res = (await planRace($, r, e as never, next(e) as Promise<ToolResult>)) as typeof res;
+      else res = await next(e);
     } finally {
       safe('tool.call.done', (r) => {
         if (tool === 'Skill') r.skillCalls = Math.max(0, r.skillCalls - 1);
@@ -726,6 +1280,17 @@ export const register: Register = (on, rawOptions) => {
     }
     safe('tool.call.result', (r) => {
       r.state = toolResult(r.state, { agentId: e.agentId, tool, input, result: (res ?? {}) as { deny?: string; isError?: boolean; text?: string } }, nowMs());
+      if (e.tool_use_id) settleToolAsk(e.tool_use_id, res as ToolResult | undefined);
+    });
+    return res;
+  }).catch(($, e, next) => next(e));
+
+  // Where a prompt is about to show, a PermissionRequest should follow: if none does, the hooks don't run here (#206).
+  on('tool.check', async ($, e, next) => {
+    const res = await next(e);
+    safe('tool.check', () => {
+      const id = (e as { tool_use_id?: string }).tool_use_id;
+      if (opts.respond !== 'off' && id && (res as { decision?: string } | undefined)?.decision === 'ask') startPermissionCheck($, id);
     });
     return res;
   }).catch(($, e, next) => next(e));
@@ -746,10 +1311,25 @@ export const register: Register = (on, rawOptions) => {
   }).catch(($, e, next) => next(e));
 
   on('classic.PermissionRequest', async ($, e, next) => {
+    const agentId = (e as { agent_id?: string }).agent_id;
     safe('classic.PermissionRequest', (r) => {
       r.state = permissionRequest(r.state, e.tool_name, e.tool_input, nowMs());
+      const call = lastCalls.get(loopKey(agentId));
+      permissionSeen(r, call && call.tool === e.tool_name ? call.id : null);
     });
-    return next(e);
+    const r = rt;
+    if (!r || e.tool_name === 'AskUserQuestion') return next(e);
+    // A plan's approval from Podium (#206): `updatedInput` is the event's own tool_input, unchanged (SPEC 5.3).
+    if (e.tool_name === 'ExitPlanMode') {
+      const a = responding(r, 'plan-approve') ? planAskOf(agentId) : undefined;
+      const d = a ? await approvalFromPodium($, a) : null;
+      if (!d || !d.mode) return next(e);
+      // The transcript line waits for the call to resolve approved (planRace), so it never claims one that didn't take.
+      return planApproval(e.tool_input, d.mode);
+    }
+    if (!responding(r, 'permission')) return next(e);
+    const decision = await permissionAsk($, r, { tool_name: e.tool_name, tool_input: e.tool_input, agent_id: agentId });
+    return decision ?? next(e);
   }).catch(($, e, next) => next(e));
 
   on('classic.Notification', async ($, e, next) => {

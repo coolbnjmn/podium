@@ -12,7 +12,7 @@ afterEach(() => {
 
 const row: HistoryRow = {
   id: "s1", name: "api-refactor", project: "~/dev/billing", model: "claude-opus-5-5", modelFamily: "opus",
-  startedAt: 1_000_000, endedAt: 4_600_000, durationSec: 3600, costUsd: 12.84, blowouts: 2, agents: 3, endReason: "prompt_input_exit",
+  startedAt: 1_000_000, endedAt: 4_600_000, durationSec: 3600, costUsd: 12.84, blowouts: 2, agents: 3, endReason: "prompt_input_exit", clearedFrom: null, clearedInto: null,
 };
 
 function server(rows: HistoryRow[], sessionOver: Parameters<typeof makeSession>[0] = {}, total = rows.length) {
@@ -30,6 +30,13 @@ function server(rows: HistoryRow[], sessionOver: Parameters<typeof makeSession>[
 }
 
 describe("history page", () => {
+  it("links the two parts of a conversation split by /clear (#206)", async () => {
+    server([{ ...row, clearedInto: "9c1e2f4a5b6c7d8e", clearedFrom: "238da512ffeeddcc" }]);
+    render(<HistoryView initialDay="2026-10-10" />);
+    expect(await screen.findByRole("button", { name: "continued in 9c1e2f4a" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "after /clear of 238da512" })).toBeInTheDocument();
+  });
+
   it("lists a day's ended sessions with summary columns", async () => {
     const calls = server([row]);
     render(<HistoryView initialDay="2026-10-10" />);
