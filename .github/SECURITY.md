@@ -11,14 +11,14 @@ problems that matter here are:
 |---|---|
 | **Input to the server** | A report, a settings-hook payload or any other request that crashes the server, gets past validation, reads or writes a file, or runs a command. The server checks every report by hand (`server/src/fleet/protocol.ts`), so a gap in that check is in scope. |
 | **Reported text reaching the browser or a shell** | Anything a session sends (a Bash command, an agent's answer, a path) that ends up rendered as markup or script in the UI, or in a command line. |
-| **Secrets leaving a session** | The mod cuts text to fixed limits and replaces things that look like secrets with `[redacted]` (see "What leaves the session" in the README). A real credential format that the redaction misses, or data the README says never leaves the session but does. |
+| **Secrets leaving a session** | The mod cuts text to fixed limits and replaces things that look like secrets with `[redacted]` (see [What leaves the session](../docs/REPORTER.md#what-leaves-the-session)). A real credential format that the redaction misses, or data the README says never leaves the session but does. |
 | **Tokens and Admin** | `PODIUM_TOKEN` (the admin secret) opens Admin, and each person's token is bound to their name. A way around either; a token or the admin secret that shows up in a log, an error, the browser's storage or a command line; a token stored in a readable form; a way to open Admin or call its API without the secret or from another site; a way past the lockout; a config file with loose permissions. |
 | **`podiumctl` and the container** | Command injection through a config value, the server listening on more than the user asked for, the container running as root, or a boot service file that does more than it should. |
 | **The mod acting on a session** | Podium can answer a session that waits on its person, and nothing else (see "Responding from Podium" below). A way for the mod or the server to do more than that is a security bug: to send a prompt or an answer to a session whose owner didn't turn the `respond` option on, past the Admin's switch, at a level the session didn't allow, or from anyone but the session's owner or an Admin; to run any command but `/clear` and `/compact`; to change a session's permission rules ("always allow"); or to stop or start a session. |
 
 ### By design
 
-These are not vulnerabilities on their own. The README ("Several people on one Podium") and
+These are not vulnerabilities on their own. [Running the server](../docs/SERVER.md#run-it-with-podiumctl) ("Several people on one Podium") and
 `docs/GOTCHAS.md` say all of this.
 
 | Behavior | Why it is not a bug |
@@ -74,7 +74,7 @@ If you think you have found something like this, please report it rather than op
 | What the security sweep found, fixed and accepted | `docs/DECISIONS.md` 31, with 32 (guess throttling) and 33 (the Host check) |
 | The rules the server and the mod follow | `docs/SPEC.md` 7.7 "Hardening": "Who a report is from", "Who", "The browser's credential", "The mod never trusts the server" and "The admin log" |
 | How a person turns responding on and uses it | `docs/USER_GUIDE.md`, "Answering a session from Podium" |
-| What is open by design | `docs/GOTCHAS.md` and the README ("Several people on one Podium") |
+| What is open by design | `docs/GOTCHAS.md` and [Running the server](../docs/SERVER.md#run-it-with-podiumctl) ("Several people on one Podium") |
 
 ## Reporting a vulnerability
 

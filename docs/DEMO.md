@@ -147,7 +147,7 @@ later with no refresh. That is the last shot of this beat.
 ## Beat 3: sessions that never loaded the mod (optional)
 
 If you want to make the point that you do not have to restart anything, add the settings hooks from the
-README ("Sessions without the mod") to `~/.claude/settings.json`, start a plain `claude` session in
+[REPORTER.md](REPORTER.md#sessions-without-the-mod) ("Sessions without the mod") to `~/.claude/settings.json`, start a plain `claude` session in
 another terminal, and send a prompt. It shows up marked "settings hooks" with the session, directory,
 model and agents, and with the context, cost and plan left empty. Remove the hooks afterwards if you do
 not want them on permanently.

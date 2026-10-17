@@ -14,6 +14,12 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+### Changed
+
+- **The README is now the introduction and the quick start, plus a table of the docs.** The `podiumctl`, several-people and server-settings sections moved to the new `docs/SERVER.md`; the mod install, options, what leaves a session and settings hooks moved to the new `docs/REPORTER.md`; the checks list joined `CONTRIBUTING.md`. Links to those sections were updated. Documentation only.
+
+- **The user guide and the mod doc give one command to update the mod.** `claude plugin marketplace update eengelking-marketplace && claude plugin update podium-reporter@eengelking-marketplace` refreshes the listing and updates the mod in one go. Documentation only.
+
 ## [1.1.0] - 2026-10-16
 
 ### Added
