@@ -14,7 +14,7 @@ import { ADMIN_OWNER, ADMIN_SECRET_ACTOR, nameKey, sourceAddress, type PeopleSto
 import { checkNameToken } from './nameToken.js';
 import type { RespondBridge } from './respondBridge.js';
 import type { Lockout } from './lockout.js';
-import { logWords, type AnswerError } from './respond.js';
+import { logWords, shortDeliveryId, type AnswerError, type DeliveryTrail, type DropWhy } from './respond.js';
 import { DELIVERY_RESULTS, RESPOND_LIMITS, validateAsk, type AskCloseOutcome, type Delivery, type DeliveryResult, type RespondMe } from './protocol.js';
 import type { Logger } from '../logging/logger.js';
 import type { SessionRow } from './db.js';
@@ -32,6 +32,8 @@ export interface RespondDeps {
   signInIdleMs?: number;
   /** Filled in so Admin can open for a browser already signed in here as an Administrator (#215). */
   bridge?: RespondBridge;
+  /** Runs ahead of the sign-in, to note a plain-HTTP connection (#306). It never blocks. */
+  onSignIn?: RequestHandler;
 }
 
 const COOKIE = 'podium_respond';
@@ -47,6 +49,8 @@ interface SignIn {
   personId: number | null;
   tokenHash: string | null;
   last: number;
+  /** Set by an explicit Lock Admin: this sign-in no longer opens Admin by itself (#272). A new sign-in starts without it. */
+  adminHeld?: boolean;
 }
 
 /** Who a signed-in browser is, worked out afresh on each request. */
@@ -101,6 +105,54 @@ export function mountRespondRoutes(router: Router, d: RespondDeps): void {
   const refuse = (req: Request, res: Response, status: number, reason: string, extra: Record<string, unknown> = {}) => {
     logger.warn('respond.refused', `podium: refused ${req.method} ${req.baseUrl}${req.path} from ${sourceOf(req)}: ${reason}`, { status, reason, source: sourceOf(req), session_id: req.params.id ?? null });
     res.status(status).json({ ok: false, error: reason, ...extra });
+  };
+
+  // ---- what became of a delivery (#304) ----------------------------------------------------------
+
+  /** The address of the request that is changing a delivery's fate, for the admin log; 'server' when none is (a report's implicit close). */
+  let trailSource = 'server';
+  const withSource = <T>(src: string, fn: () => T): T => {
+    trailSource = src;
+    try {
+      return fn();
+    } finally {
+      trailSource = 'server';
+    }
+  };
+  const actorOf = (name: string): string => (name === ADMIN_OWNER ? ADMIN_SECRET_ACTOR : name);
+  const RESULT_WORDS: Record<DeliveryResult, string> = {
+    took: 'the session took it',
+    queued: 'the session queued it',
+    'not-taken': 'the session did not take it',
+    refused: 'the session refused it',
+    closed: 'it had closed before the session got it',
+  };
+  const DROP_WORDS: Record<DropWhy, string> = {
+    discarded: 'discarded by its sender, so it never reached the session',
+    'ask-closed': 'the ask closed first, so it never reached the session',
+    'session-ended': 'the session ended first, before any result came back',
+    'queued-session-ended': 'the session ended while it was still queued, so Podium cannot tell whether it was read',
+    'session-deleted': 'the session was deleted first, before any result came back',
+    'responding-off': 'responding was turned off first, before any result came back',
+  };
+  fleet.respond.trail = (t: DeliveryTrail) => {
+    // The store calls this mid-change; a failing log write must not leave a delivery half-updated.
+    try {
+      writeTrail(t);
+    } catch (err) {
+      logger.warn('respond.trail_failed', `podium: could not log what became of a delivery in session ${t.sessionId}`, { session_id: t.sessionId, error: String(err) });
+    }
+  };
+  const writeTrail = (t: DeliveryTrail) => {
+    const row = fleet.db.getSession(t.sessionId);
+    const where = `${logWords(t.delivery)} in ${row?.name ?? 'a session'} (${t.sessionId.slice(0, 8)}) [${shortDeliveryId(t.delivery)}]`;
+    if (t.kind === 'result') {
+      people?.log('respond_result', `${where}: ${RESULT_WORDS[t.result]}`, trailSource, now(), actorOf(t.delivery.by));
+      logger.info('respond.result', `podium: ${logWords(t.delivery).toLowerCase()} in session ${t.sessionId} came back ${t.result}`, { session_id: t.sessionId, kind: t.delivery.kind, result: t.result });
+    } else {
+      people?.log('respond_dropped', `${where}: ${DROP_WORDS[t.why]}`, trailSource, now(), actorOf(t.by));
+      logger.info('respond.dropped', `podium: ${logWords(t.delivery).toLowerCase()} in session ${t.sessionId} was dropped (${t.why})`, { session_id: t.sessionId, kind: t.delivery.kind, why: t.why });
+    }
   };
 
   // ---- the mod's side ---------------------------------------------------------------------------
@@ -169,7 +221,7 @@ export function mountRespondRoutes(router: Router, d: RespondDeps): void {
     }
     const answer = typeof b?.answer === 'string' ? b.answer.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, RESPOND_LIMITS.answer) : null;
     const at = typeof b?.at === 'number' && Number.isFinite(b.at) ? b.at : now();
-    fleet.respond.close(row.id, req.params.askId!, { outcome: outcome as AskCloseOutcome, at, answer, planApproved: b?.planApproved === true });
+    withSource(sourceOf(req), () => fleet.respond.close(row.id, req.params.askId!, { outcome: outcome as AskCloseOutcome, at, answer, planApproved: b?.planApproved === true }));
     logger.debug('respond.closed', `podium: an ask in session ${row.id} closed (${outcome})`, { session_id: row.id, outcome });
     res.json({ ok: true });
   });
@@ -182,11 +234,13 @@ export function mountRespondRoutes(router: Router, d: RespondDeps): void {
       res.status(400).json({ ok: false, error: `expected result ${DELIVERY_RESULTS.join(', ')}`, path: '$.result' });
       return;
     }
-    if (!fleet.respond.result(row.id, req.params.deliveryId!, result as DeliveryResult)) {
+    const got = withSource(sourceOf(req), () => fleet.respond.result(row.id, req.params.deliveryId!, result as DeliveryResult));
+    if (got === 'unknown') {
       res.status(404).json({ ok: false, error: 'unknown delivery' });
       return;
     }
-    logger.info('respond.delivered', `podium: a delivery to session ${row.id} came back ${result}`, { session_id: row.id, result });
+    // A retry of a result the delivery already has is answered 200 but logged once (#330).
+    if (got === 'new') logger.info('respond.delivered', `podium: a delivery to session ${row.id} came back ${result}`, { session_id: row.id, result });
     res.json({ ok: true });
   });
 
@@ -241,9 +295,21 @@ export function mountRespondRoutes(router: Router, d: RespondDeps): void {
   };
 
   if (d.bridge) {
+    const signInOf = (req: Request) => {
+      const sid = readCookie(req, COOKIE);
+      return sid ? signIns.get(sid) : undefined;
+    };
     d.bridge.administratorOf = (req) => {
       const v = enabled() ? viewerOf(req) : null;
-      return v?.admin ? { personId: v.personId } : null;
+      return v?.admin && !signInOf(req)?.adminHeld ? { personId: v.personId } : null;
+    };
+    d.bridge.hold = (req) => {
+      const s = signInOf(req);
+      if (s) s.adminHeld = true;
+    };
+    d.bridge.release = (req, personId) => {
+      const s = signInOf(req);
+      if (s && s.personId === personId) s.adminHeld = false; // only the person who is signed in here lifts their own hold
     };
   }
 
@@ -253,7 +319,7 @@ export function mountRespondRoutes(router: Router, d: RespondDeps): void {
     res.json(me);
   });
 
-  browser.post('/sign-in', (req, res) => {
+  browser.post('/sign-in', d.onSignIn ?? ((_req, _res, next) => next()), (req, res) => {
     if (!enabled()) {
       refuse(req, res, 403, 'responding is off');
       return;
@@ -335,7 +401,7 @@ export function mountRespondRoutes(router: Router, d: RespondDeps): void {
   /** Each answer, message and command the server takes: the admin log and the server log, never its text (7.7). */
   const audit = (req: Request, v: Viewer, row: SessionRow, delivery: Delivery) => {
     const src = sourceOf(req);
-    people?.log('respond_sent', `${logWords(delivery)} in ${row.name} (${row.id.slice(0, 8)})`, src, now(), v.actor);
+    people?.log('respond_sent', `${logWords(delivery)} in ${row.name} (${row.id.slice(0, 8)}) [${shortDeliveryId(delivery)}]`, src, now(), v.actor);
     logger.info('respond.sent', `podium: ${logWords(delivery).toLowerCase()} in session ${row.id}`, { session_id: row.id, kind: delivery.kind, admin: v.admin, source: src });
   };
 
@@ -385,7 +451,7 @@ export function mountRespondRoutes(router: Router, d: RespondDeps): void {
       refuse(req, res, 403, 'sign in to respond');
       return;
     }
-    const out = fleet.respond.discard(req.params.deliveryId!, v.name, v.admin);
+    const out = withSource(sourceOf(req), () => fleet.respond.discard(req.params.deliveryId!, v.name, v.admin));
     if (out === 'unknown') res.status(404).json({ ok: false, error: 'unknown delivery' });
     else if (out === 'forbidden') refuse(req, res, 403, 'not your answer');
     else if (out === 'handed-over') res.status(409).json({ ok: false, error: 'handed over' });

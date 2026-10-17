@@ -64,6 +64,14 @@ interface AskEntry {
   ran?: boolean;
 }
 
+/** Why the server let go of a delivery that has no result (#304, #326, #333, #334). */
+export type DropWhy = 'discarded' | 'ask-closed' | 'session-ended' | 'queued-session-ended' | 'session-deleted' | 'responding-off';
+
+/** What became of a delivery after the server took it, for the admin log (#304): never its text. */
+export type DeliveryTrail =
+  | { kind: 'result'; sessionId: string; delivery: Delivery; result: DeliveryResult }
+  | { kind: 'dropped'; sessionId: string; delivery: Delivery; why: DropWhy; /** Who discarded it; the sender for every other reason. */ by: string };
+
 export type HoldResult = { kind: 'delivery'; delivery: Delivery } | { kind: 'none' } | { kind: 'unknown' } | { kind: 'closed'; outcome: AskOutcome };
 
 interface Waiter {
@@ -189,9 +197,16 @@ function newId(): string {
   return `dlv_${randomBytes(12).toString('hex')}`;
 }
 
+/** The short id the admin log shows for a delivery, so its rows match: `dlv_` and the first 8 hex digits. */
+export function shortDeliveryId(d: Delivery): string {
+  return d.id.slice(0, 12);
+}
+
 export class RespondStore {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly waiters = new Set<Waiter>();
+  /** Told what became of each delivery (#304). The routes set it to write the admin log. */
+  trail: (t: DeliveryTrail) => void = () => {};
 
   constructor(
     private readonly now: () => number,
@@ -349,6 +364,7 @@ export class RespondStore {
     if (d && d.result === null && !d.handedOver) {
       d.result = 'closed';
       this.feed?.remove(sessionId, d.d.id);
+      this.trail({ kind: 'dropped', sessionId, delivery: d.d, why: 'ask-closed', by: d.d.by });
     }
     this.wake(sessionId, e.ask.id, { kind: 'closed', outcome: closed.outcome });
     this.onChange(sessionId);
@@ -359,13 +375,26 @@ export class RespondStore {
     const s = this.sessions.get(sessionId);
     if (!s) return;
     for (const e of s.asks.values()) if (!e.closed) this.setClosed(sessionId, e, { outcome: 'ended', at: this.now(), by: null, answer: null, planApproved: false, implicit: false });
+    // A message or command with no result yet never reached the session. One the session queued may still be read, so the
+    // row for it says only that the session ended first (#334); one with a final result already has its row.
+    for (const m of s.messages) {
+      if (m.result === null) this.trail({ kind: 'dropped', sessionId, delivery: m.d, why: 'session-ended', by: m.d.by });
+      else if (m.result === 'queued') this.trail({ kind: 'dropped', sessionId, delivery: m.d, why: 'queued-session-ended', by: m.d.by });
+    }
     s.messages = [];
+  }
+
+  /** A row for each answer, message or command held with no result yet, as the entry is about to go (#333). */
+  private dropPending(sessionId: string, s: SessionEntry, why: DropWhy): void {
+    const waiting = [...s.messages, ...[...s.asks.values()].flatMap((e) => (e.delivery ? [e.delivery] : []))];
+    for (const d of waiting) if (d.result === null) this.trail({ kind: 'dropped', sessionId, delivery: d.d, why, by: d.d.by });
   }
 
   /** The session is gone: everything it held goes. */
   dropSession(sessionId: string): void {
     const s = this.sessions.get(sessionId);
     if (!s) return;
+    this.dropPending(sessionId, s, 'session-deleted');
     for (const e of s.asks.values()) this.wake(sessionId, e.ask.id, { kind: 'closed', outcome: 'ended' });
     this.sessions.delete(sessionId);
   }
@@ -374,6 +403,7 @@ export class RespondStore {
   clear(): void {
     for (const w of [...this.waiters]) this.release(w, { kind: 'closed', outcome: 'ended' });
     const ids = [...this.sessions.keys()];
+    for (const [id, s] of this.sessions) this.dropPending(id, s, 'responding-off');
     this.sessions.clear();
     for (const id of ids) this.onChange(id);
   }
@@ -468,23 +498,27 @@ export class RespondStore {
       });
   }
 
-  /** The mod says what became of a delivery. Returns false for one the server no longer holds. */
-  result(sessionId: string, deliveryId: string, result: DeliveryResult): boolean {
+  /** The mod says what became of a delivery: 'new' for a result not yet recorded, 'repeat' for one it already has (#330), 'unknown' for a delivery the server no longer holds. */
+  result(sessionId: string, deliveryId: string, result: DeliveryResult): 'new' | 'repeat' | 'unknown' {
     const s = this.sessions.get(sessionId);
-    if (!s) return false;
+    if (!s) return 'unknown';
     const msg = s.messages.find((m) => m.d.id === deliveryId);
     if (msg) {
+      if (msg.result === result) return 'repeat'; // a retry of what is already recorded (#327)
       msg.result = result;
+      this.trail({ kind: 'result', sessionId, delivery: msg.d, result });
       if (result === 'refused' || result === 'closed') this.feed?.remove(sessionId, deliveryId);
       else this.feed?.update(sessionId, deliveryId, noteFor(msg.d, null, result));
       // A message with its final result is done; keep only those still waiting for one.
       s.messages = s.messages.filter((m) => m.result === null || m.result === 'queued');
-      return true;
+      return 'new';
     }
     const e = [...s.asks.values()].find((a) => a.delivery?.d.id === deliveryId);
-    if (!e || !e.delivery) return false;
+    if (!e || !e.delivery) return 'unknown';
     const d = e.delivery;
+    if (d.result === result) return 'repeat'; // a retry of what is already recorded (#327)
     d.result = result;
+    this.trail({ kind: 'result', sessionId, delivery: d.d, result });
     if (result === 'took') {
       if (!e.closed || e.closed.implicit) e.closed = { outcome: 'podium', at: this.now(), by: d.d.by, answer: null, planApproved: d.d.kind === 'plan-approve', implicit: false };
       this.wake(sessionId, e.ask.id, { kind: 'closed', outcome: 'podium' });
@@ -497,7 +531,7 @@ export class RespondStore {
       this.feed?.remove(sessionId, deliveryId);
     }
     this.onChange(sessionId);
-    return true;
+    return 'new';
   }
 
   /** "Discard my answer": drops an answer or message the mod has not been handed yet. */
@@ -512,6 +546,7 @@ export class RespondStore {
       if (mi >= 0) s.messages.splice(mi, 1);
       else if (ask) ask.delivery = null;
       this.feed?.remove(sid, deliveryId);
+      this.trail({ kind: 'dropped', sessionId: sid, delivery: d.d, why: 'discarded', by: viewer });
       this.onChange(sid);
       return 'ok';
     }
