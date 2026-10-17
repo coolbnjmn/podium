@@ -336,7 +336,7 @@ Places where the spec was silent, ambiguous or wrong, the reading chosen, and wh
 
 36. **Settings-hook snippet location (T5.1).** The spec asks for a `docs/` snippet; this repo's CLAUDE.md
     says not to start a new standing doc when an existing one can hold the content, so the
-    `.claude/settings.json` snippet is in the README ("Sessions without the mod").
+    `.claude/settings.json` snippet is in [REPORTER.md](REPORTER.md#sessions-without-the-mod).
 37. **Hook ingest merges with stored rows.** Each settings hook is one event, so `POST /hook` reads the
     stored session and agents, applies the event, and ingests the result through the normal path
     (`reporter.version: "hooks"`, shown as `SessionView.reporter: 'hooks'`). It never takes

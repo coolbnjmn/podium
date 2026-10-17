@@ -1,7 +1,7 @@
 # User guide
 
-How to set up Podium and read the dashboard. For the option and environment variable tables, see the
-[README](../README.md). If something looks wrong, see [GOTCHAS.md](GOTCHAS.md).
+How to set up Podium and read the dashboard. For the mod's options see [REPORTER.md](REPORTER.md), and for the server's settings
+see [SERVER.md](SERVER.md). If something looks wrong, see [GOTCHAS.md](GOTCHAS.md).
 
 Podium shows every Claude Code session on your machine in one browser tab. It only watches: it never sends
 a prompt to a session, stops an agent or changes anything.
@@ -42,7 +42,7 @@ In Claude Code:
 Then give it the token. Print it with `podiumctl token`, and enter it with
 `/plugin configure podium-reporter@eengelking-marketplace`. If someone else runs the server, ask them for
 your own token and enter it as `token`, with your name as `userName` (see "Admin" below). To run one
-server for several people, see "Several people on one Podium" in the README: it covers the bind address,
+server for several people, see "Several people on one Podium" in [SERVER.md](SERVER.md#run-it-with-podiumctl): it covers the bind address,
 the firewall, the names the server accepts (`PODIUM_ALLOWED_HOSTS`, for reaching it by a name rather than an
 address) and what everyone who can reach the server can see.
 
@@ -282,7 +282,7 @@ To turn it on:
 1. Update the mod if the section says your session reports an older version (see "Updating the mod" below).
 2. In Claude Code on the machine that runs the sessions, run `/plugin configure podium-reporter@eengelking-marketplace`
    and set **Send an agent's recent activity** (`activityFeed`) to on. The same setting is in the `/config` menu, or
-   you can set `activityFeed` to `true` under `pluginConfigs` in `~/.claude/settings.json` (the README lists where).
+   you can set `activityFeed` to `true` under `pluginConfigs` in `~/.claude/settings.json` ([REPORTER.md](REPORTER.md#install-the-mod) lists where).
 3. A changed setting reloads the mod, so a session that is already running should pick it up. If the panel still
    says the option is off, run `/reload-plugins` in that session.
 4. Open the agent's panel. The feed starts empty and fills from that moment, because nothing is sent for an agent
@@ -575,7 +575,7 @@ is recreated. Filter on `service` to see every run.
 
 You do not have to restart them to see them. Claude Code's settings hooks can report a reduced view: the
 session, its directory and model, and its agents, marked "settings hooks". See "Sessions without the mod"
-in the README for the snippet to add to `~/.claude/settings.json`.
+in [REPORTER.md](REPORTER.md#sessions-without-the-mod) for the snippet to add to `~/.claude/settings.json`.
 
 ## Updating the mod
 
@@ -626,7 +626,7 @@ More in [GOTCHAS.md](GOTCHAS.md).
 
 ## What leaves a session
 
-Only to the server URL you set, and only the fields the README lists under "What leaves the session". Text
+Only to the server URL you set, and only the fields [REPORTER.md](REPORTER.md#what-leaves-the-session) lists. Text
 is cut to fixed limits, and anything that looks like a secret is replaced with `[redacted]` before it is sent.
 Podium never reads transcripts or files. An agent's whole task prompt and final answer leave the session only
 if you turn on the mod's `fullPrompts` option, which is off by default. What an agent is doing (its recent tool

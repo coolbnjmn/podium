@@ -45,7 +45,11 @@ npm test               # server, UI, simulator and podiumctl tests (vitest)
 npm run build          # UI and server build, scripts type-check
 npm run test:mod       # the mod's tests (needs Claude Code)
 npm run typecheck:mod  # the mod against Claude Code's plugin API declarations (needs Claude Code)
-npm run podium:smoke   # end to end: server, simulator, SSE
+npm run podium:smoke   # end to end: server, simulator, SSE, directly and through Vite
+scripts/podium-soak.sh --help   # load and restart check
+scripts/gpu-sample.sh --help    # sample the Mac's GPU load while a tab is open (macOS)
+scripts/agent-context-audit.sh --help  # compare each agent's Tokens with its own transcript
+scripts/agent-tokens-sample.sh --help  # log a running agent's Tokens over time
 ```
 
 CI runs `npm test` and `npm run build` on every PR into `development` or `main`. It cannot run the two mod checks, because a stock runner
@@ -66,7 +70,9 @@ own conversation. Other docs should link to the spec section instead of restatin
 
 | Doc | Owns |
 |---|---|
-| `README.md` | Orientation, install, run, settings tables |
+| `README.md` | Orientation, quick start and the table of docs |
+| `docs/SERVER.md` | Running the server: `podiumctl`, several people on one server, server settings |
+| `docs/REPORTER.md` | The reporter mod: install, options, what leaves a session |
 | `docs/USER_GUIDE.md` | Using the dashboard, day-to-day |
 | `docs/SPEC.md` | Intended behavior and requirements |
 | `docs/ARCHITECTURE.md` | How it was built, departures from the spec, verification, known issues |
