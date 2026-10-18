@@ -1,7 +1,6 @@
 // The kanban board (#346): every session's plan steps by state, read-only. A card opens its orchestrator's page.
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { BOARD_COLUMNS, buildBoard, CARDS_PER_PAGE, EMPTY_COLUMN, groupBySession, orderCards, type BoardCard, type BoardColumn } from "../board";
-import { familyName } from "../logic";
 import { filterByPeople, meKey, peopleActive } from "../people";
 import { readJson, writeJson } from "../storage";
 import { GOTCHAS_URL, type SessionView } from "../types";
@@ -37,21 +36,19 @@ function Card({ card, showOrchestrator, flash, fresh, onOpen }: { card: BoardCar
   // A card of its own already says what it needs as its title; a step moved to Review says it here.
   const whyLine = card.why ? (card.waiting ? card.why.detail : card.why.detail ? `${card.why.lead}: ${card.why.detail}` : card.why.lead) : null;
   const cls = ["kb-card", flash && "flash", fresh && "fresh"].filter(Boolean).join(" ");
+  // The live wording replaces the step's text while it is in progress; showing both said the same thing twice.
+  const work = !card.waiting && step.state === "active" && step.activeText ? step.activeText : step.text;
   return (
     <a className={cls} href="#/" data-key={card.key} aria-label={`${step.text}, ${card.waiting ? "waiting" : step.state}, ${s.name}`} onClick={open}>
-      <div className="kb-text">{step.text}</div>
-      {!card.waiting && step.state === "active" && step.activeText && <div className="kb-act">{step.activeText}</div>}
+      {showOrchestrator && (
+        <div className="kb-title" style={cssVar(FAMILY_COLOR[s.modelFamily])}>
+          <i aria-hidden="true" />
+          <b>{s.name}</b>
+        </div>
+      )}
+      <div className="kb-text">{work}</div>
       {whyLine && <div className="kb-wait">{whyLine}</div>}
-      <div className="kb-meta">
-        {step.ownerLabel && <span className="kb-own">{step.ownerLabel}</span>}
-        {showOrchestrator && (
-          <span className="kb-orch" style={cssVar(FAMILY_COLOR[s.modelFamily])}>
-            <i aria-hidden="true" />
-            <b>{s.name}</b>
-            {familyName(s.modelFamily, s.model)}
-          </span>
-        )}
-      </div>
+      {step.ownerLabel && <div className="kb-own">{step.ownerLabel}</div>}
     </a>
   );
 }

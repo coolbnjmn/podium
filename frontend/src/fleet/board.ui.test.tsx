@@ -28,20 +28,23 @@ describe("kanban board", () => {
   it("shows one column per state, with each step in its own and a count on each", () => {
     board([makeSession()]);
     expect(within(column("Pending")).getByText("Write rollout notes")).toBeInTheDocument();
-    expect(within(column("In progress")).getByText("Port invoice endpoints")).toBeInTheDocument();
+    // An in-progress card shows the live wording instead of the step text, not both.
+    expect(within(column("In progress")).getByText("Porting")).toBeInTheDocument();
+    expect(within(column("In progress")).queryByText("Port invoice endpoints")).toBeNull();
     expect(within(column("Blocked")).getByText("Run staging backfill")).toBeInTheDocument();
     expect(within(column("Done")).getByText("Map invoice call sites")).toBeInTheDocument();
     expect(column("Review")).toHaveTextContent("Nothing waiting on a person right now.");
     expect(column("In progress")).toHaveAccessibleName("In progress, 1 step");
   });
 
-  it("shows the active wording, the owning agent and the orchestrator on a card", () => {
+  it("titles a card with its orchestrator, then the work, then the agent doing it, and shows no model", () => {
     board([makeSession({ plan: { title: "t", source: "TaskCreate", steps: [step("1", "active", "Port endpoints", { activeText: "Porting endpoints", ownerLabel: "Explore · Haiku low" })] } })]);
     const card = within(column("In progress")).getByRole("link", { name: "Port endpoints, active, api-refactor" });
-    expect(card).toHaveTextContent("Porting endpoints");
-    expect(card).toHaveTextContent("Explore · Haiku low");
-    expect(card).toHaveTextContent("api-refactor");
-    expect(card).toHaveTextContent("Opus");
+    expect([...card.children].map((c) => c.className)).toEqual(["kb-title", "kb-text", "kb-own"]);
+    expect(card.querySelector(".kb-title")).toHaveTextContent("api-refactor");
+    expect(card.querySelector(".kb-text")).toHaveTextContent(/^Porting endpoints$/);
+    expect(card.querySelector(".kb-own")).toHaveTextContent("Explore · Haiku low");
+    expect(card).not.toHaveTextContent("Opus");
   });
 
   it("puts the in-progress step of a session that waits on its person in Review", () => {

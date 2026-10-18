@@ -128,7 +128,7 @@ comes back if the session reports again.
 
 **Board** in the top bar (`#/board`) shows every session's plan steps as cards in five columns: Pending, In
 progress, Review, Blocked and Done. It answers "what is in progress across all my sessions?" without opening
-each one. Click a card to open its orchestrator. You cannot move a card: the state comes from Claude Code, and
+each one. Each card is titled with its orchestrator, shows the work under it, and names the agent doing it at the bottom. Click a card to open its orchestrator. You cannot move a card: the state comes from Claude Code, and
 Podium only watches.
 
 - **Review** holds an in-progress step while its session waits on you (a question, a plan or a permission

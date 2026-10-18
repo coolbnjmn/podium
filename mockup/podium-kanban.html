@@ -162,7 +162,11 @@ button.evb:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 /* a card is one link to the orchestrator page */
 .tc { display: block; will-change: transform; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px 10px; position: relative; }
 .tc:hover { border-color: var(--axis); background: color-mix(in srgb, var(--ink) 3%, var(--surface)); }
-.tc-t { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.tc-title { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; font-size: 13px; }
+.tc-title b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-own { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+.tc-t { font-size: 12.5px; line-height: 1.35; color: var(--ink2); overflow-wrap: anywhere; }
+.c-active .tc-t { color: var(--good-text); }
 .tc-act { margin-top: 3px; font-size: 12px; color: var(--good-text); display: flex; gap: 6px; align-items: baseline; }
 .tc-act::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--good); translate: 0 -1px; animation: beat 2.4s ease-in-out infinite; }
 .tc.flash { animation: flash 2.6s ease-out; }
@@ -185,7 +189,7 @@ button.evb:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .tb-me { display: inline-flex; align-items: center; gap: 8px; }
 .tb-who { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); font-size: 12.5px; }
 .tb-who b { color: var(--ink); font-weight: 600; }
-.hide-orch .tc-f .orch { display: none; }
+.hide-orch .tc-title { display: none; }
 
 .empty { border: 1px dashed var(--axis); border-radius: 8px; padding: 14px 12px; color: var(--muted); font-size: 12px; text-align: center; }
 .pager { display: flex; justify-content: space-between; align-items: center; gap: 4px 8px; flex-wrap: wrap; padding: 8px 12px; border-top: 1px solid var(--grid); font-size: 11.5px; color: var(--muted); }
@@ -334,12 +338,11 @@ const KEY = (o, k) => o.id + ":" + k;
 function card(o, s, k) {
   const [st, text, act, own] = s;
   const label = text + ", " + st + ", " + o.name;
-  const actLine = st === "active" && act ? '<div class="tc-act">' + esc(act) + '</div>' : "";
-  const why = st === "blocked" && act ? '<div class="tc-why">' + esc(act) + '</div>' : "";
+  // The live wording replaces the step's text while it is in progress; the agent doing it is the last line.
+  const work = st === "active" && act ? act : text;
   return '<a class="tc" data-key="' + KEY(o, k) + '" href="#orchestrator-' + o.id + '" aria-label="' + esc(label) + '">' +
-    '<div class="tc-t">' + esc(text) + '</div>' + actLine + why +
-    '<div class="tc-f">' + (own ? '<span class="own">' + ICON_AGENT + esc(own) + '</span>' : '') +
-    '<span class="orch"><i class="sq" style="--fam:' + FAM[o.model] + '"></i><b>' + esc(o.name) + '</b>' + o.model + '</span></div></a>';
+    '<div class="tc-title"><i class="sq" style="--fam:' + FAM[o.model] + '"></i><b>' + esc(o.name) + '</b></div>' +
+    '<div class="tc-t">' + esc(work) + '</div>' + (own ? '<div class="tc-own">' + esc(own) + '</div>' : '') + '</a>';
 }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 function finished(o) { return o.steps.length && o.steps.every(s => s[0] === "done") && (o.state === "stale" || o.state === "ended"); }

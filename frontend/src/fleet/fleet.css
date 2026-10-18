@@ -1048,16 +1048,13 @@ body.modal-open #root { filter: blur(5px); }
 .podium .kb-card:hover { border-color: var(--axis); background: color-mix(in srgb, var(--ink) 3%, var(--surface)); }
 .podium .kb-blocked .kb-card { border-color: color-mix(in srgb, var(--crit) 50%, var(--border)); }
 .podium .kb-done .kb-text { color: var(--muted); }
-.podium .kb-text { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
-.podium .kb-act { margin-top: 3px; font-size: 12px; color: var(--good-text); display: flex; gap: 6px; align-items: baseline; }
-.podium .kb-act::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--good); translate: 0 -1px; }
+.podium .kb-text { font-size: 12.5px; line-height: 1.35; color: var(--ink2); overflow-wrap: anywhere; }
+.podium .kb-active .kb-text { color: var(--good-text); }
+.podium .kb-title { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 4px; font-size: 13px; }
+.podium .kb-title i { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.podium .kb-title b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.podium .kb-own { margin-top: 6px; font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
 .podium .kb-wait { margin-top: 3px; font-size: 12px; color: var(--warn-text); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.podium .kb-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: 11.5px; color: var(--muted); }
-.podium .kb-meta:empty { display: none; }
-.podium .kb-own { color: var(--ink2); }
-.podium .kb-orch { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); min-width: 0; }
-.podium .kb-orch i { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
-.podium .kb-orch b { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12ch; }
 .podium .kb-card.flash { animation: kb-flash 2.6s ease-out; }
 @keyframes kb-flash { from { background: color-mix(in srgb, var(--good) 24%, var(--surface)); border-color: var(--good); } to { background: var(--surface); } }
 .podium .kb-card.fresh { animation: kb-fresh .28s ease-out, kb-flash 2.6s ease-out; }
