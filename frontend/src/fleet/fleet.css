@@ -1042,7 +1042,9 @@ body.modal-open #root { filter: blur(5px); }
 .podium .kb-hint { margin-left: auto; font-size: 11px; color: var(--muted); text-align: right; }
 .podium .kb-col-b { overflow: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .podium .kb-slot { display: flex; flex-direction: column; gap: 6px; }
-.podium .kb-lane { padding-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--ink2); }
+.podium .kb-lane { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 2px 0; font-size: 15px; letter-spacing: -0.01em; }
+.podium .kb-lane i { flex: none; width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+.podium .kb-lane b { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .podium .kb-empty { border: 1px dashed var(--axis); border-radius: 8px; padding: 14px 12px; color: var(--muted); font-size: 12px; text-align: center; }
 .podium .kb-card { display: block; text-decoration: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px 10px; }
 .podium .kb-card:hover { border-color: var(--axis); background: color-mix(in srgb, var(--ink) 3%, var(--surface)); }

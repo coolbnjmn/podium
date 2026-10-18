@@ -155,8 +155,9 @@ button.evb:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .c-pending { --c: var(--axis); } .c-active { --c: var(--good); } .c-blocked { --c: var(--crit); } .c-review { --c: var(--warn); } .c-done { --c: var(--muted); }
 
 /* lane label (grouped view only) */
-.lane { display: flex; align-items: center; gap: 7px; padding: 6px 4px 0; font-size: 11.5px; color: var(--muted); }
-.lane b { color: var(--ink2); font-weight: 600; }
+.lane { display: flex; align-items: center; gap: 8px; padding: 6px 2px 0; font-size: 15px; letter-spacing: -0.01em; }
+.lane .sq { width: 10px; height: 10px; }
+.lane b { font-weight: 700; }
 .lane:first-child { padding-top: 0; }
 
 /* a card is one link to the orchestrator page */
@@ -381,7 +382,7 @@ function render() {
       if (S.group) {
         const out = []; let last = null;
         for (const [o, st, k] of slice) {
-          if (o !== last) { out.push('<div class="lane"><i class="sq" style="--fam:' + FAM[o.model] + '"></i><b>' + esc(o.name) + '</b>' + o.model + (o.allDone ? " · all done" : "") + '</div>'); last = o; }
+          if (o !== last) { out.push('<div class="lane"><i class="sq" style="--fam:' + FAM[o.model] + '"></i><b>' + esc(o.name) + '</b>' + (o.allDone ? '<span style="color:var(--muted);font-size:12px">all done</span>' : '') + '</div>'); last = o; }
           out.push(card(o, st, k));
         }
         body = out.join("");

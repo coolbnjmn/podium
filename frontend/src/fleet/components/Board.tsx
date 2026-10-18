@@ -229,7 +229,10 @@ export function Board(props: {
                   <div className="kb-col-b">
                     {slice.length === 0 && <div className="kb-empty">{EMPTY_COLUMN[key]}</div>}
                     {slice.map((c) => {
-                      const lane = prefs.group && c.session.id !== last ? <div className="kb-lane" key={`lane:${c.key}`}>{c.session.name}</div> : null;
+                      const lane = prefs.group && c.session.id !== last ? <div className="kb-lane" key={`lane:${c.key}`} style={cssVar(FAMILY_COLOR[c.session.modelFamily])}>
+                          <i aria-hidden="true" />
+                          <b>{c.session.name}</b>
+                        </div> : null;
                       last = c.session.id;
                       return (
                         <div key={c.key} className="kb-slot">
