@@ -5,7 +5,7 @@ import { ConnectionPill } from "./ConnectionPill";
 import { TopBarSignIn } from "./SignIn";
 import { useRespond } from "../useRespond";
 
-export function TopBar(props: { page: string; phase: Phase; reporters: number; outdated?: number; newer?: number; collapsed?: boolean; onCollapse?: () => void; wall?: ReactNode }) {
+export function TopBar(props: { page: string; phase: Phase; reporters: number; outdated?: number; newer?: number; collapsed?: boolean; onCollapse?: () => void; wall?: ReactNode; onFleet?: () => void }) {
   const { phase, reporters } = props;
   // Admin is offered only to a signed-in Administrator (#215). The server checks it again; hiding the button is not the gate.
   const admin = useRespond()?.me?.admin === true;
@@ -29,6 +29,26 @@ export function TopBar(props: { page: string; phase: Phase; reporters: number; o
         </span>
       )}
       <span className="spacer" />
+      {/* Fleet goes back to the wall (#346), clearing an open orchestrator too; it is a link so it still works in a new tab. The wall's own pill names it, so it is left off there. */}
+      {props.page !== "Fleet" && (
+        <a
+          className="btn"
+          href="#/"
+          onClick={(e) => {
+            if (!props.onFleet || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+            e.preventDefault();
+            props.onFleet();
+          }}
+        >
+          Fleet
+        </a>
+      )}
+      {/* The Board page's own pill names it, so the button is left off there. */}
+      {props.page !== "Board" && (
+        <a className="btn" href="#/board">
+          Board
+        </a>
+      )}
       <a className="btn" href="#/history">
         History
       </a>

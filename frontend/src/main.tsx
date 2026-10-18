@@ -15,7 +15,8 @@ function Root() {
   const route = routeFor(hash);
   if (route === "history") return <HistoryView />;
   if (route === "admin") return <AdminView />;
-  return <FleetApp />;
+  // The board is a page of the fleet console, so it is the same element with a flag: opening a card keeps the selection it made.
+  return <FleetApp board={route === "board"} />;
 }
 
 const rootElement = document.getElementById("root");

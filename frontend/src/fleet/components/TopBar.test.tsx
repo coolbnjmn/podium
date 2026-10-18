@@ -11,10 +11,27 @@ function renderBar(reporters = 2) {
 describe("TopBar", () => {
   it("puts a Fleet pill before the connection pill", () => {
     renderBar();
-    const fleet = screen.getByText("Fleet");
+    // The page pill; the Fleet button next to Board and History has the same word.
+    const fleet = screen.getAllByText("Fleet").find((e) => e.classList.contains("pill"))!;
     const connection = screen.getByText(/2 reporters live/);
     expect(fleet).toHaveClass("pill");
     expect(fleet.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("leaves the button for the page you are on off the bar: no Fleet on the fleet page, no Board on the board", () => {
+    render(<TopBar page="Fleet" phase="live" reporters={1} />);
+    expect(screen.queryByRole("link", { name: "Fleet" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Board" })).toHaveAttribute("href", "#/board");
+    expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", "#/history");
+    cleanup();
+    render(<TopBar page="Board" phase="live" reporters={1} />);
+    expect(screen.queryByRole("link", { name: "Board" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "#/");
+    cleanup();
+    // An orchestrator's page has both, so there is a way back to the wall and over to the board.
+    render(<TopBar page="Orchestrator" phase="live" reporters={1} />);
+    expect(screen.getByRole("link", { name: "Fleet" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Board" })).toBeInTheDocument();
   });
 
   it("says how many reporters are live, with no synced time", () => {
