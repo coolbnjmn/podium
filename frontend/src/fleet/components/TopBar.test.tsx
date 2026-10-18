@@ -18,13 +18,15 @@ describe("TopBar", () => {
     expect(fleet.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("has Fleet, Board and History buttons, with the current page marked", () => {
-    render(<TopBar page="Board" phase="live" reporters={1} />);
+  it("has Fleet, Board and History buttons, and leaves the Board button off the Board page", () => {
+    render(<TopBar page="Fleet" phase="live" reporters={1} />);
     expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "#/");
     expect(screen.getByRole("link", { name: "Board" })).toHaveAttribute("href", "#/board");
-    expect(screen.getByRole("link", { name: "Board" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "Fleet" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", "#/history");
+    cleanup();
+    render(<TopBar page="Board" phase="live" reporters={1} />);
+    expect(screen.queryByRole("link", { name: "Board" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "#/");
   });
 
   it("says how many reporters are live, with no synced time", () => {

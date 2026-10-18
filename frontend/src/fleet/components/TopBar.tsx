@@ -42,9 +42,12 @@ export function TopBar(props: { page: string; phase: Phase; reporters: number; o
       >
         Fleet
       </a>
-      <a className="btn" href="#/board" aria-current={props.page === "Board" ? "page" : undefined}>
-        Board
-      </a>
+      {/* The Board page's own pill names it, so the button is left off there. */}
+      {props.page !== "Board" && (
+        <a className="btn" href="#/board">
+          Board
+        </a>
+      )}
       <a className="btn" href="#/history">
         History
       </a>
