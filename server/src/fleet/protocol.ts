@@ -5,6 +5,8 @@
 // mod/podium-reporter/hooks/protocol.ts. A test compares the two after whitespace normalization,
 // so edit both together.
 
+import { parseBuild } from './build.js';
+
 // <protocol:begin>
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -283,7 +285,8 @@ export interface SessionReport {
 export interface Report {
   v: 1;
   sentAt: number;
-  reporter: { name: 'podium-reporter'; version: string; engineVersion: string | null; hostSurface: string | null };
+  /** `build` is the commit hash of a dev build of the mod (#400). A release, and a mod that predates it, leave it out. */
+  reporter: { name: 'podium-reporter'; version: string; engineVersion: string | null; hostSurface: string | null; build?: string | null };
   session: SessionReport;
   agents: AgentReport[];
   events: ActivityEvent[];
@@ -451,6 +454,8 @@ export interface ReportReply {
   sessionId: string;
   liveSessions: number;
   serverVersion: string;
+  /** The commit of a dev build of the server (#400); null for a release. Older servers do not send it. */
+  serverBuild?: string | null;
   reporterSupport: { min: string; max: string };
   reporterCompat: 'ok' | 'outdated' | 'newer' | 'unknown';
   watch: string[];
@@ -546,6 +551,8 @@ export interface SessionView {
   reporter: 'mod' | 'hooks';
   /** The mod's version as it reported it; null for a hooks-only session, which has no mod. */
   reporterVersion: string | null;
+  /** The commit hash of a dev build of the mod (#400); null for a release, a hooks-only session and a mod that does not send one. */
+  reporterBuild: string | null;
   /** How that version sits against the range this server supports. Always `unknown` for hooks. */
   compat: ReporterCompat;
   project: string;
@@ -725,8 +732,8 @@ export interface StateBody {
   kpis: Kpis;
   clearedToday: number;
   events: ActivityView[];
-  /** The server's own version and the reporter range it supports, for the mismatch notice. */
-  server: { version: string; reporterSupport: ReporterSupport };
+  /** The server's own version and the reporter range it supports, for the mismatch notice. `build` is the commit hash of a dev build (#400), null for a release. */
+  server: { version: string; build: string | null; reporterSupport: ReporterSupport };
   wall: WallSettingsView;
   /** The Admin's feature flags by id (Admin > Settings > Feature flags), each on unless the Admin turned it off. */
   features: Record<string, boolean>;
@@ -1346,6 +1353,8 @@ export function validateReport(body: unknown): ValidateResult {
       agents: arr(o.agents, '$.agents', LIMITS.agents).map((a, i) => agent(a, `$.agents[${i}]`)),
       events: arr(o.events, '$.events', LIMITS.events).map((e, i) => event(e, `$.events[${i}]`)),
     };
+    const build = parseBuild(r.build);
+    if (build !== null) report.reporter.build = build;
     const userName = strOrNull(o.userName, '$.userName', LIMITS.name);
     if (userName !== null) report.userName = userName;
     const m = machine(o.machine, '$.machine');
