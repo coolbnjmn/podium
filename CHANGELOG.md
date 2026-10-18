@@ -14,6 +14,11 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+### Added
+
+- **A session you named in Claude Code takes that name in Podium (#322).** The reporter reads the session's title from the `SessionStart` and `UserPromptSubmit` hooks, so a `/rename` shows from the next prompt, as the title on the card, the rail and the orchestrator page. `/podium name` still wins, and the Claude Code name ranks above the `sessionName` option and the worktree or folder name (SPEC 6.6). With no name set, nothing changes.
+- **The card and the orchestrator page show the session id, and copy it on a click (#322).** The card has the first eight characters at the right end of its path line; the orchestrator page already had them, and now they are a button. Either one copies the whole id.
+
 ### Changed
 
 - **The README is now the introduction and the quick start, plus a table of the docs.** The `podiumctl`, several-people and server-settings sections moved to the new `docs/SERVER.md`; the mod install, options, what leaves a session and settings hooks moved to the new `docs/REPORTER.md`; the checks list joined `CONTRIBUTING.md`. Links to those sections were updated. Documentation only.

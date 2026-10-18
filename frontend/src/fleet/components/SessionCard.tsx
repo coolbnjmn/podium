@@ -8,6 +8,7 @@ import { BlowBadge, ContextBar, Cost, cssVar, delegatesOf, EffortMeter, FAMILY_C
 import { backgroundLead, backgroundTitle, toolOfNote, waitLead } from "../waiting";
 import { Sparkline } from "./Sparkline";
 import { OwnerLine } from "./People";
+import { SessionId } from "./SessionId";
 
 export const HOOKS_NOTE = "Reported by Claude Code settings hooks, not the reporter mod: context, cost, tokens, the plan and which agent launched which are unavailable, so every agent shows under the orchestrator.";
 
@@ -102,8 +103,11 @@ export function SessionCard(props: { s: SessionView; now: number; config: Lifecy
           </span>
         </div>
         {props.owner && <OwnerLine owner={s.owner} machine={props.owner.machine} showName={props.owner.showName} />}
-        <div className="path mono" title={s.project}>
-          <bdi>{s.project}</bdi>
+        <div className="pathrow">
+          <div className="path mono" title={s.project}>
+            <bdi>{s.project}</bdi>
+          </div>
+          <SessionId id={s.id} nested />
         </div>
         <GitLine git={s.git} />
         {hasNotes && (

@@ -31,7 +31,7 @@ The session appears in Podium once you send its first prompt. A session that has
 off the wall, because Claude Code's background daemon also runs idle twins and spares that report too (see
 "Sessions that have not done anything yet" in [USER_GUIDE.md](USER_GUIDE.md)).
 In the session, `/podium` prints the dashboard link, the connection state and report counts, and
-`/podium name <text>` gives the session a display name. The status line under the prompt reads
+`/podium name <text>` gives the session a display name. Without one, a name you gave the session in Claude Code (for example with `/rename`) is its name in Podium, picked up from the next prompt; the `sessionName` option and the worktree or folder name come after. The status line under the prompt reads
 `podium vX.Y.Z ● N live` (N is the cards on the wall, so a session that has not run yet reads 0), or `podium vX.Y.Z ○ offline` while the server is unreachable (reports queue up and go out
 when it is back). When the mod and the server are on versions that do not match, it ends in `· update mod` or `· upgrade server`, and in `· update available` when the server supports a newer mod than yours. To update the mod, run `claude plugin marketplace update eengelking-marketplace && claude plugin update podium-reporter@eengelking-marketplace` in a shell and then `/reload-plugins` in the session (see "Updating the mod" in [USER_GUIDE.md](USER_GUIDE.md)). Claude Code puts a `⚠` and the mod's name in front of the line; that is how it draws every
 mod's status line, not a Podium warning (see [GOTCHAS.md](GOTCHAS.md)). Effort is read from each model request, so a change made with `/effort` shows after
@@ -49,7 +49,7 @@ instead. Everything except `token` also has a row in the `/config` menu.
 | `userName` | empty | The name your token was made for. The server accepts a report only when the token and this name match. Leave empty when you report with the admin secret. Nothing that names you or your machine is sent until you set it; with it set, reports also carry this machine's name (see below) |
 | `flushIntervalMs` | `1000` | Minimum time between reports while something changes |
 | `heartbeatMs` | `5000` | Report at least this often |
-| `sessionName` | empty | Display name override |
+| `sessionName` | empty | Display name override (below `/podium name` and the name set in Claude Code) |
 | `showStatus` | `true` | Show the status line entry |
 | `fullPrompts` | `false` | Send each agent's whole task prompt and final answer (up to 20,000 characters each, secrets redacted) so the console can open them in a modal. Off by default: only the first 400 characters leave the session. Everyone who can open the console can read them |
 | `activityFeed` | `false` | Send an agent's recent activity: while someone has that agent's panel open in the console, its last 20 tool calls (the tool's name and a short summary of its arguments) and the text it writes between them, each cut to 300 characters with secrets redacted. Nothing is sent for an agent nobody is watching, and the server keeps it in memory only. The orchestrator's own loop works the same way. Everyone who can open the console can watch. The server's Admin can also switch the feed off for everyone under Admin > Settings > Feature flags (on by default); while it is off the server asks no mod for it |

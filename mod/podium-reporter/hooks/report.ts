@@ -22,6 +22,8 @@ export interface ReportMeta {
   now: number;
   /** Set with `/podium name`, kept in $.store per session id. */
   storedName: string | null;
+  /** The session's own name in Claude Code (`/rename`, or its title), from a hook's `session_title` (#322). */
+  claudeName?: string | null;
   /** The `sessionName` option. */
   optionName: string | null;
   /** The `userName` option: the person this reporter is configured as. The server checks it against the token. */
@@ -40,11 +42,12 @@ export interface ReportMeta {
   clearedFrom?: string | null;
 }
 
-/** Display name (SPEC 6.6): /podium name, the option, a worktree's branch or folder, the repo folder, the id. */
-export function displayName(s: Pick<SessionState, 'id' | 'git' | 'projectRoot' | 'cwd'>, storedName: string | null, optionName: string | null): string {
+/** Display name (SPEC 6.6): /podium name, Claude Code's session name, the option, a worktree's branch or folder, the repo folder, the id. */
+export function displayName(s: Pick<SessionState, 'id' | 'git' | 'projectRoot' | 'cwd'>, storedName: string | null, claudeName: string | null | undefined, optionName: string | null): string {
   const pick = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null);
   const name =
     pick(storedName) ??
+    pick(claudeName) ??
     pick(optionName) ??
     (s.git?.isWorktree ? pick(s.git.branch && !s.git.detached ? lastSegment(s.git.branch) : null) ?? pick(s.git.worktreePath ? lastSegment(s.git.worktreePath) : null) : null) ??
     pick(s.projectRoot ? lastSegment(s.projectRoot) : null) ??
@@ -174,7 +177,7 @@ export function buildReport(s0: SessionState, events: readonly ActivityEvent[], 
     ...(meta.userName && meta.userName.trim() ? { userName: clip(meta.userName.trim(), 80), ...(meta.machine ? { machine: { ...meta.machine } } : {}) } : {}),
     session: {
       id: s.id,
-      name: displayName(s, meta.storedName, meta.optionName),
+      name: displayName(s, meta.storedName, meta.claudeName, meta.optionName),
       status: s.status,
       waitReason: s.status === 'waiting' ? s.waitReason : null,
       waitNote: s.status === 'waiting' && s.waitNote ? clip(s.waitNote, 160) : null,

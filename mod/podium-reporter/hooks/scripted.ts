@@ -79,5 +79,5 @@ export function scriptedState(): SessionState {
 
 export function scriptedReport(): Report {
   const [s, events] = drainEvents(scriptedState());
-  return buildReport(s, events, { version: '0.1.0', engineVersion: '2.1.296', hostSurface: 'terminal', now: T0 + 15_000, storedName: null, optionName: null });
+  return buildReport(s, events, { version: '0.1.0', engineVersion: '2.1.296', hostSurface: 'terminal', now: T0 + 15_000, storedName: null, claudeName: null, optionName: null });
 }
