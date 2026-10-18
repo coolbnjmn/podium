@@ -106,6 +106,8 @@ interface Runtime {
   transport: Transport;
   timers: { cancel: () => void }[];
   storedName: string | null;
+  /** Claude Code's own name for a session, from a hook's `session_title`, with the id it was taken under; null until a hook carries one (#322). It counts only while that id is the session being reported, so a /clear or resume never inherits it. The hook's own `session_id` is not used: the reporter keys everything on `$.session.id()`. */
+  claudeName: { id: string; name: string } | null;
   engineVersion: string | null;
   hostSurface: string | null;
   flushing: boolean;
@@ -269,6 +271,15 @@ function openAsks(r: Runtime): Ask[] {
   return [...asks.values()].filter((a) => !a.done && a.listening && a.sessionId === r.state.id).map((a) => a.ask);
 }
 
+/** Keep the name Claude Code gives the session, under the id being reported. A hook with no title leaves the last one alone. */
+function takeClaudeName(r: Runtime, hook: { session_title?: string }): void {
+  const name = typeof hook.session_title === 'string' ? hook.session_title.trim().slice(0, 80) : '';
+  const id = r.state.id;
+  if (!name || (r.claudeName?.id === id && r.claudeName.name === name)) return;
+  r.claudeName = { id, name };
+  r.state = { ...r.state, dirty: true };
+}
+
 function metaOf(r: Runtime, now: number) {
   return {
     version: VERSION,
@@ -276,6 +287,7 @@ function metaOf(r: Runtime, now: number) {
     hostSurface: r.hostSurface,
     now,
     storedName: r.storedName,
+    claudeName: r.claudeName?.id === r.state.id ? r.claudeName.name : null,
     optionName: opts.sessionName || null,
     userName: who.userName || null,
     machine: r.machine,
@@ -1080,6 +1092,7 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
     transport,
     timers: [],
     storedName: await loadName($, id),
+    claudeName: same && rt ? rt.claudeName : null,
     engineVersion: version?.version ?? null,
     hostSurface: e.surface,
     flushing: false,
@@ -1406,6 +1419,17 @@ export const register: Register = (on, rawOptions) => {
     safe('classic.Notification', (r) => {
       r.state = notification(r.state, e.notification_type, e.message, nowMs());
     });
+    return next(e);
+  }).catch(($, e, next) => next(e));
+
+  // Claude Code's own session name (#322): the title rides on these two hooks, so a rename shows from the next prompt.
+  on('classic.SessionStart', async ($, e, next) => {
+    safe('classic.SessionStart', (r) => takeClaudeName(r, e));
+    return next(e);
+  }).catch(($, e, next) => next(e));
+
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    safe('classic.UserPromptSubmit', (r) => takeClaudeName(r, e));
     return next(e);
   }).catch(($, e, next) => next(e));
 

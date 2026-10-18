@@ -5,8 +5,8 @@ import type { SessionView } from "../types";
 import { BlowBadge, Cost } from "./Chips";
 import { IconCheck, IconChevron, IconCopy, IconWarn, IconX } from "./Icons";
 import { HOOKS_NOTE, versionNote } from "./SessionCard";
+import { COPIED_MS } from "./SessionId";
 
-export const COPIED_MS = 1600;
 
 /** Copies the resume command; "Copied" for 1.6 s, or a selected text field when the clipboard refuses. */
 export function CopyResume({ command }: { command: string }) {

@@ -72,7 +72,7 @@ session is not on the wall yet and its status line reads `podium vX.Y.Z ● 0 li
 reads `podium vX.Y.Z ● 1 live`. If it says `podium vX.Y.Z ○ offline`, see "Something is wrong" below, and for the other
 case see "Sessions that have not done anything yet".
 
-Give a session a name that shows on its card with `/podium name <text>`.
+A name you give a session in Claude Code, for example with `/rename`, is its title on the card, the rail and the orchestrator page, from your next prompt. `/podium name <text>` sets a name too, and wins over it. The card and the orchestrator page also show the first eight characters of the session id; click it to copy the whole id.
 
 ## Reading the dashboard
 

@@ -119,6 +119,8 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   })
   on('classic.PermissionRequest', () => ({}))
   on('classic.Notification', () => ({}))
+  on('classic.SessionStart', () => ({}))
+  on('classic.UserPromptSubmit', () => ({}))
   return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, chunks, files: kept }
 }
 
@@ -431,6 +433,48 @@ describe('podium-reporter end to end', () => {
     await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
     await w.clock.advance(1000)
     expect(w.posts.at(-1)!.session.name).toBe('invoice work')
+  })
+
+  test("Claude Code's own session name is the display name once a hook carries it (#322)", async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    // nothing named yet: the worktree branch, as before
+    expect(w.posts.at(-1)!.session.name).toBe('x')
+    await $.classic.UserPromptSubmit({ prompt: 'hi', session_title: '  Calendar filters  ' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('Calendar filters')
+    // a prompt with no title leaves the name alone
+    await $.classic.UserPromptSubmit({ prompt: 'again' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('Calendar filters')
+    // a rename shows on the next prompt
+    await $.classic.UserPromptSubmit({ prompt: 'more', session_title: 'Pi display' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('Pi display')
+  })
+
+  test("a title on classic.SessionStart names the session too, and /podium name still wins (#322)", { options: { sessionName: 'from option' } }, async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.classic.SessionStart({ source: 'resume', session_title: 'Pi display' })
+    await w.clock.advance(1000)
+    // above the sessionName option
+    expect(w.posts.at(-1)!.session.name).toBe('Pi display')
+    await $.command.run(podium('name explicit'))
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('explicit')
+  })
+
+  test("Claude Code's name does not carry over to a new session id (#322)", async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.classic.UserPromptSubmit({ prompt: 'hi', session_title: 'Calendar filters' })
+    await w.clock.advance(1000)
+    w.sessionId.value = 'sess-after-clear'
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.id).toBe('sess-after-clear')
+    expect(w.posts.at(-1)!.session.name).toBe('x')
   })
 
   test('reports whether any client is attached, from the roster', async ($, on) => {
