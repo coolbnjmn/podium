@@ -47,13 +47,14 @@ describe("kanban board", () => {
   it("puts the in-progress step of a session that waits on its person in Review", () => {
     board([planned({ status: "waiting", waitReason: "input" }, step("1", "active", "Pick the OS"))]);
     expect(within(column("Review")).getByText("Pick the OS")).toBeInTheDocument();
+    expect(within(column("Review")).getByText("Waiting for your input")).toBeInTheDocument();
     expect(within(column("In progress")).queryByText("Pick the OS")).toBeNull();
   });
 
   it("shows a session that asks its person a question in Review even though it has no plan", () => {
-    board([makeSession({ id: "q", name: "asker", status: "waiting", waitReason: "permission", plan: null })]);
-    const card = within(column("Review")).getByRole("link", { name: "Waiting on you, waiting, asker" });
-    expect(card).toBeInTheDocument();
+    board([makeSession({ id: "q", name: "asker", status: "waiting", waitReason: "permission", waitNote: 'AskUserQuestion([{"question":"Which fruit would you like?","header":"Fruit"', plan: null })]);
+    const card = within(column("Review")).getByRole("link", { name: "Waiting for your input, waiting, asker" });
+    expect(card).toHaveTextContent("Which fruit would you like?");
     expect(screen.queryByRole("region", { name: "Sessions with no open steps" })).toBeNull();
   });
 

@@ -34,11 +34,14 @@ function Card({ card, showOrchestrator, flash, fresh, onOpen }: { card: BoardCar
     e.preventDefault();
     onOpen(s.id);
   };
+  // A card of its own already says what it needs as its title; a step moved to Review says it here.
+  const whyLine = card.why ? (card.waiting ? card.why.detail : card.why.detail ? `${card.why.lead}: ${card.why.detail}` : card.why.lead) : null;
   const cls = ["kb-card", flash && "flash", fresh && "fresh"].filter(Boolean).join(" ");
   return (
     <a className={cls} href="#/" data-key={card.key} aria-label={`${step.text}, ${card.waiting ? "waiting" : step.state}, ${s.name}`} onClick={open}>
       <div className="kb-text">{step.text}</div>
       {!card.waiting && step.state === "active" && step.activeText && <div className="kb-act">{step.activeText}</div>}
+      {whyLine && <div className="kb-wait">{whyLine}</div>}
       <div className="kb-meta">
         {step.ownerLabel && <span className="kb-own">{step.ownerLabel}</span>}
         {showOrchestrator && (

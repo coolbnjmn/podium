@@ -132,7 +132,7 @@ each one. Click a card to open its orchestrator. You cannot move a card: the sta
 Podium only watches.
 
 - **Review** holds an in-progress step while its session waits on you (a question, a plan or a permission
-  prompt). A session that waits on you but has no plan shows as one "Waiting on you" card there.
+  prompt). A session that waits on you but has no plan shows as one card there. A Review card says why: the question it asks, or the tool it wants to use.
 - A card that changes column slides across and flashes for a moment. Mixed shows every orchestrator's cards
   together; **By orchestrator** groups them. **Me** (only while you are signed in) shows just your sessions.
 - A column shows 25 cards a page; use the page buttons at its foot.

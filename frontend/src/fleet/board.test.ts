@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeSession } from "./fixtures";
-import { BOARD_COLUMNS, buildBoard, columnOf, groupBySession, orderCards, sessionFinished } from "./board";
+import { BOARD_COLUMNS, buildBoard, columnOf, groupBySession, orderCards, sessionFinished, waitWhy } from "./board";
 import type { PlanStep, RespondMe, SessionView } from "./types";
 
 const step = (id: string, state: PlanStep["state"], over: Partial<PlanStep> = {}): PlanStep => ({ id, text: `step ${id}`, state, activeText: null, ownerAgentId: null, ownerLabel: null, ...over });
@@ -26,6 +26,22 @@ describe("columnOf", () => {
     expect(columnOf(waiting, step("1", "active"))).toBe("review");
     expect(columnOf(waiting, step("2", "pending"))).toBe("pending");
     expect(columnOf(waiting, step("3", "blocked"))).toBe("blocked");
+  });
+});
+
+describe("waitWhy", () => {
+  it("names the question a session asks, from the note's first question", () => {
+    const note = 'AskUserQuestion([{"question":"Which fruit would you like?","header":"Fruit","options":[{"label":"a) apple"';
+    expect(waitWhy({ waitReason: "permission", waitNote: note })).toEqual({ lead: "Waiting for your input", detail: "Which fruit would you like?" });
+  });
+
+  it("names the tool a permission prompt is for", () => {
+    expect(waitWhy({ waitReason: "permission", waitNote: "Bash(rm -rf dist)" })).toEqual({ lead: "Waiting for your approval", detail: "Tool: Bash" });
+  });
+
+  it("says only that it waits when the note is empty", () => {
+    expect(waitWhy({ waitReason: null, waitNote: null })).toEqual({ lead: "Waiting on you", detail: null });
+    expect(waitWhy({ waitReason: "input", waitNote: "" })).toEqual({ lead: "Waiting for your input", detail: null });
   });
 });
 
@@ -76,7 +92,8 @@ describe("buildBoard", () => {
     const { columns, withoutSteps } = buildBoard([asking]);
     expect(columns.review.map((c) => c.key)).toEqual(["q:waiting"]);
     expect(columns.review[0].waiting).toBe(true);
-    expect(columns.review[0].step.text).toBe("Waiting on you");
+    expect(columns.review[0].step.text).toBe("Waiting for your approval");
+    expect(columns.review[0].why).toEqual({ lead: "Waiting for your approval", detail: null });
     expect(withoutSteps).toEqual([]);
   });
 

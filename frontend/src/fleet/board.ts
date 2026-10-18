@@ -1,5 +1,5 @@
 // The kanban board (#346): every session's plan steps sorted into one column per state. Pure, so the page and its tests share it.
-import { idleOnBackground } from "./waiting";
+import { idleOnBackground, toolOfNote, waitLead } from "./waiting";
 import type { PlanStep, SessionView } from "./types";
 
 export type BoardColumn = "pending" | "active" | "review" | "blocked" | "done";
@@ -31,6 +31,8 @@ export interface BoardCard {
   column: BoardColumn;
   /** A card for the session itself, not for one of its steps: it waits on its person and has no step in progress to move to Review. */
   waiting?: boolean;
+  /** Why a Review card waits: what the session needs from its person, and the question or tool when it says. */
+  why?: { lead: string; detail: string | null };
 }
 
 /** Whether the session waits on its person, as the rail and the wall count it: a wait on background work is not one. */
@@ -43,7 +45,28 @@ export function columnOf(s: SessionView, step: PlanStep): BoardColumn {
   return step.state === "active" && waitsOnPerson(s) ? "review" : step.state;
 }
 
-const WAITING_STEP: PlanStep = { id: "waiting", text: "Waiting on you", state: "active", activeText: null, ownerAgentId: null, ownerLabel: null };
+const WAIT_NOTE_LIMIT = 160;
+const QUESTION = /"question"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+
+/** What a session that waits on its person needs, in the card's words: the lead, plus the question it asks, the tool it wants to use, or the message it sent. */
+export function waitWhy(s: Pick<SessionView, "waitReason" | "waitNote">): { lead: string; detail: string | null } {
+  const note = s.waitNote?.trim() ?? "";
+  const tool = toolOfNote(note, s.waitReason);
+  const lead = waitLead(s.waitReason, tool).replace(/\.$/, "");
+  const q = QUESTION.exec(note);
+  if (q) {
+    try {
+      return { lead, detail: JSON.parse(`"${q[1]}"`) as string };
+    } catch {
+      // A clipped escape: fall through to the tool's name.
+    }
+  }
+  if (tool) return { lead, detail: `Tool: ${tool}` };
+  // A message is shown only if it arrived whole; a clipped one would read as the full prompt.
+  return { lead, detail: note && (s.waitNote?.length ?? 0) < WAIT_NOTE_LIMIT ? note : null };
+}
+
+const waitingStep = (text: string): PlanStep => ({ id: "waiting", text, state: "active", activeText: null, ownerAgentId: null, ownerLabel: null });
 
 /** A plan with every step done on a session that is no longer running or waiting: its Done cards leave the board. */
 export function sessionFinished(s: SessionView): boolean {
@@ -62,13 +85,14 @@ export function buildBoard(sessions: readonly SessionView[]): Board {
   const withoutSteps: SessionView[] = [];
   for (const s of sessions) {
     const steps = s.plan?.steps.length && !sessionFinished(s) ? s.plan.steps : [];
+    const why = waitsOnPerson(s) ? waitWhy(s) : undefined;
     for (const step of steps) {
       const column = columnOf(s, step);
-      columns[column].push({ key: `${s.id}:${step.id}`, session: s, step, column });
+      columns[column].push({ key: `${s.id}:${step.id}`, session: s, step, column, ...(column === "review" ? { why } : {}) });
     }
     // A session that asks its person something belongs in Review whether or not it has a plan; with an in-progress step, that step is the card.
     const asking = waitsOnPerson(s) && !steps.some((x) => columnOf(s, x) === "review");
-    if (asking) columns.review.push({ key: `${s.id}:waiting`, session: s, step: WAITING_STEP, column: "review", waiting: true });
+    if (asking && why) columns.review.push({ key: `${s.id}:waiting`, session: s, step: waitingStep(why.lead), column: "review", waiting: true, why });
     if (!steps.length && !asking) withoutSteps.push(s);
   }
   return { columns, withoutSteps };
