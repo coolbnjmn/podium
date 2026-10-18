@@ -50,6 +50,13 @@ describe("kanban board", () => {
     expect(within(column("In progress")).queryByText("Pick the OS")).toBeNull();
   });
 
+  it("shows a session that asks its person a question in Review even though it has no plan", () => {
+    board([makeSession({ id: "q", name: "asker", status: "waiting", waitReason: "permission", plan: null })]);
+    const card = within(column("Review")).getByRole("link", { name: "Waiting on you, waiting, asker" });
+    expect(card).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Sessions with no open steps" })).toBeNull();
+  });
+
   it("opens the orchestrator's page when a card is clicked", () => {
     const { rerender } = board([makeSession()]);
     fireEvent.click(screen.getByRole("link", { name: "Port invoice endpoints, active, api-refactor" }));

@@ -29,6 +29,8 @@ export interface BoardCard {
   session: SessionView;
   step: PlanStep;
   column: BoardColumn;
+  /** A card for the session itself, not for one of its steps: it waits on its person and has no step in progress to move to Review. */
+  waiting?: boolean;
 }
 
 /** Whether the session waits on its person, as the rail and the wall count it: a wait on background work is not one. */
@@ -41,6 +43,8 @@ export function columnOf(s: SessionView, step: PlanStep): BoardColumn {
   return step.state === "active" && waitsOnPerson(s) ? "review" : step.state;
 }
 
+const WAITING_STEP: PlanStep = { id: "waiting", text: "Waiting on you", state: "active", activeText: null, ownerAgentId: null, ownerLabel: null };
+
 /** A plan with every step done on a session that is no longer running or waiting: its Done cards leave the board. */
 export function sessionFinished(s: SessionView): boolean {
   const steps = s.plan?.steps;
@@ -49,7 +53,7 @@ export function sessionFinished(s: SessionView): boolean {
 
 export interface Board {
   columns: Record<BoardColumn, BoardCard[]>;
-  /** Sessions with no plan, an empty one, or a finished one: on the board's page, but with nothing to put in a column. */
+  /** Sessions with no plan, an empty one, or a finished one, and not waiting on a person: on the board's page, but with nothing to put in a column. */
   withoutSteps: SessionView[];
 }
 
@@ -57,14 +61,15 @@ export function buildBoard(sessions: readonly SessionView[]): Board {
   const columns: Record<BoardColumn, BoardCard[]> = { pending: [], active: [], review: [], blocked: [], done: [] };
   const withoutSteps: SessionView[] = [];
   for (const s of sessions) {
-    if (!s.plan?.steps.length || sessionFinished(s)) {
-      withoutSteps.push(s);
-      continue;
-    }
-    for (const step of s.plan.steps) {
+    const steps = s.plan?.steps.length && !sessionFinished(s) ? s.plan.steps : [];
+    for (const step of steps) {
       const column = columnOf(s, step);
       columns[column].push({ key: `${s.id}:${step.id}`, session: s, step, column });
     }
+    // A session that asks its person something belongs in Review whether or not it has a plan; with an in-progress step, that step is the card.
+    const asking = waitsOnPerson(s) && !steps.some((x) => columnOf(s, x) === "review");
+    if (asking) columns.review.push({ key: `${s.id}:waiting`, session: s, step: WAITING_STEP, column: "review", waiting: true });
+    if (!steps.length && !asking) withoutSteps.push(s);
   }
   return { columns, withoutSteps };
 }

@@ -36,9 +36,9 @@ function Card({ card, showOrchestrator, flash, fresh, onOpen }: { card: BoardCar
   };
   const cls = ["kb-card", flash && "flash", fresh && "fresh"].filter(Boolean).join(" ");
   return (
-    <a className={cls} href="#/" data-key={card.key} aria-label={`${step.text}, ${step.state}, ${s.name}`} onClick={open}>
+    <a className={cls} href="#/" data-key={card.key} aria-label={`${step.text}, ${card.waiting ? "waiting" : step.state}, ${s.name}`} onClick={open}>
       <div className="kb-text">{step.text}</div>
-      {step.state === "active" && step.activeText && <div className="kb-act">{step.activeText}</div>}
+      {!card.waiting && step.state === "active" && step.activeText && <div className="kb-act">{step.activeText}</div>}
       <div className="kb-meta">
         {step.ownerLabel && <span className="kb-own">{step.ownerLabel}</span>}
         {showOrchestrator && (

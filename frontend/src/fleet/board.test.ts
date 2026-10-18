@@ -71,6 +71,28 @@ describe("buildBoard", () => {
     expect(withoutSteps.map((s) => s.id)).toEqual(["f"]);
   });
 
+  it("puts a session that waits on its person in Review even when it has no plan", () => {
+    const asking = makeSession({ id: "q", name: "asker", status: "waiting", waitReason: "permission", plan: null });
+    const { columns, withoutSteps } = buildBoard([asking]);
+    expect(columns.review.map((c) => c.key)).toEqual(["q:waiting"]);
+    expect(columns.review[0].waiting).toBe(true);
+    expect(columns.review[0].step.text).toBe("Waiting on you");
+    expect(withoutSteps).toEqual([]);
+  });
+
+  it("adds a waiting card beside the steps of a waiting session that has none in progress, and none when a step is", () => {
+    const idle = withSteps({ id: "i", status: "waiting", waitReason: "input" }, step("1", "pending"), step("2", "done"));
+    expect(buildBoard([idle]).columns.review.map((c) => c.key)).toEqual(["i:waiting"]);
+    expect(buildBoard([idle]).columns.pending.map((c) => c.key)).toEqual(["i:1"]);
+    const busy = withSteps({ id: "b", status: "waiting", waitReason: "input" }, step("1", "active"));
+    expect(buildBoard([busy]).columns.review.map((c) => c.key)).toEqual(["b:1"]);
+  });
+
+  it("does not count a wait on background work as a wait on a person", () => {
+    const bg = makeSession({ id: "g", status: "waiting", waitReason: null, background: { tasks: 1, agents: 0, shells: 1, monitors: 0, since: 1_000_000, items: [] } as never, plan: null });
+    expect(buildBoard([bg]).columns.review).toEqual([]);
+  });
+
   it("shows a stale session's open steps in their columns", () => {
     const stale = withSteps({ id: "s", status: "stale" }, step("1", "done"), step("2", "active"));
     expect(buildBoard([stale]).columns.active.map((c) => c.key)).toEqual(["s:2"]);
