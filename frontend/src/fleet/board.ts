@@ -73,3 +73,14 @@ export function buildBoard(sessions: readonly SessionView[]): Board {
 export function orderCards(cards: readonly BoardCard[], changedAt: ReadonlyMap<string, number>): BoardCard[] {
   return cards.map((c, i) => ({ c, i })).sort((a, b) => (changedAt.get(b.c.key) ?? 0) - (changedAt.get(a.c.key) ?? 0) || a.i - b.i).map((x) => x.c);
 }
+
+/** Cards of one session next to each other, sessions in the order their first card appears; each session keeps its cards' order. */
+export function groupBySession(cards: readonly BoardCard[]): BoardCard[] {
+  const by = new Map<string, BoardCard[]>();
+  for (const c of cards) {
+    const list = by.get(c.session.id);
+    if (list) list.push(c);
+    else by.set(c.session.id, [c]);
+  }
+  return [...by.values()].flat();
+}

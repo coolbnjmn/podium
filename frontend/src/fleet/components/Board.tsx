@@ -1,6 +1,6 @@
 // The kanban board (#346): every session's plan steps by state, read-only. A card opens its orchestrator's page.
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { BOARD_COLUMNS, buildBoard, CARDS_PER_PAGE, EMPTY_COLUMN, orderCards, type BoardCard, type BoardColumn } from "../board";
+import { BOARD_COLUMNS, buildBoard, CARDS_PER_PAGE, EMPTY_COLUMN, groupBySession, orderCards, type BoardCard, type BoardColumn } from "../board";
 import { familyName } from "../logic";
 import { filterByPeople, meKey, peopleActive } from "../people";
 import { readJson, writeJson } from "../storage";
@@ -104,6 +104,7 @@ export function Board(props: {
   const [changedAt, setChangedAt] = useState<Map<string, number>>(() => new Map());
   const [flash, setFlash] = useState<{ moved: Set<string>; fresh: Set<string> }>({ moved: new Set(), fresh: new Set() });
   const [note, setNote] = useState("");
+  const flashTimer = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
     const cur = new Map<string, { column: BoardColumn; text: string }>();
     for (const col of BOARD_COLUMNS) for (const c of board.columns[col.key]) cur.set(c.key, { column: col.key, text: c.step.text });
@@ -124,9 +125,11 @@ export function Board(props: {
     const first = moved[0] ? `${moved[0][1].text} moved to ${label(moved[0][1].column)}` : `New step: ${added[0][1].text}`;
     const more = moved.length + added.length - 1;
     setNote(more > 0 ? `${first}, and ${more} more ${more === 1 ? "change" : "changes"}` : first);
-    const t = setTimeout(() => setFlash({ moved: new Set(), fresh: new Set() }), FLASH_MS);
-    return () => clearTimeout(t);
+    // The timer outlives this run: a later update with nothing moved must not cancel it and leave the flash on.
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash({ moved: new Set(), fresh: new Set() }), FLASH_MS);
   }, [board]);
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
 
   // A card that changes column slides from where it was (FLIP). Positions are in the board's own coordinates, so scrolling is not a move.
   const area = useRef<HTMLDivElement>(null);
@@ -208,7 +211,9 @@ export function Board(props: {
           </div>
           <div className="kb-board" ref={area}>
             {BOARD_COLUMNS.map(({ key, label, hint }) => {
-              const cards = orderCards(board.columns[key], changedAt);
+              const ordered = orderCards(board.columns[key], changedAt);
+              // A lane holds one orchestrator's cards together, so the order is by session (first to appear leads) before the page is cut.
+              const cards = prefs.group ? groupBySession(ordered) : ordered;
               const count = Math.max(1, Math.ceil(cards.length / CARDS_PER_PAGE));
               const at = Math.min(pages[key] ?? 0, count - 1);
               const from = at * CARDS_PER_PAGE;

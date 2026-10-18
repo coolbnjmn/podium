@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeSession } from "./fixtures";
-import { BOARD_COLUMNS, buildBoard, columnOf, orderCards, sessionFinished } from "./board";
+import { BOARD_COLUMNS, buildBoard, columnOf, groupBySession, orderCards, sessionFinished } from "./board";
 import type { PlanStep, RespondMe, SessionView } from "./types";
 
 const step = (id: string, state: PlanStep["state"], over: Partial<PlanStep> = {}): PlanStep => ({ id, text: `step ${id}`, state, activeText: null, ownerAgentId: null, ownerLabel: null, ...over });
@@ -84,5 +84,20 @@ describe("orderCards", () => {
     const changed = new Map([["a:3", 500], ["a:2", 200]]);
     expect(orderCards(cards, changed).map((c) => c.key)).toEqual(["a:3", "a:2", "a:1"]);
     expect(orderCards(cards, new Map()).map((c) => c.key)).toEqual(["a:1", "a:2", "a:3"]);
+  });
+});
+
+describe("groupBySession", () => {
+  it("puts each session's cards together, the session that appears first leading, and keeps each one's order", () => {
+    const a = withSteps({ id: "a" }, step("1", "pending"), step("2", "pending"));
+    const b = withSteps({ id: "b" }, step("1", "pending"));
+    const cards = buildBoard([a, b]).columns.pending;
+    // The most recent change is b's card, then a's second: grouped, b leads and a follows in its own order.
+    const ordered = orderCards(cards, new Map([["b:1", 9], ["a:2", 5]]));
+    expect(ordered.map((c) => c.key)).toEqual(["b:1", "a:2", "a:1"]);
+    expect(groupBySession(ordered).map((c) => c.key)).toEqual(["b:1", "a:2", "a:1"]);
+    const interleaved = orderCards(cards, new Map([["a:2", 9], ["b:1", 5]]));
+    expect(interleaved.map((c) => c.key)).toEqual(["a:2", "b:1", "a:1"]);
+    expect(groupBySession(interleaved).map((c) => c.key)).toEqual(["a:2", "a:1", "b:1"]);
   });
 });
