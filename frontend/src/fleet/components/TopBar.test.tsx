@@ -18,15 +18,20 @@ describe("TopBar", () => {
     expect(fleet.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("has Fleet, Board and History buttons, and leaves the Board button off the Board page", () => {
+  it("leaves the button for the page you are on off the bar: no Fleet on the fleet page, no Board on the board", () => {
     render(<TopBar page="Fleet" phase="live" reporters={1} />);
-    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "#/");
+    expect(screen.queryByRole("link", { name: "Fleet" })).toBeNull();
     expect(screen.getByRole("link", { name: "Board" })).toHaveAttribute("href", "#/board");
     expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", "#/history");
     cleanup();
     render(<TopBar page="Board" phase="live" reporters={1} />);
     expect(screen.queryByRole("link", { name: "Board" })).toBeNull();
     expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "#/");
+    cleanup();
+    // An orchestrator's page has both, so there is a way back to the wall and over to the board.
+    render(<TopBar page="Orchestrator" phase="live" reporters={1} />);
+    expect(screen.getByRole("link", { name: "Fleet" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Board" })).toBeInTheDocument();
   });
 
   it("says how many reporters are live, with no synced time", () => {

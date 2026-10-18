@@ -29,19 +29,20 @@ export function TopBar(props: { page: string; phase: Phase; reporters: number; o
         </span>
       )}
       <span className="spacer" />
-      {/* Fleet goes back to the wall (#346), clearing an open orchestrator too; it is a link so it still works in a new tab. */}
-      <a
-        className="btn"
-        href="#/"
-        aria-current={props.page === "Fleet" ? "page" : undefined}
-        onClick={(e) => {
-          if (!props.onFleet || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-          e.preventDefault();
-          props.onFleet();
-        }}
-      >
-        Fleet
-      </a>
+      {/* Fleet goes back to the wall (#346), clearing an open orchestrator too; it is a link so it still works in a new tab. The wall's own pill names it, so it is left off there. */}
+      {props.page !== "Fleet" && (
+        <a
+          className="btn"
+          href="#/"
+          onClick={(e) => {
+            if (!props.onFleet || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+            e.preventDefault();
+            props.onFleet();
+          }}
+        >
+          Fleet
+        </a>
+      )}
       {/* The Board page's own pill names it, so the button is left off there. */}
       {props.page !== "Board" && (
         <a className="btn" href="#/board">

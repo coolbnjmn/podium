@@ -1076,7 +1076,6 @@ body.modal-open #root { filter: blur(5px); }
 .podium .kb-none li a:hover { border-color: var(--axis); color: var(--ink); }
 .podium .kb-none li i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
 .podium .kb-why { color: var(--muted); }
-.podium .top .btn[aria-current="page"] { background: var(--sel); border-color: var(--axis); font-weight: 600; }
 @container (max-width: 640px) {
   .podium .kb-board { grid-template-columns: 1fr; }
   .podium .kb-tabs { display: flex; }
