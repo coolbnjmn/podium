@@ -7,6 +7,12 @@ describe("routeFor", () => {
     expect(routeFor("#/history?day=2026-10-10")).toBe("history");
   });
 
+  it("opens the kanban board for #/board, with or without a query", () => {
+    expect(routeFor("#/board")).toBe("board");
+    expect(routeFor("#/board?x=1")).toBe("board");
+    expect(routeFor("#/boardroom")).toBe("fleet");
+  });
+
   it("opens Admin for #/admin", () => {
     expect(routeFor("#/admin")).toBe("admin");
   });

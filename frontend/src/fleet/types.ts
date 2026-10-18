@@ -47,4 +47,5 @@ export const APP_NAME = "Podium";
 export const COPYRIGHT = "© 2026 Ed Engelking";
 const REPO = "https://github.com/eengelking/podium/blob/main";
 export const LICENSE_URL = `${REPO}/LICENSE`;
+export const GOTCHAS_URL = `${REPO}/docs/GOTCHAS.md#a-session-shows-no-plan`;
 export const NOTICES_URL = `${REPO}/docs/THIRD_PARTY_NOTICES.md`;

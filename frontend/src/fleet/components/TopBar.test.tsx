@@ -11,10 +11,20 @@ function renderBar(reporters = 2) {
 describe("TopBar", () => {
   it("puts a Fleet pill before the connection pill", () => {
     renderBar();
-    const fleet = screen.getByText("Fleet");
+    // The page pill; the Fleet button next to Board and History has the same word.
+    const fleet = screen.getAllByText("Fleet").find((e) => e.classList.contains("pill"))!;
     const connection = screen.getByText(/2 reporters live/);
     expect(fleet).toHaveClass("pill");
     expect(fleet.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("has Fleet, Board and History buttons, with the current page marked", () => {
+    render(<TopBar page="Board" phase="live" reporters={1} />);
+    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "#/");
+    expect(screen.getByRole("link", { name: "Board" })).toHaveAttribute("href", "#/board");
+    expect(screen.getByRole("link", { name: "Board" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Fleet" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", "#/history");
   });
 
   it("says how many reporters are live, with no synced time", () => {

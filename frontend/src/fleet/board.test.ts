@@ -1,0 +1,88 @@
+import { describe, expect, it } from "vitest";
+import { makeSession } from "./fixtures";
+import { BOARD_COLUMNS, buildBoard, columnOf, orderCards, sessionFinished } from "./board";
+import type { PlanStep, RespondMe, SessionView } from "./types";
+
+const step = (id: string, state: PlanStep["state"], over: Partial<PlanStep> = {}): PlanStep => ({ id, text: `step ${id}`, state, activeText: null, ownerAgentId: null, ownerLabel: null, ...over });
+const withSteps = (over: Partial<SessionView>, ...steps: PlanStep[]) => makeSession({ ...over, plan: { title: "t", source: "TaskCreate", steps } });
+
+describe("board columns", () => {
+  it("are Pending, In progress, Review, Blocked and Done, in that order", () => {
+    expect(BOARD_COLUMNS.map((c) => c.label)).toEqual(["Pending", "In progress", "Review", "Blocked", "Done"]);
+  });
+});
+
+describe("columnOf", () => {
+  it("puts a step in the column of its state", () => {
+    const s = makeSession();
+    expect(columnOf(s, step("1", "pending"))).toBe("pending");
+    expect(columnOf(s, step("2", "active"))).toBe("active");
+    expect(columnOf(s, step("3", "blocked"))).toBe("blocked");
+    expect(columnOf(s, step("4", "done"))).toBe("done");
+  });
+
+  it("moves an in-progress step to Review while its session waits on its person", () => {
+    const waiting = makeSession({ status: "waiting", waitReason: "input" });
+    expect(columnOf(waiting, step("1", "active"))).toBe("review");
+    expect(columnOf(waiting, step("2", "pending"))).toBe("pending");
+    expect(columnOf(waiting, step("3", "blocked"))).toBe("blocked");
+  });
+});
+
+describe("sessionFinished", () => {
+  it("needs a plan with every step done and a session that is no longer running or waiting", () => {
+    const done = [step("1", "done"), step("2", "done")];
+    expect(sessionFinished(withSteps({ status: "running" }, ...done))).toBe(false);
+    expect(sessionFinished(withSteps({ status: "waiting" }, ...done))).toBe(false);
+    expect(sessionFinished(withSteps({ status: "stale" }, ...done))).toBe(true);
+    expect(sessionFinished(withSteps({ status: "done" }, ...done))).toBe(true);
+    expect(sessionFinished(withSteps({ status: "stale" }, step("1", "done"), step("2", "pending")))).toBe(false);
+    expect(sessionFinished(makeSession({ status: "done", plan: null }))).toBe(false);
+  });
+});
+
+describe("buildBoard", () => {
+  it("fills the columns from every session's steps, keeping each step's session and key", () => {
+    const a = withSteps({ id: "a", name: "alpha" }, step("1", "done"), step("2", "active"));
+    const b = withSteps({ id: "b", name: "beta" }, step("1", "pending"), step("2", "blocked"));
+    const { columns, withoutSteps } = buildBoard([a, b]);
+    expect(columns.done.map((c) => c.key)).toEqual(["a:1"]);
+    expect(columns.active.map((c) => c.key)).toEqual(["a:2"]);
+    expect(columns.pending.map((c) => c.key)).toEqual(["b:1"]);
+    expect(columns.blocked.map((c) => c.key)).toEqual(["b:2"]);
+    expect(columns.review).toEqual([]);
+    expect(columns.active[0].session).toBe(a);
+    expect(withoutSteps).toEqual([]);
+  });
+
+  it("lists a session with no plan, or an empty one, apart from the columns", () => {
+    const none = makeSession({ id: "n", plan: null });
+    const empty = withSteps({ id: "e" });
+    const { columns, withoutSteps } = buildBoard([none, empty]);
+    expect(Object.values(columns).flat()).toEqual([]);
+    expect(withoutSteps.map((s) => s.id)).toEqual(["n", "e"]);
+  });
+
+  it("keeps the Done steps of a running session whose steps are all done, and drops those of a finished one", () => {
+    const running = withSteps({ id: "r", status: "running" }, step("1", "done"));
+    const finished = withSteps({ id: "f", status: "stale" }, step("1", "done"));
+    const { columns, withoutSteps } = buildBoard([running, finished]);
+    expect(columns.done.map((c) => c.key)).toEqual(["r:1"]);
+    expect(withoutSteps.map((s) => s.id)).toEqual(["f"]);
+  });
+
+  it("shows a stale session's open steps in their columns", () => {
+    const stale = withSteps({ id: "s", status: "stale" }, step("1", "done"), step("2", "active"));
+    expect(buildBoard([stale]).columns.active.map((c) => c.key)).toEqual(["s:2"]);
+  });
+});
+
+describe("orderCards", () => {
+  it("puts the most recently changed step first and leaves the rest in plan order", () => {
+    const s = withSteps({ id: "a" }, step("1", "pending"), step("2", "pending"), step("3", "pending"));
+    const cards = buildBoard([s]).columns.pending;
+    const changed = new Map([["a:3", 500], ["a:2", 200]]);
+    expect(orderCards(cards, changed).map((c) => c.key)).toEqual(["a:3", "a:2", "a:1"]);
+    expect(orderCards(cards, new Map()).map((c) => c.key)).toEqual(["a:1", "a:2", "a:3"]);
+  });
+});

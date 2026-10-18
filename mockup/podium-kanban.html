@@ -181,7 +181,9 @@ button.evb:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .tc-f .orch { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); min-width: 0; }
 .tc-f .orch b { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12ch; }
 .sq { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--fam); }
-.tb-who { font-size: 12px; color: var(--ink2); }
+.tb-sep { align-self: stretch; width: 1px; min-height: 22px; background: var(--axis); }
+.tb-me { display: inline-flex; align-items: center; gap: 8px; }
+.tb-who { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); font-size: 12.5px; }
 .tb-who b { color: var(--ink); font-weight: 600; }
 .hide-orch .tc-f .orch { display: none; }
 
@@ -200,7 +202,12 @@ button.evb:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .noplan ul { list-style: none; margin: 0; padding: 0 12px 10px; display: flex; flex-wrap: wrap; gap: 6px; }
 .noplan li a { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--ink2); }
 .noplan li a:hover { border-color: var(--axis); color: var(--ink); }
-.noplan .how { padding: 0 12px 10px; font-size: 12px; color: var(--muted); }
+.noplan .how { margin: 0 12px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); font-size: 12px; line-height: 1.45; color: var(--ink2); max-width: 70ch; }
+.noplan .how[hidden] { display: none; }
+.noplan .how code { font: 11.5px var(--font-mono); color: var(--ink); }
+.info { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--ink2); align-self: center; }
+.info svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.info:hover, .info[aria-expanded="true"] { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); }
 .noplan .how a { text-decoration: underline; text-underline-offset: 2px; color: var(--ink2); }
 
 /* whole-board empty state */
@@ -311,7 +318,7 @@ function large() {
 }
 
 let ORCH = JSON.parse(JSON.stringify(ORCH0));
-const S = { signedIn: true, left: true, right: true, top: false, sim: 0, data: "busy", theme: "dark", width: "wide", group: false, me: false, tab: "active", pg: {} };
+const S = { info: false, signedIn: true, left: true, right: true, top: false, sim: 0, data: "busy", theme: "dark", width: "wide", group: false, me: false, tab: "active", pg: {} };
 const PER = 25;
 const COLS = [["pending", "Pending", "Not started"], ["active", "In progress", ""], ["review", "Review", "Waiting on a person"], ["blocked", "Blocked", "Needs something"], ["done", "Done", "Until its orchestrator finishes"]];
 const EMPTY = {
@@ -391,10 +398,10 @@ function render() {
     '<button role="tab" aria-selected="' + (k === ctab) + '" data-tab="' + k + '">' + l + '<span class="n">' + buckets[k].length + '</span></button>').join("") + '</div>';
 
   const noplan = without.length ? '<section class="noplan" aria-label="Sessions with no open steps">' +
-    '<div class="noplan-h"><b>' + without.length + ' ' + (without.length === 1 ? "session has" : "sessions have") + ' no open steps</b><span>' +
+    '<div class="noplan-h"><b>' + without.length + ' ' + (without.length === 1 ? "session has" : "sessions have") + ' no open steps</b><button class="info" data-info aria-label="How to get steps here" aria-expanded="' + S.info + '" aria-controls="how"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v3.6M8 5.1v.1"/></svg></button><span>' +
     (data.length === without.length ? "Podium builds the board from each session's task list." : "Every session on the Fleet page is here. These have nothing to show in a column.") + '</span></div>' +
     '<ul>' + without.map(o => '<li><a href="#orchestrator-' + o.id + '"><i class="sq" style="--fam:' + FAM[o.model] + '"></i>' + esc(o.name) + (o.steps.length ? " · all done" : o.note ? " · " + esc(o.note) : " · no plan") + '</a></li>').join("") + '</ul>' +
-    '<div class="how">To get steps here, turn the task tools on (<a href="#gotcha">A session shows no plan</a>).</div></section>' : "";
+    '<div class="how" id="how" role="note"' + (S.info ? "" : " hidden") + '>Podium builds the board from each session\'s task list. Start Claude Code with <code>CLAUDE_CODE_ENABLE_TODO_TOOLS=1</code> or add it to the <code>env</code> block of <code>~/.claude/settings.json</code>, then ask Claude to track the work as a task list. <a href="#gotcha">A session shows no plan</a></div></section>' : "";
 
   const board = withPlan.length ? '<div class="board">' + colHtml + '</div>' : '<div class="blank"><b>No plans on the board</b><p>' +
     (data.length ? "None of the " + data.length + " active sessions has a task list yet. Sessions with no plan are listed below." : "No sessions are active.") + '</p></div>';
@@ -402,7 +409,7 @@ function render() {
   const topbar = '<header class="top" id="podium-top"' + (S.top ? " hidden" : "") + '><a class="logo" href="#fleet" aria-label="Podium, fleet">' + LOGO + 'Podium</a><span class="pill">Board</span>' +
     '<span class="pill"><i class="dot"></i>4 reporters live</span><span class="sp"></span>' +
     '<a class="btn" href="#fleet">Fleet</a><a class="btn" href="#board" aria-current="page">Board</a><a class="btn" href="#history">History</a>' +
-    '<button class="btn" data-top aria-expanded="true" aria-controls="podium-top">Hide top bar</button><button class="btn">Wall mode</button><a class="btn" href="#admin">Admin</a>' + (S.signedIn ? '<span class="tb-who">Signed in as <b>Ed</b></span><button class="btn" data-sign>Sign out</button>' : '<button class="btn" data-sign>Sign in to respond</button>') + '</header>' +
+    '<button class="btn" data-top aria-expanded="true" aria-controls="podium-top">Hide top bar</button><button class="btn">Wall mode</button><a class="btn" href="#admin">Admin</a>' + '<span class="tb-sep" aria-hidden="true"></span>' + (S.signedIn ? '<span class="tb-me"><span class="tb-who"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.7"/><path d="M2.8 13.5c.7-2.6 2.8-4 5.2-4s4.5 1.4 5.2 4"/></svg>Signed in as <b>Ed</b></span><button class="btn" data-sign>Sign out</button></span>' : '<button class="btn" data-sign aria-haspopup="dialog">Sign in</button>') + '</header>' +
     (S.top ? '<div class="strip"><button data-top aria-expanded="false" aria-controls="podium-top">Show top bar</button></div>' : "");
   const banner = S.top ? "" : '<div class="banner"><span><b>Live fleet.</b> Cost is an estimate from token counts and a price table, not a bill.</span><div class="bannerctl"><select class="sel" aria-label="Update every"><option>Update every 5s</option></select><span class="seg" role="radiogroup" aria-label="Mode"><button aria-pressed="false">Light</button><button aria-pressed="false">Dark</button><button aria-pressed="true">System</button></span></div></div>';
 
@@ -483,10 +490,11 @@ document.addEventListener("change", e => {
   newEvent = false; render();
 });
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-tab],[data-group],[data-me],[data-pane],[data-top],[data-sim],[data-reset],[data-sign],[data-pg]"); if (!t) return;
+  const t = e.target.closest("[data-tab],[data-group],[data-me],[data-pane],[data-top],[data-sim],[data-reset],[data-sign],[data-pg],[data-info]"); if (!t) return;
   if (t.hasAttribute("data-sim")) return simulate();
   if (t.hasAttribute("data-reset")) { ORCH = JSON.parse(JSON.stringify(ORCH0)); S.sim = 0; lastNote = ""; newEvent = false; return render(); }
-  if (t.hasAttribute("data-sign")) { S.signedIn = !S.signedIn; if (!S.signedIn) S.me = false; }
+  if (t.hasAttribute("data-info")) { S.info = !S.info; }
+  else if (t.hasAttribute("data-sign")) { S.signedIn = !S.signedIn; if (!S.signedIn) S.me = false; }
   else if (t.dataset.pg) { const [k, n] = t.dataset.pg.split(":"); S.pg[k] = +n; }
   else if (t.dataset.tab) S.tab = t.dataset.tab;
   else if (t.dataset.group) S.group = t.dataset.group === "1";

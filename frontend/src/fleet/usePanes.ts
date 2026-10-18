@@ -8,11 +8,16 @@ import { readJson, writeJson } from "./storage";
 export type Pane = "left" | "right" | "top";
 export type Collapsed = Record<Pane, boolean>;
 const KEY = "podium.collapsed";
+/** The board keeps its own flags (#346) and opens with both side panels collapsed, so its columns get the width. */
+const BOARD_KEY = "podium.collapsed.board";
 const ALL: Collapsed = { left: true, right: true, top: true };
+const FLEET_OPEN: Collapsed = { left: false, right: false, top: false };
+const BOARD_OPEN: Collapsed = { left: true, right: true, top: false };
 
-function load(): Collapsed {
-  const v = readJson<Partial<Record<Pane, unknown>> | null>(KEY, null);
-  return { left: v?.left === true, right: v?.right === true, top: v?.top === true };
+function load(key: string, fallback: Collapsed): Collapsed {
+  const v = readJson<Partial<Record<Pane, unknown>> | null>(key, null);
+  const flag = (p: Pane) => (typeof v?.[p] === "boolean" ? (v[p] as boolean) : fallback[p]);
+  return { left: flag("left"), right: flag("right"), top: flag("top") };
 }
 
 export interface Panes {
@@ -24,14 +29,19 @@ export interface Panes {
   exitWall: () => void;
 }
 
-export function usePanes(): Panes {
-  const [saved, setSaved] = useState<Collapsed>(load);
+export function usePanes(board = false): Panes {
+  const [fleetSaved, setFleetSaved] = useState<Collapsed>(() => load(KEY, FLEET_OPEN));
+  const [boardSaved, setBoardSaved] = useState<Collapsed>(() => load(BOARD_KEY, BOARD_OPEN));
+  const saved = board ? boardSaved : fleetSaved;
   const [wall, setWall] = useState(false);
 
-  const save = useCallback((next: Collapsed) => {
-    setSaved(next);
-    writeJson(KEY, next);
-  }, []);
+  const save = useCallback(
+    (next: Collapsed) => {
+      (board ? setBoardSaved : setFleetSaved)(next);
+      writeJson(board ? BOARD_KEY : KEY, next);
+    },
+    [board],
+  );
 
   const toggle = useCallback(
     (pane: Pane) => {

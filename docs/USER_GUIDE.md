@@ -124,6 +124,23 @@ stopped reporting. It says how long until it goes away by itself, and has a **Re
 rail row, and **Remove now** on its page) to clear it at once. The session stays in History, and the card
 comes back if the session reports again.
 
+### The board
+
+**Board** in the top bar (`#/board`) shows every session's plan steps as cards in five columns: Pending, In
+progress, Review, Blocked and Done. It answers "what is in progress across all my sessions?" without opening
+each one. Click a card to open its orchestrator. You cannot move a card: the state comes from Claude Code, and
+Podium only watches.
+
+- **Review** holds an in-progress step while its session waits on you (a question, a plan or a permission
+  prompt).
+- A card that changes column slides across and flashes for a moment. Mixed shows every orchestrator's cards
+  together; **By orchestrator** groups them. **Me** (only while you are signed in) shows just your sessions.
+- A column shows 25 cards a page; use the page buttons at its foot.
+- A session with no task list, or with every step done and finished, is listed under the board. Click the (i)
+  there to see how to get a plan.
+- The board opens with the left and right panels collapsed so the columns get the width. Open either from its
+  edge tab; the board remembers that apart from the fleet page.
+
 ### People
 
 When several people report to one Podium with their own tokens (see "Admin" below), the console groups

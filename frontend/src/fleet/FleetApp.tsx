@@ -14,6 +14,7 @@ import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
 import { Legend } from "./components/Legend";
 import { Wall } from "./components/Wall";
+import { Board } from "./components/Board";
 import { NoticeClosed, type NoticeItem } from "./components/NoticeStack";
 import { closeNotice, removeSession, setShowBackgroundSessions, useFleet, type UseFleetOptions } from "./useFleet";
 import { useNow } from "./useNow";
@@ -67,12 +68,14 @@ function useEntering(ids: readonly string[], ready: boolean): (id: string) => bo
 }
 
 export interface FleetAppProps {
+  /** The kanban board (#346) instead of the wall; the rest of the console is the same. */
+  board?: boolean;
   /** For tests: drive the app from a given state instead of the server. */
   state?: FleetState;
   fleetOptions?: UseFleetOptions;
 }
 
-function LiveFleetApp({ fleetOptions }: { fleetOptions?: UseFleetOptions }) {
+function LiveFleetApp({ fleetOptions, board }: { fleetOptions?: UseFleetOptions; board?: boolean }) {
   const live = useFleet(fleetOptions);
   const [every, setEvery] = useState(readUpdateEvery);
   // The page below redraws once per chosen interval (#138); a session needing the viewer or a failure shows at once.
@@ -81,19 +84,21 @@ function LiveFleetApp({ fleetOptions }: { fleetOptions?: UseFleetOptions }) {
     setEvery(n);
     writeUpdateEvery(n);
   }, []);
-  return <FleetView state={state} updateEvery={every} onUpdateEvery={change} />;
+  return <FleetView state={state} updateEvery={every} onUpdateEvery={change} board={board} />;
 }
 
 export function FleetApp(props: FleetAppProps = {}) {
   useEffect(() => {
     document.title = APP_NAME;
   }, []);
-  if (props.state) return <FleetView state={props.state} />;
-  return <LiveFleetApp fleetOptions={props.fleetOptions} />;
+  if (props.state) return <FleetView state={props.state} board={props.board} />;
+  return <LiveFleetApp fleetOptions={props.fleetOptions} board={props.board} />;
 }
 
 interface FleetViewProps {
   state: FleetState;
+  /** Show the kanban board in the middle instead of the wall or an orchestrator's page (#346). */
+  board?: boolean;
   /** Seconds between redraws; the clock moves on the same interval. */
   updateEvery?: number;
   onUpdateEvery?: (seconds: number) => void;
@@ -107,12 +112,12 @@ export const FleetView = memo(function FleetView(props: FleetViewProps) {
   const respondFlags = props.state.features.respond === true && props.state.features["activity-feed"] !== false;
   return (
     <RespondProvider flagsOn={respondFlags} api={props.respondApi}>
-      <FleetViewBody state={props.state} updateEvery={props.updateEvery} onUpdateEvery={props.onUpdateEvery} />
+      <FleetViewBody state={props.state} updateEvery={props.updateEvery} onUpdateEvery={props.onUpdateEvery} board={props.board} />
     </RespondProvider>
   );
 });
 
-function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps) {
+function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false }: FleetViewProps) {
   const now = useNow(updateEvery * 1000);
   const theme = useTheme();
   const [sel, setSel] = useState<string | null>(null);
@@ -126,7 +131,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
   const cols = useRef<HTMLDivElement>(null);
   const container = useCallback(() => cols.current, []);
   const resize = useResizable(container);
-  const panes = usePanes();
+  const panes = usePanes(board);
   const idle = useIdle(panes.wall);
   const visible = usePageVisible();
   const root = useRef<HTMLDivElement>(null);
@@ -165,7 +170,8 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
   const ready = state.phase !== "loading";
   const enteringSession = useEntering(all.map((s) => s.id), ready);
   const newEvent = useEntering(state.events.map((e) => e.id), ready);
-  const selected = sel ? state.sessions[sel] ?? null : null;
+  // The board stands in for the selected orchestrator's page: it keeps the selection, but shows none of it.
+  const selected = sel && !board ? state.sessions[sel] ?? null : null;
 
   const { prefs } = people;
   const spendByOwner = state.kpis?.costTodayByOwner ?? [];
@@ -227,7 +233,16 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
     flashTimer.current = setTimeout(() => setFlash(null), 1700);
   }, []);
 
+  // Opening the board leaves any orchestrator page behind, so a session that ends later does not raise a notice on the board.
+  useEffect(() => {
+    if (!board) return;
+    setSel(null);
+    setSelAgent(null);
+  }, [board]);
+
   const selectSession = (id: string | null) => {
+    // Opening a session, or the fleet, from the board leaves the board; the selection is made before the route changes.
+    if (board) window.location.hash = "#/";
     setSel(id);
     setSelAgent(null);
     setNotice(null);
@@ -255,6 +270,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
     const s = state.sessions[e.sessionId];
     if (!s || state.gone[e.sessionId]) return;
     const agent = e.agentId && s.agents.some((a) => a.id === e.agentId) ? e.agentId : null;
+    if (board) window.location.hash = "#/";
     setSel(e.sessionId);
     setSelAgent(agent);
     setNotice(null);
@@ -341,7 +357,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
       )}
       <div className="app">
         <TopBar
-          page={selected ? "Orchestrator" : "Fleet"}
+          page={board ? "Board" : selected ? "Orchestrator" : "Fleet"}
           phase={state.phase}
           reporters={reporters}
           outdated={outdated}
@@ -349,6 +365,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
           collapsed={panes.collapsed.top}
           onCollapse={() => toggle("top")}
           wall={wallButton}
+          onFleet={() => selectSession(null)}
         />
         {panes.collapsed.top && (
           <div className={`strip${state.phase === "disconnected" ? " bad" : ""}`}>
@@ -379,7 +396,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
         <div className="cols" ref={cols} style={colStyle}>
           <Rail
             sessions={sorted}
-            selected={sel}
+            selected={board ? null : sel}
             onSelect={(id) => {
               // "All orchestrators" also drops a person or group picked in the list.
               if (id === null) setPf(NO_FILTER);
@@ -404,6 +421,8 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
               )}
               {state.phase === "loading" && !state.error ? (
                 <div className="none">Connecting to the Podium server…</div>
+              ) : board ? (
+                <Board sessions={peopleShown} me={me} onOpen={selectSession} />
               ) : selected ? (
                 <FocusView
                   s={selected}
