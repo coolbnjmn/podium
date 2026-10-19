@@ -69,7 +69,7 @@ If you think you have found something like this, please report it rather than op
 ## Orchestrator messaging
 
 Podium can carry messages between one person's own orchestrators (#347): the server since #412, the mod's tools since
-#414 and the owner's My reporters page since #415. The Admin's pages and Traffic come in later releases. It is off until the Admin turns on Orchestrator messaging and the person turns on the
+#414, the owner's My reporters page since #415, the Admin's pages since #416 and Traffic since #417. It is off until the Admin turns on Orchestrator messaging and the person turns on the
 reporter's `peers` option on each machine and gives the pair a right. What it exposes:
 
 | Topic | How it works |
@@ -94,6 +94,7 @@ a limit, or a way to read a conversation's text as anyone but its owner or an Ad
 | What the security sweep found, fixed and accepted | `docs/DECISIONS.md` 31, with 32 (guess throttling) and 33 (the Host check) |
 | The rules the server and the mod follow | `docs/SPEC.md` 7.7 "Hardening": "Who a report is from", "Who", "The browser's credential", "The mod never trusts the server" and "The admin log" |
 | How a person turns responding on and uses it | `docs/USER_GUIDE.md`, "Answering a session from Podium" |
+| How orchestrator messaging is set up, and what is kept | `docs/MESSAGING.md`, with the reasoning in `docs/DECISIONS.md` 37 |
 | What is open by design | `docs/GOTCHAS.md` and [Running the server](../docs/SERVER.md#run-it-with-podiumctl) ("Several people on one Podium") |
 
 ## Reporting a vulnerability

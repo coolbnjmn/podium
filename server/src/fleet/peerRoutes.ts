@@ -233,7 +233,9 @@ export function mountPeerRoutes(router: Router, d: PeerDeps): void {
     if (!out.ok) return void refuse(req, res, out.status, out.error);
     // The level the right now has, which raise() can make higher than the request's, so /podium allow names it (#414).
     const applied = 'applied' in out ? out.applied : null;
-    res.json({ ok: true, outcome: out.request.outcome, ...(applied ? { level: applied.level } : {}) });
+    // A delivered message on a paused link waits for Resume link, so /podium deliver says so rather than "when its turn ends".
+    const paused = 'message' in out && out.message.deliver && fleet.peers.rights.effective(out.request.fromKey, out.request.toKey).paused;
+    res.json({ ok: true, outcome: out.request.outcome, ...(applied ? { level: applied.level } : {}), ...(paused ? { paused: true } : {}) });
   });
 
   router.post('/sessions/:id/peers/deliveries/:deliveryId/result', d.requireToken, json, (req, res) => {
@@ -250,7 +252,8 @@ export function mountPeerRoutes(router: Router, d: PeerDeps): void {
   router.get('/peers/traffic', (req, res) => {
     const range = rangeOf(req.query.range, now());
     if (!range) return void res.status(400).json({ ok: false, error: 'range must be live, 24h or 30d' });
-    res.json({ enabled: enabled(), conversations: enabled() ? fleet.peers.messages.conversations(range) : [] });
+    if (!enabled()) return void res.json({ enabled: false, conversations: [] });
+    res.json({ enabled: true, conversations: fleet.peers.messages.conversations(range), retainDays: fleet.peers.settings.get().retainDays, serverTime: now() });
   });
 }
 

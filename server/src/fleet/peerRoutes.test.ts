@@ -182,6 +182,17 @@ describe('a message between two of one owner’s orchestrators (#412)', () => {
     expect(logKinds(s)).toContain('peer_declined');
   });
 
+  it('delivered from a session on a paused link, says the link is paused, so /podium deliver says it waits for Resume', async () => {
+    const s = await linked('ask');
+    const answer = (id: string) => request(s.app).post(`/api/fleet/sessions/sess-tester/peers/requests/${id}`).set('X-Podium-Token', s.ed.token).send({ answer: 'deliver' });
+    const first = await send(s, 'on an open link');
+    expect((await answer(first.body.requestId)).body).toEqual({ ok: true, outcome: 'delivered' });
+    await s.edBrowser.put('/api/fleet/respond/peers/links').set(H).send({ a: MAC.id, b: LINUX.id, paused: true });
+    const held = await send(s, 'on a paused link');
+    expect(held.body).toMatchObject({ state: 'approval', paused: true });
+    expect((await answer(held.body.requestId)).body).toEqual({ ok: true, outcome: 'delivered', paused: true });
+  });
+
   it('is refused between two owners, and nothing is stored', async () => {
     const s = await linked('send');
     const out = await send(s, 'to Alex', 'review@alex-box');
@@ -434,6 +445,9 @@ describe('Traffic’s open read (#412)', () => {
     const t = await request(s.app).get('/api/fleet/peers/traffic');
     expect(t.body.enabled).toBe(true);
     expect(t.body.conversations).toEqual([expect.objectContaining({ messages: 1, state: 'active' })]);
+    // How long a conversation is kept, so Traffic can name the days, and the server's clock to time them by (#417).
+    expect(t.body.retainDays).toBe(30);
+    expect(t.body.serverTime).toEqual(expect.any(Number));
     expect((await request(s.app).get('/api/fleet/peers/traffic?range=forever')).status).toBe(400);
     s.fleet.features.setFeature(PEER_MESSAGING, false);
     expect((await request(s.app).get('/api/fleet/peers/traffic')).body).toEqual({ enabled: false, conversations: [] });
@@ -460,6 +474,8 @@ describe('the Admin’s side (#412)', () => {
     const view = await admin.get(`/api/admin/reporters/${LINUX.id}/peers`);
     expect(view.body.requests).toEqual([expect.objectContaining({ id: p.body.requestId, kind: 'proposal', level: 'send' })]);
     expect(view.body.effective).toEqual(expect.arrayContaining([{ from: LINUX.id, to: MAC.id, level: 'none', paused: false }]));
+    // Admin > Reporters' Grid matches a proposal to its cell by reporter key, as My reporters does (#416).
+    expect(view.body.requests[0]).toMatchObject({ fromKey: LINUX.id, toKey: MAC.id, messageId: null });
     const ok = await s.edBrowser.post(`/api/fleet/respond/peers/requests/${p.body.requestId}`).set(H).send({ answer: 'allow' });
     expect(ok.body.outcome).toBe('allowed');
     expect((await admin.get(`/api/admin/reporters/${LINUX.id}/peers`)).body.effective).toEqual(expect.arrayContaining([{ from: LINUX.id, to: MAC.id, level: 'send', paused: false }]));
@@ -467,7 +483,30 @@ describe('the Admin’s side (#412)', () => {
     expect((await admin.post(`/api/admin/reporters/${LINUX.id}/peers/propose`).set(HA).send({ to: MAC.id, level: 'all' })).status).toBe(400);
     expect((await admin.post(`/api/admin/reporters/${LINUX.id}/peers/propose`).set(HA).send({ from: MAC.id, to: MAC.id, level: 'see' })).status).toBe(400);
     expect((await admin.post(`/api/admin/reporters/${LINUX.id}/peers/propose`).set(HA).send({ to: ALEX_BOX.id, level: 'see' })).status).toBe(403);
+    // A proposal only raises a right: send is already there, so a lower one is refused and stores nothing.
+    const lower = await admin.post(`/api/admin/reporters/${LINUX.id}/peers/propose`).set(HA).send({ to: MAC.id, level: 'see' });
+    expect(lower.status).toBe(409);
+    expect(lower.body.error).toBe('a proposal must raise the right; it is already send');
     expect((await admin.get('/api/admin/reporters/nope/peers')).status).toBe(404);
+  });
+
+  it('reads every pair of the owner’s reporters in one read, with the owner’s Trust my own reporters (#416)', async () => {
+    const s = await linked('see');
+    const twin = { name: 'build-pi', id: 'pi0pi0pi0001' };
+    expect((await post(s, s.ed.token, report('Ed', 'sess-pi', 'arm', twin))).status).toBe(200);
+    const admin = await adminAgent(s);
+    // A proposal between two other reporters of Ed's shows on this reporter's read too: the Grid draws every pair.
+    const p = await admin.post(`/api/admin/reporters/${twin.id}/peers/propose`).set(HA).send({ to: LINUX.id, level: 'see' });
+    expect(p.status).toBe(202);
+    const view = (await admin.get(`/api/admin/reporters/${MAC.id}/peers`)).body;
+    expect(view.trust).toBe(false);
+    expect(view.rights).toEqual(expect.arrayContaining([expect.objectContaining({ from: MAC.id, to: LINUX.id, level: 'see' })]));
+    // The effective levels stay this reporter's pairs, for Pause all links: the Grid reads levels from the rights.
+    const pairs = (view.effective as { from: string; to: string }[]).map((e) => `${e.from}>${e.to}`);
+    expect(pairs.sort()).toEqual([`${LINUX.id}>${MAC.id}`, `${MAC.id}>${LINUX.id}`, `${MAC.id}>${MAC.id}`, `${MAC.id}>${twin.id}`, `${twin.id}>${MAC.id}`].sort());
+    expect(view.requests).toEqual([expect.objectContaining({ id: p.body.requestId, fromKey: twin.id, toKey: LINUX.id })]);
+    expect((await s.edBrowser.put('/api/fleet/respond/peers/defaults').set(H).send({ trust: true })).status).toBe(200);
+    expect((await admin.get(`/api/admin/reporters/${MAC.id}/peers`)).body.trust).toBe(true);
   });
 
   it('pauses all of a reporter’s links at once, and removes a link at once', async () => {

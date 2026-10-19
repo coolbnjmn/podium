@@ -8,8 +8,8 @@ import { idPart, LEVEL_LABEL, LEVELS, type PeerLevel, type PeerReporter, type Ri
 
 const svg = { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true, focusable: false } as const;
 
-/** One glyph per level: a struck circle, an eye, an arrow with a clock, an arrow to a bar. */
-const LEVEL_ICON: Record<PeerLevel, ReactNode> = {
+/** One glyph per level: a struck circle, an eye, an arrow with a clock, an arrow to a bar. Traffic reuses No access's. */
+export const LEVEL_ICON: Record<PeerLevel, ReactNode> = {
   none: (
     <svg {...svg}>
       <circle cx="8" cy="8" r="5.5" />
@@ -194,21 +194,27 @@ interface ViewProps {
   shown?: (a: string, b: string) => PeerLevel;
   /** `control` is the id of the select the change came from, so focus can go back to it. */
   onSet: (from: string, to: string, level: PeerLevel, control: string) => void;
+  /** Whether a reporter's live orchestrators are counted. The Admin's view has no count to show (#416). Defaults to true. */
+  showLive?: boolean;
+  /** Levels that cannot be chosen here, for every pair or per pair: an Admin can only propose more (#416). None by default. */
+  disabledLevels?: readonly PeerLevel[] | ((from: string, to: string) => readonly PeerLevel[]);
 }
 
-const levelOptions = (prefix = "") =>
+const levelOptions = (prefix = "", disabled: readonly PeerLevel[] = []) =>
   LEVELS.map((l) => (
-    <option key={l} value={l}>
+    <option key={l} value={l} disabled={disabled.includes(l)}>
       {prefix}
       {LEVEL_LABEL[l]}
     </option>
   ));
 
+const disabledFor = (d: ViewProps["disabledLevels"], from: string, to: string): readonly PeerLevel[] => (typeof d === "function" ? d(from, to) : (d ?? []));
+
 export const gridCellId = (a: string, b: string) => `g-${idPart(a)}-${idPart(b)}`;
 export const moveId = (key: string) => `mv-${idPart(key)}`;
 
 /** Every pair at once. Each cell is a select named "A to B"; the diagonal is between orchestrators on one machine. */
-export function RightsGrid({ model, waitingFor, shown, onSet }: ViewProps) {
+export function RightsGrid({ model, waitingFor, shown, onSet, showLive = true, disabledLevels }: ViewProps) {
   const reps = model.reporters;
   const cell = (ra: PeerReporter, rb: PeerReporter) => {
     const a = ra.key;
@@ -230,7 +236,7 @@ export function RightsGrid({ model, waitingFor, shown, onSet }: ViewProps) {
               {ra.machine} to {rb.machine}
             </label>
             <select className="field sm" id={id} value={(shown ?? model.level)(a, b)} disabled={model.locked(a, b)} onChange={(e) => onSet(a, b, e.target.value as PeerLevel, id)}>
-              {levelOptions()}
+              {levelOptions("", disabledFor(disabledLevels, a, b))}
             </select>
             {self && <span className="hint cellnote">Between orchestrators on this machine</span>}
             {model.paused(a, b) && <PausedTag />}
@@ -260,7 +266,7 @@ export function RightsGrid({ model, waitingFor, shown, onSet }: ViewProps) {
             <tr key={ra.key}>
               <th scope="row">
                 <Name text={ra.machine} className="mn" />
-                <span className="hint">{ra.live.length} live</span>
+                {showLive && <span className="hint">{ra.live.length} live</span>}
               </th>
               {reps.map((rb) => cell(ra, rb))}
             </tr>
@@ -275,7 +281,7 @@ export function RightsGrid({ model, waitingFor, shown, onSet }: ViewProps) {
  * One reporter's peers in four columns, one per level, each a labelled region with its count. A card moves by dragging it
  * to a column or with its Move to list; after a move from the list, focus stays on that list in the card's new column.
  */
-export function RightsBoard({ model, waitingFor, shown, onSet, of, onOf }: ViewProps & { of: string | null; onOf: (key: string) => void }) {
+export function RightsBoard({ model, waitingFor, shown, onSet, of, onOf, showLive = true, disabledLevels = [] }: ViewProps & { of: string | null; onOf: (key: string) => void }) {
   const [over, setOver] = useState<PeerLevel | null>(null);
   const dragging = useRef<string | null>(null);
   const [dragKey, setDragKey] = useState<string | null>(null);
@@ -330,7 +336,7 @@ export function RightsBoard({ model, waitingFor, shown, onSet, of, onOf }: ViewP
         </div>
         <div className="sub">
           <SystemTag os={r.os} />
-          <span>{r.live.length} live</span>
+          {showLive && <span>{r.live.length} live</span>}
           {messagingOffShort(r) && <span>{messagingOffShort(r)}</span>}
         </div>
         <label className="vh" htmlFor={id}>
@@ -346,7 +352,7 @@ export function RightsBoard({ model, waitingFor, shown, onSet, of, onOf }: ViewP
             move(r.key, e.target.value as PeerLevel, id);
           }}
         >
-          {levelOptions("Move to: ")}
+          {levelOptions("Move to: ", disabledFor(disabledLevels, me.key, r.key))}
         </select>
         {model.paused(me.key, r.key) && <PausedTag />}
         {proposed && <ProposedTag level={proposed} waitingFor={waitingFor} />}
@@ -388,7 +394,7 @@ export function RightsBoard({ model, waitingFor, shown, onSet, of, onOf }: ViewP
                 const key = dragging.current ?? e.dataTransfer?.getData("text/plain");
                 dragging.current = null;
                 setDragKey(null);
-                if (key && !model.locked(me.key, key) && level(me.key, key) !== c) move(key, c, moveId(key));
+                if (key && !model.locked(me.key, key) && level(me.key, key) !== c && !disabledFor(disabledLevels, me.key, key).includes(c)) move(key, c, moveId(key));
               }}
             >
               <h3>

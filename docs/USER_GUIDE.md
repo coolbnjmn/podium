@@ -5,8 +5,8 @@ How to set up Podium, read the dashboard and fix common problems.
 Podium shows every Claude Code session on your machine in one browser tab. It watches. It never sends a prompt to a
 session, stops an agent or changes anything, unless you turn on [answering from Podium](#answering-a-session-from-podium).
 
-Related docs: [REPORTER.md](REPORTER.md) for the mod's options, [SERVER.md](SERVER.md) for the server's settings and
-[GOTCHAS.md](GOTCHAS.md) for sharp edges.
+Related docs: [REPORTER.md](REPORTER.md) for the mod's options, [SERVER.md](SERVER.md) for the server's settings,
+[MESSAGING.md](MESSAGING.md) for setting up orchestrator messaging and [GOTCHAS.md](GOTCHAS.md) for sharp edges.
 
 ## Contents
 
@@ -28,6 +28,7 @@ Related docs: [REPORTER.md](REPORTER.md) for the mod's options, [SERVER.md](SERV
 - [Activity](#activity)
 - [Answering a session from Podium](#answering-a-session-from-podium)
 - [My reporters](#my-reporters)
+- [Traffic](#traffic)
 - [History](#history)
 - [What the numbers mean](#what-the-numbers-mean)
 
@@ -618,7 +619,8 @@ An answer counts once the session confirms it, usually within 2 seconds. Until t
 
 **My reporters** (`#/me/reporters`) lists the machines that report your sessions to this server, and is where you
 decide which of them may see and message each other. Only your own reporters are there: Podium does not carry messages
-between people. `mockup/podium-my-reporters.html` shows every case.
+between people. `mockup/podium-my-reporters.html` shows every case. To set messaging up from the start, follow
+[MESSAGING.md](MESSAGING.md); this section is a tour of the page.
 
 It needs authentication on and the Admin's **Orchestrator messaging** switch (Admin > Settings > Feature flags). Sign in
 with your name and token from **Sign in** at the far right of the top bar. The top bar then reads *Signed in as Ed*,
@@ -660,6 +662,15 @@ Reporters, whether or not the machine has a live session.
   and **Decline** answer it for you.
 - **A new right to send starts as.** **With approval** (the default) or **Without approval**, for a right an orchestrator
   is given when it asks.
+- **Limits on your links.** Three limits apply to messages between your reporters: **Round trips before a person
+  approves** (after that many exchanges in one conversation, the next message waits for you), **Messages per minute on
+  a link** and **Longest message, in characters**. The Admin sets the most each can be in Admin > Settings, and each box
+  starts at that value, with *Uses the Admin's limit* under the name. Type a lower whole number and leave the box, or
+  press Enter, to make it yours. **Use the Admin's limit** goes back, and so does typing the Admin's value exactly. A
+  value above the Admin's, below 1, not a whole number, or an empty box is refused in the row with the reason, and
+  nothing is saved. Over the rate or the length, a message is refused and its sender is told why; it is never cut. At
+  the round-trip limit, the next message waits under Waiting for you, and approving it starts the count again. If the Admin
+  later sets theirs below yours, theirs applies and the row says so, and yours is kept in case the Admin raises it again.
 
 #### Who can message whom
 
@@ -677,6 +688,50 @@ Two views show the same rights. **Grid | Board** switches between them, and this
 
 A change saves at once. If it cannot be saved, the page says so and shows the level as it was. **Paused** on a pair means
 the link is paused, and **Proposed** means an Admin's change is waiting for you.
+
+### Traffic
+
+**Traffic** (`#/traffic`) shows which orchestrators message which, like a service mesh's traffic map, and what they said.
+The link is in the top bar after **History** while the Admin's **Orchestrator messaging** switch is on.
+`mockup/podium-traffic.html` shows every case, and [MESSAGING.md](MESSAGING.md#traffic) has a key to the map.
+
+Anyone who can read the console sees the map and the counts. A conversation's text opens only for its owner and an
+Admin: anyone else reads *Only Ed and an Admin can read this conversation*, and the page does not ask the server for the
+text at all. Sign in from the top bar to read your own.
+
+- **Map.** A dashed box per machine, with its system, and a node per orchestrator with the same status shapes as the
+  wall. A line joins two orchestrators that messaged each other. Solid is active; dashed in the warning color means a
+  message waits for approval; dotted and muted means the link is paused. The label on the line has the count, and the
+  word and an icon when it is waiting or paused; a paused link with a message waiting keeps the waiting line and reads
+  "waiting, paused". When neither side can send any more, as after Remove link, the label
+  adds No access's struck circle and "no right to send". An arrow at one end means only that way can send, and a thicker line
+  carries more messages. The legend under the map says the same, and names a machine of yours that is not drawn because
+  messaging is off there. Each line is a link: click it, or Tab to it and press Enter.
+- **Table** shows the same links as text: the pair and their machines, the messages, the last message, the round trips
+  and the state. A narrow screen opens on it. **Map | Table** switches between them.
+- **Show** picks **Live sessions** (conversations with an orchestrator still running), **Last 24 hours** or **Last 30
+  days**.
+
+The conversation is beside the map, or below it on a narrow screen: the pair and their machines, the state, the round
+trips used against the limit, how many days it is kept, then the messages oldest first. A paused link with a message
+waiting for approval shows both states, and a link neither side can send on reads **No right to send**, here and in
+the Table. Each message says who sent it to whom, when, and where it
+is: delivered, waiting for the receiver's turn to end, waiting for your approval, held while the link is paused,
+declined or dropped (and why). Anything Podium replaced as a possible secret on the sending machine reads `[redacted]`.
+A one-way link says the other side cannot answer, and that you give it the right in My reporters.
+
+On your own link:
+
+- **Pause link** stops delivery both ways at once and keeps the rights. **Resume link** lets the held messages go.
+- **Remove link…** asks first. Both ways lose every right, a message still waiting is dropped, and the conversation
+  stays on the page until it expires.
+
+Both act on the two machines, so they also pause or remove every other conversation between them. If either fails, the
+page says so and the link is as it was. An Admin can read anyone's conversation here, but cannot pause or remove
+another person's link on this page; **Pause all links** in Admin > Reporters pauses every link of a reporter.
+
+Like My reporters, the page has no left pane, right pane or wall, so `[`, `]` and `w` do nothing on it; `\` still hides
+and shows the top bar.
 
 ### History
 
@@ -831,6 +886,20 @@ flagged:
 - The **Ignore rules** section after the table shows every rule (a key, an address or a version, with `*` for "anything",
   as in `10.88.*` or `*-sim`). **Remove rule** undoes one.
 
+**Messaging.** While **Orchestrator messaging** is on, a reporter's details add its **System** and **Messaging** (On,
+Paused, Off on the machine, Reporter can't message: update it, or Cannot take part), and a **Messaging** section below
+shows the owner's reporters with the same **Grid | Board** as [My reporters](#my-reporters). How rights, proposals and
+pauses fit together is in [MESSAGING.md](MESSAGING.md#rights-and-approval).
+
+- An Admin never decides for the owner. A change you make there is sent to the owner as a proposal, shows as
+  Proposed, waiting for them, and applies only once they accept it, on My reporters or in a session on the machine. You
+  can only propose more than a pair has; lowering a right or taking it away is the owner's choice.
+- **Pause all links** in the details' header pauses every link of that reporter at once, with no answer needed, and
+  **Resume all links** undoes it.
+- While the owner has **Trust my own reporters** on, the choices are locked and a band says so.
+- A reporter on the admin secret, with no owner, with messaging off on its machine, or too old to message says why
+  and offers no choices.
+
 A source address and a machine name are personal data, so only Admin shows them.
 
 If one machine shows several rows, or a changed login does not reach a running session, see
@@ -859,9 +928,24 @@ These settings apply to every browser and stay after a restart.
   that asked and keeps no copy. The mod hides what looks like a secret (tokens, passwords, keys, credentials in URLs) as `[redacted]` before
   the diff leaves the machine, and never sends `.env` files, keys or credentials files at all. Hiding is best
   effort, not a guarantee. Off, the Files rows show their counts and no link.
-- **Orchestrator messaging** (`peer-messaging`) is off by default. It will let a person's orchestrators message each
-  other, only between that person's own machines. The server side is in place, but podium-reporter and the pages that
-  use it come in a later release, so turning it on changes nothing you can see yet.
+- **Orchestrator messaging** (`peer-messaging`) is off by default. It lets a person's orchestrators message each
+  other, only between that person's own machines, once each machine's podium-reporter has its `peers` option on and the
+  owner has given the pair a right on [My reporters](#my-reporters). It needs authentication on. Turned on, it adds an
+  **Orchestrator messaging** section here, a Messaging section on each reporter, [My reporters](#my-reporters) and
+  [Traffic](#traffic).
+
+**Orchestrator messaging**, shown while that flag is on, sets the limits on every link. An owner can make them stricter
+on their own links in My reporters, never looser. [MESSAGING.md](MESSAGING.md#limits) says what happens at each one.
+
+| Setting | Default | Range | What it does |
+|---|---|---|---|
+| Round trips before a person approves | 10 | 1 to 100 | After this many exchanges in one conversation, the next message waits for the owner to approve it |
+| Messages per minute on a link | 6 | 1 to 60 | More than this is refused, and the sender is told to wait |
+| Longest message, in characters | 20,000 | 1 to 20,000 | A longer message is refused, never cut |
+| Keep conversations, in days | 30 | 1 to 365 | How long a conversation is kept after its last message |
+
+A value is saved when you leave its box or press Enter. One out of range is refused in its row: the error says nothing
+was saved and which value still applies.
 
 **Wall notices.** The notes Podium shows at the bottom of the wall each have a switch here, and the X on a note turns its
 switch off for everyone. After you close one, Podium says so and links to this page.

@@ -10,7 +10,9 @@ Contents:
   - [Auth token](#auth-token)
   - [Admin and per-person tokens](#admin-and-per-person-tokens)
   - [Several people on one Podium](#several-people-on-one-podium)
+  - [Orchestrator messaging](#orchestrator-messaging)
   - [A page on another site](#a-page-on-another-site)
+  - [Behind a reverse proxy](#behind-a-reverse-proxy)
   - [More settings](#more-settings)
   - [Start on boot](#start-on-boot)
 - [Server settings](#server-settings)
@@ -106,6 +108,25 @@ names, machines, paths, branches, plan steps, commands from failed calls and the
   shows as Admin, and with the server's auth turned off every session is Unassigned, because then anyone
   could claim any name.
 - Per-person read permissions are not part of Podium.
+
+### Orchestrator messaging
+
+One person's orchestrators can find and message each other through the server, between that person's own
+reporters only. It is off until an Admin turns on **Orchestrator messaging** (`peer-messaging`) in Admin >
+Settings > Feature flags; each change is written to the Admin log as `feature_changed`. It also needs the
+server's auth on, a person's token on each reporter (never the admin secret), and the reporter's `peers` option
+on each machine. The rules are in [SPEC.md](SPEC.md#orchestrator-messaging-347).
+
+- While the flag is on, Admin > Settings has an **Orchestrator messaging** section with four limits for every link
+  on the server: round trips before a person approves (10), messages per minute on a link (6), the longest message
+  (20,000 characters) and how many days a conversation is kept (30). A person can make the first three stricter on
+  their own links, never looser. Each change is written to the Admin log as `peer_limits_changed`.
+- Admin > Reporters > a reporter has a **Messaging** section, where an Admin proposes rights for the owner to accept
+  and pauses every link of that reporter at once.
+- Turning the flag off keeps the rights and limits and drops every message still waiting.
+
+[MESSAGING.md](MESSAGING.md) walks through the whole setup, with the ranges in [Limits](MESSAGING.md#limits); the
+Admin's screens are under "Admin" in [USER_GUIDE.md](USER_GUIDE.md#settings).
 
 ### A page on another site
 

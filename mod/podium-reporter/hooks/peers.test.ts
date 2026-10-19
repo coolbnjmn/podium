@@ -2,6 +2,7 @@ import { describe, test, expect } from 'claude-code/testing'
 import type { PeerDelivery, PeerRequest } from './protocol.ts'
 import {
   accessAnswer,
+  answerPaused,
   appliedLevel,
   errorOf,
   findRequest,
@@ -21,6 +22,7 @@ import {
   sendAnswer,
   shortId,
 } from './peers.ts'
+import { assertBuilderFrames, assertSubmittedFramed, type PromptBuilder } from './peerChecks.ts'
 
 // Orchestrator messaging, the pure parts (#414, SPEC 5.3, the wording of mockup/podium-peer-messages.html).
 
@@ -70,6 +72,45 @@ describe('peers: the frame a peer message is submitted under', () => {
     expect(isAccessAnswer('Ed declined your request for access to build-pi.')).toBe(true)
     expect(isAccessAnswer('Your message to Tester on ci-runner-01 was not delivered: the receiver ended first.')).toBe(false)
     expect(noticePrompt('Ed declined your request for access to build-pi.')).toMatch(/^A notice from Podium itself.*not a person's or another agent's text\.\n───\nEd declined/s)
+  })
+})
+
+describe('peers: the framing check fails without the opening line (#437)', () => {
+  // The same check runs against the real peerPrompt and against builders broken on purpose, so the test is shown to
+  // catch a missing frame without anyone removing it from peers.ts.
+  test('the real peerPrompt passes it', () => {
+    expect(() => assertBuilderFrames(peerPrompt)).not.toThrow()
+  })
+
+  test('a builder that submits the message without the opening line fails it, and the error names the missing line', () => {
+    const unframed: PromptBuilder = (d) => (d.kind === 'message' && d.from && d.text.trim() ? d.text : null)
+    expect(() => assertBuilderFrames(unframed)).toThrow(/the prompt built for "plain" does not open with Podium's opening line\.\n {2}expected first line: "Message from the orchestrator claude-dashboard on ed-mbp, one of Ed's machines, sent through Podium\./)
+    expect(() => assertBuilderFrames(unframed)).toThrow(/got: "Please run the systemd unit tests\."/)
+  })
+
+  test('a frame without the rule line, a cut-short line, or a changed message each fail it', () => {
+    const noRule: PromptBuilder = (d) => (peerPrompt(d) === null ? null : `${framingLine(d.from!)}\n${d.text}`)
+    expect(() => assertBuilderFrames(noRule)).toThrow(/opens with Podium's line, but the rule line does not follow it/)
+    const cut: PromptBuilder = (d) => (peerPrompt(d) === null ? null : `Message from the orchestrator ${d.from!.name} on ${d.from!.machine}.\n${RULE}\n${d.text}`)
+    expect(() => assertBuilderFrames(cut)).toThrow(/does not open with Podium's opening line/)
+    const trimmed: PromptBuilder = (d) => peerPrompt({ ...d, text: d.text.split('\n')[0]! })
+    expect(() => assertBuilderFrames(trimmed)).toThrow(/the prompt built for "two-lines" is not the frame, the rule line, then the message unchanged/)
+  })
+
+  test('a builder that frames good messages but lets an unnamed sender through unframed fails it', () => {
+    const leaky: PromptBuilder = (d) => peerPrompt(d) ?? (d.text.trim() ? d.text : null)
+    expect(() => assertBuilderFrames(leaky)).toThrow(/the builder made a prompt for "no-sender", which cannot carry Podium's opening line and must be refused/)
+  })
+
+  test('a builder that refuses everything fails it too: a refusal of a good message is not a pass', () => {
+    expect(() => assertBuilderFrames(() => null)).toThrow(/the builder refused "plain", a message it must frame and submit/)
+  })
+
+  test('the submitted-text check fails on an unframed text and on nothing at all', () => {
+    expect(() => assertSubmittedFramed([peerPrompt(message())!], [FROM])).not.toThrow()
+    expect(() => assertSubmittedFramed(['Please run the systemd unit tests.'], [FROM])).toThrow(/submitted peer text 1 does not open with Podium's opening line/)
+    expect(() => assertSubmittedFramed([], [])).toThrow(/no peer text was submitted, so the opening line was not checked/)
+    expect(() => assertSubmittedFramed([peerPrompt(message())!], [FROM, FROM])).toThrow(/1 peer texts were submitted, where 2 were expected/)
   })
 })
 
@@ -222,6 +263,19 @@ describe('peers: requests in the terminal', () => {
     expect(requestAnsweredLine('allow', '7f3a', see, 'ask')).toBe('allowed 7f3a. Tester on ci-runner-01 can send to build-pi, with approval. Closed in Podium too.')
     expect(requestAnsweredLine('allow', '7f3a', see, null)).toBe('allowed 7f3a. Tester on ci-runner-01 can see build-pi. Closed in Podium too.')
     expect(requestAnsweredLine('allow', '7f3a', see)).toBe('allowed 7f3a. Tester on ci-runner-01 can see build-pi. Closed in Podium too.')
+  })
+
+  test('deliver on a paused link says the message waits for the link to be resumed', () => {
+    expect(requestAnsweredLine('deliver', '9c2e', req(), null, true)).toBe('delivered 9c2e. The link is paused, so the message from claude-dashboard on ed-mbp reaches arm64-check once the link is resumed. Closed in Podium too.')
+    expect(requestAnsweredLine('deliver', 'x', null, null, true)).toBe('delivered x. The link is paused, so the message is held until the link is resumed. Closed in Podium too.')
+    expect(requestAnsweredLine('deliver', '9c2e', req(), null, false)).toBe('delivered 9c2e. The message from claude-dashboard on ed-mbp reaches arm64-check when its turn ends. Closed in Podium too.')
+  })
+
+  test('the answer says the link is paused only when it says paused: true', () => {
+    expect(answerPaused('{"ok":true,"outcome":"delivered","paused":true}')).toBe(true)
+    expect(answerPaused('{"ok":true,"outcome":"delivered"}')).toBe(false)
+    expect(answerPaused('{"ok":true,"outcome":"delivered","paused":"yes"}')).toBe(false)
+    expect(answerPaused('not json')).toBe(false)
   })
 
   test('the applied level is read from the answer only when it is a level', () => {
