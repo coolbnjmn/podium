@@ -4,6 +4,7 @@
 // With no files, checks README.md, CONTRIBUTING.md, CHANGELOG.md and docs/*.md.
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { slug, stripLinks, trimClosing } from "./docLinks.mjs";
 
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
@@ -14,18 +15,16 @@ const files = args.length
   ? args
   : ["README.md", "CONTRIBUTING.md", "CHANGELOG.md", ...readdirSync("docs").filter((f) => f.endsWith(".md")).map((f) => join("docs", f))].filter((f) => existsSync(f));
 
-const slug = (h) =>
-  h.toLowerCase().replace(/<[^>]+>/g, "").replace(/[`*~]/g, "").replace(/[^\p{L}\p{N} _-]/gu, "").trim().replace(/ /g, "-");
-
 const anchors = (path) => {
   const seen = new Map();
   const out = new Set();
   let fence = false;
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (/^```/.test(line)) fence = !fence;
-    const m = !fence && line.match(/^#{1,6}\s+(.*?)\s*#*$/);
+    const m = !fence && line.match(/^#{1,6}\s+(.*)/);
     if (!m) continue;
-    const s = slug(m[1].replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"));
+    // Closing hashes and the space before them are not part of the heading text.
+    const s = slug(stripLinks(trimClosing(m[1])));
     const n = seen.get(s) ?? 0;
     seen.set(s, n + 1);
     out.add(n ? `${s}-${n}` : s);
