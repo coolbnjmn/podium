@@ -107,8 +107,8 @@ function Token({ r }: { r: Pick<ReporterRow, "adminSecret" | "credential"> }) {
   return r.credential ? <span className="tokid mono">{r.credential}</span> : <span className="tokid">none</span>;
 }
 
-/** A hover and keyboard-focus note: the same text as the title and as a line a screen reader reads. */
-function StateBadge({ r, serverTime, serverStartedAt }: { r: Pick<ReporterRow, "state" | "lastSeenAt">; serverTime: number; serverStartedAt: number }) {
+/** A hover and keyboard-focus note: the same text as the title and as a line a screen reader reads. My reporters uses it too (#415). */
+export function StateBadge({ r, serverTime, serverStartedAt }: { r: Pick<ReporterRow, "state" | "lastSeenAt">; serverTime: number; serverStartedAt: number }) {
   const s = stateOf(r.state);
   const text = stateDetail(r, serverTime, serverStartedAt);
   return (
@@ -119,7 +119,8 @@ function StateBadge({ r, serverTime, serverStartedAt }: { r: Pick<ReporterRow, "
   );
 }
 
-function Version({ r }: { r: ReporterRow }) {
+/** A reporter's version and how it fits this server; My reporters shows it the same way (#415). */
+export function Version({ r }: { r: Pick<ReporterRow, "version" | "compat"> }) {
   const flag = r.compat === "outdated" || r.compat === "newer";
   return (
     <span className={`compat ${r.compat}`} title={COMPAT[r.compat]}>

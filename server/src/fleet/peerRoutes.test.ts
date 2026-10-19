@@ -276,6 +276,28 @@ describe('access requests (#412)', () => {
     expect(logKinds(s)).toEqual(expect.arrayContaining(['peer_access_requested', 'peer_right_accepted']));
   });
 
+  it('answered from a session, says the level it applied, which can be higher than the request’s (#414)', async () => {
+    const s = await linked('ask');
+    const route = '/api/fleet/sessions/sess-dev/peers/access';
+    const ask = (right: string) => request(s.app).post(route).set('X-Podium-Token', s.ed.token).send({ to: 'ci-runner-01', right, reason: 'Linux tests.' });
+    const answer = (id: string, a: string) => request(s.app).post(`/api/fleet/sessions/sess-tester/peers/requests/${id}`).set('X-Podium-Token', s.ed.token).send({ answer: a });
+    // Mac can already send to Linux with approval: allowing a request to see never lowers that.
+    const see = await ask('see');
+    expect((await answer(see.body.requestId, 'allow')).body).toEqual({ ok: true, outcome: 'allowed', level: 'ask' });
+    // Nothing applied, no level.
+    const declined = await ask('send');
+    expect((await answer(declined.body.requestId, 'decline')).body).toEqual({ ok: true, outcome: 'declined' });
+  });
+
+  it('tells the orchestrator that asked the level it now has, not the one it asked for (#414)', async () => {
+    const s = await linked('ask');
+    const asked = await request(s.app).post('/api/fleet/sessions/sess-dev/peers/access').set('X-Podium-Token', s.ed.token).send({ to: 'ci-runner-01', right: 'see', reason: 'Linux tests.' });
+    await s.edBrowser.post(`/api/fleet/respond/peers/requests/${asked.body.requestId}`).set(H).send({ answer: 'allow' });
+    const [notice] = (await devReport(s)).body.peerDeliveries;
+    expect(notice.text).toContain('can send, with approval');
+    expect(notice.text).not.toContain('can see');
+  });
+
   it('checks the right and the target, and refuses a machine it does not know', async () => {
     const s = await linked('see');
     const route = '/api/fleet/sessions/sess-dev/peers/access';
@@ -308,6 +330,41 @@ describe('the owner’s routes (#412)', () => {
     expect(page.body.reporters.map((r: { key: string }) => r.key).sort()).toEqual([LINUX.id, MAC.id].sort());
     expect(page.body.reporters.find((r: { key: string }) => r.key === MAC.id).live).toEqual([{ sessionId: 'sess-dev', name: 'dev', status: 'running', peers: true }]);
     expect(page.body.rights).toEqual([expect.objectContaining({ from: MAC.id, to: LINUX.id, level: 'send', paused: false })]);
+  });
+
+  it('give each reporter its state and last report, the same as Admin > Reporters (#415)', async () => {
+    const s = await linked('send');
+    const started = s.tick(0);
+    s.tick(5 * 60_000);
+    expect((await testerReport(s)).status).toBe(200);
+    const page = (await s.edBrowser.get('/api/fleet/respond/peers')).body;
+    expect(page).toMatchObject({ serverTime: started + 5 * 60_000, serverStartedAt: started });
+    const of = (key: string) => page.reporters.find((r: { key: string }) => r.key === key);
+    expect(of(MAC.id)).toMatchObject({ state: 'idle', lastSeenAt: started });
+    expect(of(LINUX.id)).toMatchObject({ state: 'reporting', lastSeenAt: started + 5 * 60_000 });
+    const admin = await adminAgent(s);
+    const rows = (await admin.get('/api/admin/reporters').set(HA)).body.rows as { key: string; state: string; lastSeenAt: number; compat: string }[];
+    for (const key of [MAC.id, LINUX.id]) {
+      const row = rows.find((r) => r.key === key)!;
+      expect([of(key).state, of(key).lastSeenAt, of(key).compat]).toEqual([row.state, row.lastSeenAt, row.compat]);
+    }
+  });
+
+  it('name both reporters of a request by key as well as by machine, so two machines with one name stay apart (#415)', async () => {
+    const s = await linked('see');
+    const twin = { name: MAC.name, id: 'macmacmac002' };
+    expect((await post(s, s.ed.token, report('Ed', 'sess-twin', 'twin', twin))).status).toBe(200);
+    const admin = await adminAgent(s);
+    const p = await admin.post(`/api/admin/reporters/${twin.id}/peers/propose`).set(HA).send({ to: LINUX.id, level: 'send' });
+    expect(p.status).toBe(202);
+    const page = await s.edBrowser.get('/api/fleet/respond/peers');
+    expect(page.body.requests).toEqual([
+      expect.objectContaining({ id: p.body.requestId, kind: 'proposal', fromKey: twin.id, toKey: LINUX.id, from: { machine: 'ed-mbp', name: null }, to: { machine: 'ci-runner-01', name: null }, messageId: null }),
+    ]);
+    // The mod's copy keeps the protocol's shape: machines only.
+    const mod = (await testerReport(s)).body.peerRequests;
+    expect(mod).toEqual([expect.objectContaining({ id: p.body.requestId })]);
+    expect(mod[0]).not.toHaveProperty('fromKey');
   });
 
   it('pause a link, which holds a message, and resume it, which lets it go', async () => {

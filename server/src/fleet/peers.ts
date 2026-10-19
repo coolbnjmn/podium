@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { PeerRights } from './peerRights.js';
 import { PeerMessages } from './peerMessages.js';
 import { PeerSettings, type PeerLimits } from './peerSettings.js';
-import { isIdle, type Actor, type AnswerOutcome, type MessageTrail, type PeerRequestRow, type Refusal, type ReporterLookup, type RightsTrail } from './peerTypes.js';
+import { isIdle, type Actor, type AnswerOutcome, type MessageTrail, type OwnerRequestView, type PeerRequestRow, type Refusal, type PeerReporterLookup, type RightsTrail } from './peerTypes.js';
 import { PEER_LIMITS, type PeerAnswer, type PeerDelivery, type PeerLevel, type PeerRequest, type Report } from './protocol.js';
 
 /** A level in the words My reporters and the terminal use. */
@@ -33,7 +33,7 @@ export class PeerService {
 
   constructor(
     private readonly db: DatabaseSync,
-    readonly reporters: ReporterLookup,
+    readonly reporters: PeerReporterLookup,
     private readonly now: () => number = Date.now,
     /** The Admin's `peer-messaging` flag. */
     readonly flagOn: () => boolean = () => false,
@@ -99,6 +99,11 @@ export class PeerService {
     };
   }
 
+  /** A request as the owner's read lists it: `requestView`, plus both reporters by key and the message it is about. */
+  ownerRequestView(r: PeerRequestRow): OwnerRequestView {
+    return { ...this.requestView(r), fromKey: r.fromKey, toKey: r.toKey, messageId: r.messageId };
+  }
+
   serverLimits(): PeerLimits {
     return this.settings.limits();
   }
@@ -118,7 +123,9 @@ export class PeerService {
     const r = out.request;
     if (r.kind === 'access' && r.fromSession) {
       const to = this.reporters.get(r.toKey)?.machine ?? r.toKey;
-      const words = r.level ? LEVEL_WORDS[r.level].toLowerCase() : 'access';
+      // The level the right has now: allowing never lowers one, so it can be above what was asked for.
+      const level = out.applied?.level ?? r.level;
+      const words = level ? LEVEL_WORDS[level].toLowerCase() : 'access';
       this.messages.notice(
         r.fromSession,
         r.outcome === 'allowed' ? `${owner} allowed your request for access to ${to}: ${words}. Run podium_peers to see what you can reach now.` : `${owner} declined your request for access to ${to}.`,

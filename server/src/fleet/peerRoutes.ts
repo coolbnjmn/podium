@@ -231,7 +231,9 @@ export function mountPeerRoutes(router: Router, d: PeerDeps): void {
     if (!(PEER_ANSWERS as readonly unknown[]).includes(answer)) return void res.status(400).json({ ok: false, error: 'answer must be allow, decline or deliver', path: '$.answer' });
     const out = withSource(sourceOf(req), () => fleet.peers.answer(req.params.requestId!, m.o.owner, answer as PeerAnswer, { name: m.person.name, admin: false }));
     if (!out.ok) return void refuse(req, res, out.status, out.error);
-    res.json({ ok: true, outcome: out.request.outcome });
+    // The level the right now has, which raise() can make higher than the request's, so /podium allow names it (#414).
+    const applied = 'applied' in out ? out.applied : null;
+    res.json({ ok: true, outcome: out.request.outcome, ...(applied ? { level: applied.level } : {}) });
   });
 
   router.post('/sessions/:id/peers/deliveries/:deliveryId/result', d.requireToken, json, (req, res) => {
@@ -303,14 +305,18 @@ export function mountPeerBrowserRoutes(browser: Router, d: PeerDeps, h: BrowserH
     const me = owner(req, res);
     if (!me) return;
     const server = fleet.peers.serverLimits();
+    const t = now();
     res.json({
       enabled: true,
       owner: me.name,
-      reporters: fleet.peers.reporters.ofOwner(me.name).filter((r) => !r.adminSecret).map((r) => ({ ...r, live: liveOn(r.key) })),
+      // Each reporter's state and last report as Admin > Reporters has them (#415), timed by the server's clock as there.
+      serverTime: t,
+      serverStartedAt: fleet.peers.reporters.startedAt,
+      reporters: fleet.peers.reporters.ofOwnerSeen(me.name, t).filter((r) => !r.adminSecret).map((r) => ({ ...r, live: liveOn(r.key) })),
       rights: fleet.peers.rights.rightsOf(me.name),
       defaults: fleet.peers.rights.defaults(me.name),
       limits: { server, effective: fleet.peers.rights.limits(me.name, server) },
-      requests: fleet.peers.rights.openRequests(me.name).map((r) => ({ ...fleet.peers.requestView(r), messageId: r.messageId })),
+      requests: fleet.peers.rights.openRequests(me.name).map((r) => fleet.peers.ownerRequestView(r)),
     });
   });
 
