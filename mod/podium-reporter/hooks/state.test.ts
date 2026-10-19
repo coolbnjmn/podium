@@ -6,7 +6,7 @@ import { ACTIVITY_KEPT, addActivity, agentRequested, agentSpawned, isWatched, se
 
 // The key sets of docs/fixtures/report.sample.json, so a built Report has the shared fixture's shape.
 const REPORT_KEYS = ['agents', 'events', 'reporter', 'sentAt', 'session', 'v']
-const SESSION_KEYS = ['activityFeed', 'attached', 'blowouts', 'context', 'costUsd', 'cwd', 'effort', 'endReason', 'files', 'git', 'id', 'loop', 'model', 'name', 'plan', 'projectRoot', 'rateLimits', 'repoName', 'resumeId', 'startedAt', 'status', 'tokens', 'usageByModel', 'waitNote', 'waitReason']
+const SESSION_KEYS = ['activityFeed', 'attached', 'blowouts', 'context', 'costUsd', 'cwd', 'effort', 'endReason', 'fileDiff', 'files', 'git', 'id', 'loop', 'model', 'name', 'peers', 'plan', 'projectRoot', 'rateLimits', 'repoName', 'resumeId', 'startedAt', 'status', 'tokens', 'usageByModel', 'waitNote', 'waitReason']
 const AGENT_KEYS = ['answerExcerpt', 'blowouts', 'context', 'costUsdEst', 'description', 'effort', 'effortSource', 'endedAt', 'failure', 'id', 'kind', 'lastTool', 'model', 'name', 'parentId', 'promptExcerpt', 'skills', 'startedAt', 'status', 'steps', 'tokens', 'toolCalls', 'toolCounts', 'type', 'usageByModel']
 const FAILURE_KEYS = ['at', 'call', 'class', 'evidence', 'exitCode', 'explanation', 'outputTail', 'retriedAs', 'tool']
 const STEP_KEYS = ['activeText', 'id', 'ownerAgentId', 'ownerLabel', 'state', 'text']
@@ -523,6 +523,10 @@ describe('activity feed (#118)', () => {
     expect(s.agents.a1!.activity[0]!.at).toBe(T0 + 6)
     expect(s.agents.a1!.activity.at(-1)!.at).toBe(T0 + 25)
     expect(s.dirty).toBe(true)
+  })
+
+  test('the watched ids are kept in alphabetical order, not by UTF-16 code unit', () => {
+    expect(setWatched(base(), ['b', 'B', 'a', 'Z']).watched).toEqual(['a', 'b', 'B', 'Z'])
   })
 
   test('the orchestrator is watched as MAIN_LOOP', () => {

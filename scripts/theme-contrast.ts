@@ -6,7 +6,7 @@ const HELP = `theme-contrast: check text and mark contrast for each theme and mo
 
 Usage: npx tsx scripts/theme-contrast.ts [options]
 
-Reads the token blocks in frontend/src/fleet/fleet.css (Podium) and themes.css (the rest).
+Reads the token blocks in frontend/src/fleet/tokens.css (Podium first, then the other themes).
 Checks, on --bg and --surface:
   text     ink, ink2, muted, good-text, crit-text,
            deleg-text, admin-text                                     need 4.5:1
@@ -30,28 +30,35 @@ const json = args.includes('--json');
 const quiet = args.includes('--quiet');
 
 const dir = new URL('../frontend/src/fleet/', import.meta.url);
-const fleet = readFileSync(new URL('fleet.css', dir), 'utf8');
-const themes = readFileSync(new URL('themes.css', dir), 'utf8');
+const themes = readFileSync(new URL('tokens.css', dir), 'utf8');
 
 type Tokens = Record<string, string>;
 
 function parseBlock(body: string): Tokens {
   const t: Tokens = {};
-  for (const m of body.matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)) t[m[1]] = m[2].trim();
+  const parts = body.split(';');
+  parts.pop(); // a last declaration with no `;` is not one
+  for (const part of parts) {
+    const m = /^\s*--([a-z0-9-]+):(.+)$/s.exec(part); // split on `;` first, so no pattern can backtrack across declarations
+    if (m) t[m[1]] = m[2].trim();
+  }
   return t;
 }
 
-// Podium: the dark base is the first .podium block; light is the [data-theme="light"] override.
+// Podium: the dark base is the first block (`:root, .podium`); light is the [data-theme="light"] override.
 function podium(): Record<string, Tokens> {
-  const dark = parseBlock(/\n\.podium \{([\s\S]*?)\n\}/.exec(fleet)![1]);
-  const light = { ...dark, ...parseBlock(/:root\[data-theme="light"\] \.podium \{([\s\S]*?)\n\}/.exec(fleet)![1]) };
+  const dark = parseBlock(/\n:root, \.podium \{([\s\S]*?)\n\}/.exec(themes)![1]);
+  const light = { ...dark, ...parseBlock(/:root\[data-theme="light"\], :root\[data-theme="light"\] \.podium \{([\s\S]*?)\n\}/.exec(themes)![1]) };
   return { 'podium/dark': dark, 'podium/light': light };
 }
 
 function others(): Record<string, Tokens> {
   const out: Record<string, Tokens> = {};
-  for (const m of themes.matchAll(/:root\[data-theme-name="([a-z]+)"\]\[data-theme="(dark|light)"\],\n[^\n]*\{([\s\S]*?)\n\}/g)) {
-    out[`${m[1]}/${m[2]}`] = parseBlock(m[3]);
+  // A block opens on the line after the `:root[...]` selector and closes on the next line that is just `}`.
+  for (const m of themes.matchAll(/:root\[data-theme-name="([a-z]+)"\]\[data-theme="(dark|light)"\],\n[^\n{]*\{/g)) {
+    const from = m.index + m[0].length;
+    const to = themes.indexOf('\n}', from);
+    if (to !== -1) out[`${m[1]}/${m[2]}`] = parseBlock(themes.slice(from, to));
   }
   return out;
 }
@@ -59,7 +66,7 @@ function others(): Record<string, Tokens> {
 function rgb(hex: string): [number, number, number] {
   const h = hex.replace('#', '');
   const f = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
-  return [0, 2, 4].map((i) => parseInt(f.slice(i, i + 2), 16) / 255) as [number, number, number];
+  return [0, 2, 4].map((i) => Number.parseInt(f.slice(i, i + 2), 16) / 255) as [number, number, number];
 }
 const lin = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
 const lum = (hex: string) => {

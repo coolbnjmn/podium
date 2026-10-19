@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  bootUnitStale, containerRunArgs, launchdPlist, maskConfig, OWN_KEYS, parseArgs, parseEnvFile, PASSTHROUGH, resolveConfig, serializeEnv, serverEnv, stableNodePath, systemdUnit,
+  bootUnitStale, buildId, containerRunArgs, gitBuild, launchdPlist, maskConfig, OWN_KEYS, parseArgs, parseEnvFile, PASSTHROUGH, resolveConfig, serializeEnv, serverEnv, stableNodePath, systemdUnit,
 // @ts-expect-error bin/podiumctl has no extension, so tsc cannot find it; vitest loads it as ESM
 } from "../bin/podiumctl";
 
@@ -231,6 +231,19 @@ describe("podiumctl allowed hosts (#256)", () => {
   });
 });
 
+describe("podiumctl trust proxy (#305)", () => {
+  it("passes PODIUM_TRUST_PROXY through to the server, in both modes", () => {
+    expect(PASSTHROUGH).toContain("PODIUM_TRUST_PROXY");
+    const cfg = resolveConfig({ PODIUM_TRUST_PROXY: "10.0.0.5,loopback" });
+    expect(serverEnv(cfg, true)).toMatchObject({ PODIUM_TRUST_PROXY: "10.0.0.5,loopback" });
+    expect(serverEnv(cfg, false)).toMatchObject({ PODIUM_TRUST_PROXY: "10.0.0.5,loopback" });
+  });
+
+  it("documents the setting in the help text", () => {
+    expect(fs.readFileSync(path.join(__dirname, "..", "bin", "podiumctl"), "utf8")).toContain("PODIUM_TRUST_PROXY    ");
+  });
+});
+
 describe("podiumctl logging settings (#140)", () => {
   const LOG_KEYS = ["PODIUM_LOG_LEVEL", "PODIUM_LOG_FORMAT", "PODIUM_LOG_SHIP_URL", "PODIUM_LOG_SHIP_HEADERS", "PODIUM_LOG_SHIP_BUFFER"];
   const file = {
@@ -363,8 +376,8 @@ describe("podiumctl CLI", () => {
 });
 
 describe("podiumctl covers every server setting (#157)", () => {
-  // Read by the server but not a user setting: podiumctl sets it itself in the container.
-  const SET_BY_PODIUMCTL = ["PODIUM_HOST_HOME", "HOST", "PORT"];
+  // Read by the server but not a user setting: podiumctl sets it itself in the container (PODIUM_BUILD comes from the image build, #400).
+  const SET_BY_PODIUMCTL = ["PODIUM_HOST_HOME", "HOST", "PORT", "PODIUM_BUILD"];
   const serverSrc = path.join(__dirname, "..", "server", "src");
   function sources(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -385,5 +398,41 @@ describe("podiumctl covers every server setting (#157)", () => {
   it("lets `config set` take every one, or names why it does not", () => {
     const settable = new Set<string>([...PASSTHROUGH, ...OWN_KEYS, ...SET_BY_PODIUMCTL]);
     expect(readByServer.filter((k) => !settable.has(k))).toEqual([]);
+  });
+});
+
+describe("podiumctl build identity (#400)", () => {
+  const hash = "a1b2c3d4";
+
+  it("is a release, with no build, only at a clean vMAJOR.MINOR.PATCH tag", () => {
+    expect(buildId({ hash, tag: "v1.1.0", dirty: false })).toBe("");
+    expect(buildId({ hash, tag: "v12.0.31", dirty: false })).toBe("");
+  });
+
+  it("is the hash for any other commit, whatever the branch", () => {
+    expect(buildId({ hash, tag: "", dirty: false })).toBe(hash);
+    expect(buildId({ hash, tag: "v1.1.0-rc1", dirty: false })).toBe(hash);
+    expect(buildId({ hash, tag: "latest", dirty: false })).toBe(hash);
+  });
+
+  it("marks local edits, even on a release tag", () => {
+    expect(buildId({ hash, tag: "", dirty: true })).toBe(`${hash}-dirty`);
+    expect(buildId({ hash, tag: "v1.1.0", dirty: true })).toBe(`${hash}-dirty`);
+  });
+
+  it("is empty when there is no git, so the footer shows the version alone", () => {
+    expect(buildId({ hash: "", tag: "", dirty: false })).toBe("");
+  });
+
+  it("reads this checkout, and reads nothing outside a repository", () => {
+    expect(gitBuild(path.join(__dirname, ".."))).toMatch(/^([0-9a-f]{8}(-dirty)?)?$/);
+    expect(gitBuild(fs.mkdtempSync(path.join(os.tmpdir(), "podium-nogit-")))).toBe("");
+  });
+
+  it("is passed into the image by the Containerfile, after the layers that do not depend on it", () => {
+    const text = fs.readFileSync(path.join(__dirname, "..", "Containerfile"), "utf8");
+    expect(text).toMatch(/^ARG PODIUM_BUILD=$/m);
+    expect(text).toMatch(/^ENV PODIUM_BUILD=\$PODIUM_BUILD$/m);
+    expect(text.indexOf("ARG PODIUM_BUILD")).toBeGreaterThan(text.indexOf("COPY --from=build /app/frontend/dist"));
   });
 });

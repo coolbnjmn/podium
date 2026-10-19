@@ -34,8 +34,14 @@ export function FocusHeader({ s, kind, now }: { s: SessionView; kind: StateKind;
         )}
         <div className="sub mono">
           <span title="Working directory">{s.cwd}</span>
-          <span title={`Session id ${s.id}`}>session {s.id.slice(0, 8)}</span>
-          {s.repoName && <span title="Repository">{s.repoName}</span>}
+          {s.repoName && (
+            <>
+              <span className="sep" aria-hidden="true">
+                |
+              </span>
+              <span title="Repository">{s.repoName}</span>
+            </>
+          )}
         </div>
         <GitLine git={s.git} />
       </div>

@@ -10,7 +10,9 @@ import { OrchestratorDetail } from "./components/OrchestratorDetail";
 import type { AgentSort } from "./components/AgentTree";
 import { Cost, ModelChip } from "./components/Chips";
 import { FocusView } from "./components/FocusView";
-import { BrandLink } from "./components/BrandLink";
+import { StreamTopBar } from "./components/StreamTopBar";
+import type { UseFleetOptions } from "./useFleet";
+import type { PeersApi, RespondApi } from "./respondApi";
 import { ThemePicker } from "./components/ThemePicker";
 import { PAGE_SIZES, Pager } from "./admin/Pager";
 import { useTheme } from "./useTheme";
@@ -69,7 +71,17 @@ async function getJson<T>(url: string): Promise<T> {
 
 const CONFIG = { staleAfterMs: 15_000, dropAfterMs: 60_000, lingerMs: 8_000, detachedHideAfterMs: 60_000 };
 
-export function HistoryView({ base = "/api/fleet", initialDay }: { base?: string; initialDay?: string }) {
+export interface HistoryViewProps {
+  base?: string;
+  initialDay?: string;
+  /** For tests: the stream and state the top bar reads. */
+  fleetOptions?: UseFleetOptions;
+  /** For tests: the sign-in the top bar reads, and My reporters' API. */
+  respondApi?: RespondApi;
+  peersApi?: PeersApi;
+}
+
+export function HistoryView({ base = "/api/fleet", initialDay, fleetOptions, respondApi, peersApi }: HistoryViewProps) {
   const theme = useTheme();
   const [where, setWhere] = useState<Where>(() => {
     const p = parseHash(window.location.hash);
@@ -152,14 +164,7 @@ export function HistoryView({ base = "/api/fleet", initialDay }: { base?: string
   return (
     <div className="podium">
       <div className="app" style={{ gridTemplateRows: "auto auto 1fr" }}>
-        <header className="top">
-          <BrandLink />
-          <span className="pill">History</span>
-          <span className="spacer" />
-          <a className="btn" href="#/">
-            Live fleet
-          </a>
-        </header>
+        <StreamTopBar page="History" base={base} fleetOptions={fleetOptions} respondApi={respondApi} peersApi={peersApi} />
         <div className="banner has-picker">
           <span>
             <b>Past sessions.</b> Read-only: built from what the server stored. Cost is an estimate, not a bill.

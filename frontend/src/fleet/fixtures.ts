@@ -40,11 +40,13 @@ export function makeSession(over: Partial<SessionView> = {}): SessionView {
     name: "api-refactor",
     reporter: "mod",
     reporterVersion: "0.4.0",
+    reporterBuild: null,
     compat: "ok",
     project: "~/dev/billing-service",
     cwd: "~/dev/billing-service/.claude/worktrees/invoice-v2",
     repoName: "acme/billing-service",
     resumeCommand: "cd /Users/dev/billing-service && claude --resume s1",
+    forkCommand: "cd /Users/dev/billing-service && claude --resume s1 --fork-session",
     git: { branch: "refactor/invoice-v2", detached: false, isWorktree: true, worktreePath: "/Users/dev/billing-service/.claude/worktrees/invoice-v2", ahead: 7, behind: 0, dirty: 3 },
     model: "claude-opus-5-5",
     modelFamily: "opus",
@@ -64,6 +66,7 @@ export function makeSession(over: Partial<SessionView> = {}): SessionView {
     ownerGroup: null,
     machine: null,
     activityFeed: null,
+    fileDiff: null,
     respond: null,
     asks: [],
     clearedFrom: null,
@@ -101,7 +104,7 @@ export function makeSession(over: Partial<SessionView> = {}): SessionView {
 
 export function makeKpis(over: Partial<Kpis> = {}): Kpis {
   return {
-    live: 1, running: 1, waiting: 0, stale: 0, agentsRunning: 0, agentsTotal: 0, planDone: 1, planTotal: 4,
+    live: 1, running: 1, waiting: 0, stale: 0, agentsRunning: 0, agentsWaiting: 0, agentsTotal: 0, planDone: 1, planTotal: 4,
     costToday: 12.84, unpricedSessions: 0, tokensLastMinute: 1000, blowoutsTotal: 0, sessionsAtLevel2: 0,
     costPerMinute: new Array(60).fill(0), tokensPerSec: new Array(60).fill(0), costTodayByOwner: [], ...over,
   };
@@ -119,8 +122,8 @@ export function makeState(over: Partial<StateBody> = {}): StateBody {
     kpis: makeKpis(),
     clearedToday: 0,
     events: [makeEvent()],
-    server: { version: "0.3.0", reporterSupport: { min: "0.2.0", max: "0.4.0" } },
-    wall: { notices: { "background-sessions": true }, showBackgroundSessions: false },
+    server: { version: "0.3.0", build: null, reporterSupport: { min: "0.2.0", max: "0.4.0" } },
+    wall: { notices: { "background-sessions": true }, showBackgroundSessions: false, cardTitleMachine: false },
     features: { "activity-feed": true },
     ...over,
   };

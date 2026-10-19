@@ -26,6 +26,7 @@ import { requestLog } from "./logging/requestLog.js";
 import { inlineScriptHashes, securityHeaders } from "./securityHeaders.js";
 import { hostCheck, parseAllowedHosts } from "./hostCheck.js";
 import { createPlainHttpWatch } from "./plainHttp.js";
+import { parseTrustProxy } from "./trustProxy.js";
 import { RESPOND } from "./fleet/featureFlags.js";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4317;
@@ -50,6 +51,8 @@ const stopSweeper = startSweeper(fleet, undefined, logger, () => forgetReporters
 
 const app = express();
 app.disable("x-powered-by");
+// Off unless the owner names the proxy hops to trust, so a client cannot choose its own source address (#305).
+app.set("trust proxy", parseTrustProxy(process.env.PODIUM_TRUST_PROXY));
 const frontendDist = path.join(REPO_ROOT, "frontend", "dist");
 // The page's one inline script (it sets the theme before first paint) is allowed by hash; no other inline script runs (#249).
 let pageScripts: string[] = [];
@@ -73,7 +76,7 @@ const respondBridge = createRespondBridge();
 // Responding over plain HTTP beyond loopback sends the sign-in unencrypted: say so, never block (#306).
 const plainHttp = createPlainHttpWatch({ bind: HOST, respondOn: () => fleet.features.featureOn(RESPOND), logger });
 app.use("/api/fleet", createFleetRouter(fleet, { token: TOKEN, people, reporters, logger, lockout, respondBridge, onSignIn: plainHttp.onSignIn }));
-app.use("/api/admin", createAdminRouter({ secret: TOKEN, people, reporters, logRetainMs: fleetConfig.retention.adminLogMs, wall: fleet.wall, prices: fleet.prices, features: fleet.features, logger, lockout, respondBridge, onRespondOn: plainHttp.onFlagOn }));
+app.use("/api/admin", createAdminRouter({ secret: TOKEN, people, reporters, peers: fleet.peers, logRetainMs: fleetConfig.retention.adminLogMs, wall: fleet.wall, prices: fleet.prices, features: fleet.features, logger, lockout, respondBridge, onRespondOn: plainHttp.onFlagOn }));
 app.use(createRouter());
 
 app.use(express.static(frontendDist));

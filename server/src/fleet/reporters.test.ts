@@ -41,6 +41,55 @@ describe('reporters', () => {
     });
   });
 
+  it('returns the key and keeps the last OS and peers option it was sent (#347)', () => {
+    expect(store.record(seen(), START + MIN)).toBe('9f3a1c7d2e40');
+    expect(store.list({}, START + MIN).rows[0]).toMatchObject({ os: null, peers: null });
+    store.record(seen({ os: 'macOS 27.0.1', peers: true }), START + 2 * MIN);
+    store.record(seen({ os: null, peers: null }), START + 3 * MIN);
+    expect(store.list({}, START + 3 * MIN).rows[0]).toMatchObject({ os: 'macOS 27.0.1', peers: true });
+    store.record(seen({ peers: false }), START + 4 * MIN);
+    expect(store.list({}, START + 4 * MIN).rows[0]).toMatchObject({ os: 'macOS 27.0.1', peers: false });
+  });
+
+  it('looks reporters up for messaging, by key and by owner whatever the case (#347)', () => {
+    store.record(seen({ os: 'macOS 27.0.1', peers: true }), START + MIN);
+    store.record(seen({ machineId: 'bbbbbbbbbbbb', machineName: null, owner: 'dana', credential: 'admin secret', sessionId: 's2' }), START + MIN);
+    store.record(seen({ machineId: 'cccccccccccc', owner: 'Alex', sessionId: 's3' }), START + MIN);
+    const look = store.peerLookup();
+    expect(look.get('9f3a1c7d2e40')).toEqual({ key: '9f3a1c7d2e40', machine: 'studio-m2', owner: 'Dana', adminSecret: false, os: 'macOS 27.0.1', peers: true, version: '0.13.0' });
+    expect(look.get('bbbbbbbbbbbb')).toMatchObject({ machine: 'bbbbbbbbbbbb', adminSecret: true, peers: null });
+    expect(look.get('nope')).toBeNull();
+    expect(look.ofOwner('DANA').map((r) => r.key)).toEqual(['bbbbbbbbbbbb', '9f3a1c7d2e40']);
+    // A hooks-only reporter has no orchestrator: neither lookup knows it, so no right can name it.
+    expect(store.record(seen({ kind: 'hooks', machineId: 'dddddddddddd', sessionId: 's4' }), START + MIN)).toBe('dddddddddddd');
+    expect(look.get('dddddddddddd')).toBeNull();
+    expect(look.ofOwner('Dana').map((r) => r.key)).not.toContain('dddddddddddd');
+  });
+
+  it('gives one owner its reporters with the state and last report Admin > Reporters shows (#415)', () => {
+    store.record(seen(), START + MIN);
+    store.record(seen({ machineId: 'bbbbbbbbbbbb', machineName: 'build-pi', sessionId: 's2' }), START + 60 * MIN);
+    store.record(seen({ machineId: 'cccccccccccc', machineName: 'ci', sessionId: 's3' }), START + 90 * MIN);
+    // Heard from before the server started: "Not since restart".
+    store.record(seen({ machineId: 'eeeeeeeeeeee', machineName: 'old', sessionId: 's5' }), START - MIN);
+    store.record(seen({ kind: 'hooks', machineId: 'dddddddddddd', sessionId: 's4' }), START + 90 * MIN);
+    const now = START + 91 * MIN;
+    const look = store.peerLookup();
+    expect(look.startedAt).toBe(START);
+    const mine = look.ofOwnerSeen('dana', now);
+    expect(mine.map((r) => [r.machine, r.state, r.lastSeenAt])).toEqual([
+      ['build-pi', 'idle', START + 60 * MIN],
+      ['ci', 'reporting', START + 90 * MIN],
+      ['old', 'restart', START - MIN],
+      ['studio-m2', 'silent', START + MIN],
+    ]);
+    expect(mine[3]).toEqual({ ...look.get('9f3a1c7d2e40'), state: 'silent', lastSeenAt: START + MIN, compat: 'ok' });
+    // The same words and version check as the Admin's list, row for row.
+    const admin = new Map(store.list({}, now).rows.map((r) => [r.key, [r.state, r.lastSeenAt, r.compat]]));
+    for (const r of mine) expect([r.state, r.lastSeenAt, r.compat]).toEqual(admin.get(r.key));
+    expect(look.ofOwnerSeen('Alex', now)).toEqual([]);
+  });
+
   it('counts a session once however often it reports', () => {
     for (let i = 0; i < 4; i++) store.record(seen(), START + i * MIN);
     expect(store.list({}, START + 4 * MIN).rows[0]!.sessions).toBe(1);

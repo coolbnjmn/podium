@@ -106,6 +106,99 @@ describe("Markdown", () => {
     expect(() => dom("#\n-\n1.\n>")).not.toThrow();
   });
 
+  // Golden output captured from the regex implementation before it was rewritten without backtracking
+  // (#362); the rewrite must render every one of these exactly as before.
+  it("renders a table of ordinary and odd inputs unchanged (#362)", () => {
+    const cases = [
+      "# H1\n###### H6\n####### seven\n#nospace\n#   spaced   ",
+      "#\n##\n# \n#\t tab",
+      "1. a\n2) b\n  10. c\n1.x\n1 .x\n 1. nbsp",
+      "- a\n* b\n+ c\n  - d\n-x\n- \n-\n-\tt",
+      "- a\n1. b\n- c\n\n> q\n- d",
+      "`code` and ``two`` and `` and `a\nb` end",
+      "**bold** __bold2__ ****  **a** **a* *a** ** a **",
+      "*it* *a b* * a* *a *b* _it_ _a b_ _ a_ snake_case_name _a_b_ (_a_) x_a_",
+      "***both*** **_mix_** *__mix__* _**mix**_",
+      "[a](https://e.com) [a](https://e.com/p_(q)) [a](https://e.com/(a(b))) [a]() [](https://e.com) [a](mailto:x@y.z)",
+      "[a](javascript:x) [a](https://e.com space) [a](https://e.com/(x y)) [[a]](https://e.com)",
+      "**unclosed *x `y [z](",
+      "[a](https://e.com **b** `c` *d*) and [**b** *i*](https://e.com)",
+      "a **b `c** d` e *f `g* h`",
+      "> quote *it*\n>no space\n>\n> - not a list",
+      "para one\nstill one\n\npara two",
+      "  - indented\n    1. nested\n\t* tabbed",
+      "```\n- not a list\n# not a heading\n```\n# after",
+      "é **über** _éa_ é_a_é 日本_語_",
+      "* \n*\n** \n- *a*",
+      "[a [b](https://e.com) [c](https://e.com/(x)y) [d](https://e.com/(x y)) [e](https://e.com/(x",
+      "[a]](https://e.com) [[a](https://e.com) [a](https://e.com)) [a]((https://e.com) [a](()) [a](x) [a](ftp://x)",
+      "[a](https://e.com/x]y) [a]([b](https://e.com)) **[a](https://e.com)** `[a](https://e.com)` [`a`](https://e.com)",
+      "[a](" + "[b](c) ".repeat(3) + "[x](https://e.com/(a)(b)) end [y](https://e.com",
+      "# t x\n- a b\n1. a b\n- a  \n#  ",
+    ];
+    const out: Record<string, string> = {};
+    cases.forEach((c, i) => (out[`${i}: ${JSON.stringify(c)}`] = html(c)));
+    expect(out).toMatchSnapshot();
+  });
+
+  // Hostile text reaches this renderer from sessions, so a long run of one marker must not stall the tab.
+  describe("stays linear on pathological input (#362)", () => {
+    // A quadratic renderer takes 16 times as long on 4n as on n, a linear one 4 times. The
+    // test asserts the ratio, so a slow or busy runner (or coverage) cannot fail it; the
+    // per-test timeout is the backstop for a real hang. N is kept small because the cases that
+    // build a node per marker took about 4.5 s each at 50,000, which a loaded coverage runner
+    // stretched to the old 20 s limit (#471); a quadratic renderer still fails at 15,000.
+    const N = 15000;
+    const REPS = 3;
+    const MAX_RATIO = 8;
+    const FLOOR_MS = 1;
+    const best = (src: string): number => {
+      let min = Infinity;
+      for (let i = 0; i < REPS; i++) {
+        const t0 = performance.now();
+        dom(src);
+        min = Math.min(min, performance.now() - t0);
+      }
+      return min;
+    };
+    const pathological: Record<string, (n: number) => string> = {
+      "backticks": (n) => "`a".repeat(n),
+      "bold opens": (n) => "**a".repeat(n),
+      "underscore bold opens": (n) => "__a".repeat(n),
+      "link opens": (n) => "[a](".repeat(n),
+      "open brackets": (n) => "[".repeat(n * 2),
+      "open brackets with text": (n) => "[a".repeat(n),
+      "link text then a long url run": (n) => "[a](" + "[a]".repeat(n),
+      "link text then groups": (n) => "[a](" + "[b](c)".repeat(n),
+      "link text then closers": (n) => "[a](" + "x]".repeat(n),
+      "link url parens": (n) => "[a](" + "(a".repeat(n),
+      "link url nested parens": (n) => "[a](" + "(a)".repeat(n) + "(",
+      "italic opens": (n) => "*a ".repeat(n),
+      "underscore opens": (n) => "_a ".repeat(n),
+      "a lone star then text": (n) => "*" + "a".repeat(n * 2),
+      "a lone underscore then text": (n) => "_" + "a".repeat(n * 2),
+      "a lone bracket then text": (n) => "[" + "a".repeat(n * 2),
+      "bracket text then no paren": (n) => "[a]".repeat(n),
+      "spaces then no marker": (n) => " ".repeat(n * 2),
+      "spaces then dash": (n) => " ".repeat(n * 2) + "-",
+      "spaces then digit": (n) => " ".repeat(n * 2) + "1",
+      "spaces then digit dot": (n) => " ".repeat(n * 2) + "1.",
+      "digits then no dot": (n) => "1".repeat(n * 2),
+      "heading hashes": (n) => "#".repeat(n * 2),
+      "heading hashes then spaces": (n) => "#" + " ".repeat(n * 2),
+      "dash then spaces": (n) => "-" + " ".repeat(n * 2),
+      "many dash lines": (n) => "-\n".repeat(n),
+    };
+    for (const [name, build] of Object.entries(pathological)) {
+      it(name, () => {
+        dom(build(N)); // warm-up
+        const small = Math.max(best(build(N)), FLOOR_MS);
+        const large = best(build(N * 4));
+        expect(large / small).toBeLessThan(MAX_RATIO);
+      }, 60000);
+    }
+  });
+
   it("handles a large text", () => {
     const big = Array.from({ length: 2000 }, (_, i) => `- item ${i} with **bold**`).join("\n");
     expect(dom(big).querySelectorAll("li")).toHaveLength(2000);

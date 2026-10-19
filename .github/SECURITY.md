@@ -11,14 +11,14 @@ problems that matter here are:
 |---|---|
 | **Input to the server** | A report, a settings-hook payload or any other request that crashes the server, gets past validation, reads or writes a file, or runs a command. The server checks every report by hand (`server/src/fleet/protocol.ts`), so a gap in that check is in scope. |
 | **Reported text reaching the browser or a shell** | Anything a session sends (a Bash command, an agent's answer, a path) that ends up rendered as markup or script in the UI, or in a command line. |
-| **Secrets leaving a session** | The mod cuts text to fixed limits and replaces things that look like secrets with `[redacted]` (see "What leaves the session" in the README). A real credential format that the redaction misses, or data the README says never leaves the session but does. |
+| **Secrets leaving a session** | The mod cuts text to fixed limits and replaces things that look like secrets with `[redacted]` (see [What leaves the session](../docs/REPORTER.md#what-leaves-the-session)). A real credential format that the redaction misses, or data the README says never leaves the session but does. |
 | **Tokens and Admin** | `PODIUM_TOKEN` (the admin secret) opens Admin, and each person's token is bound to their name. A way around either; a token or the admin secret that shows up in a log, an error, the browser's storage or a command line; a token stored in a readable form; a way to open Admin or call its API without the secret or from another site; a way past the lockout; a config file with loose permissions. |
 | **`podiumctl` and the container** | Command injection through a config value, the server listening on more than the user asked for, the container running as root, or a boot service file that does more than it should. |
-| **The mod acting on a session** | Podium can answer a session that waits on its person, and nothing else (see "Responding from Podium" below). A way for the mod or the server to do more than that is a security bug: to send a prompt or an answer to a session whose owner didn't turn the `respond` option on, past the Admin's switch, at a level the session didn't allow, or from anyone but the session's owner or an Admin; to run any command but `/clear` and `/compact`; to change a session's permission rules ("always allow"); or to stop or start a session. |
+| **The mod acting on a session** | Podium can answer a session that waits on its person, and carry a message between one person's own orchestrators, and nothing else (see "Responding from Podium" and "Orchestrator messaging" below). A way for the mod or the server to do more than that is a security bug: to send a prompt or an answer to a session whose owner didn't turn the `respond` option on, past the Admin's switch, at a level the session didn't allow, or from anyone but the session's owner or an Admin; to run any command but `/clear` and `/compact`; to change a session's permission rules ("always allow"); or to stop or start a session. |
 
 ### By design
 
-These are not vulnerabilities on their own. The README ("Several people on one Podium") and
+These are not vulnerabilities on their own. [Running the server](../docs/SERVER.md#run-it-with-podiumctl) ("Several people on one Podium") and
 `docs/GOTCHAS.md` say all of this.
 
 | Behavior | Why it is not a bug |
@@ -60,10 +60,30 @@ by sending more than the session's level allows, is in scope.
 | Limit | What to do about it |
 |---|---|
 | **The admin secret is a shared credential.** Anything done with it is attributed to "Admin secret", not to a person. | Give each person a token, and turn off reporting with the admin secret in Admin when you no longer need it. |
-| **The token and the session cookie travel over plain HTTP.** The server warns in its log (`server.respond_plain_http`) when responding is on and it is bound beyond loopback, and when a sign-in reaches it over plain HTTP at a name that is not loopback; Admin > Settings and the mod's status line (`⚠`) say so too. None of them blocks anything. | On any network but your own machine, put a TLS proxy in front. Until Podium can trust a proxy's `X-Forwarded-Proto` (#305), the bind-address warning cannot tell a proxied server from a bare one: with a TLS proxy in front you can ignore it. |
+| **The token and the session cookie travel over plain HTTP.** The server warns in its log (`server.respond_plain_http`) when responding is on and it is bound beyond loopback, and when a sign-in reaches it over plain HTTP at a name that is not loopback; Admin > Settings and the mod's status line (`⚠`) say so too. None of them blocks anything. | On any network but your own machine, put a TLS proxy in front and set `PODIUM_TRUST_PROXY` to the proxy's address or hop count, so the Admin log and the lockouts see each person's address and the cookies are marked `Secure`. The bind-address warning cannot tell a proxied server from a bare one: with a TLS proxy in front you can ignore it. |
+| **`PODIUM_TRUST_PROXY` believes `X-Forwarded-For` from the hops you name.** A hop that does not overwrite that header lets any client choose its source address, which defeats the Admin, sign-in and admin-secret lockouts and makes the Admin log's `source` untrue. `true` (trust every hop) is refused. | Name only a proxy that sets `X-Forwarded-For` itself, and only the hops between it and Podium. Leave the setting off with no proxy. |
 | **The admin log has no export.** It keeps entries for 90 days (`RETAIN_ADMIN_LOG_MS`) and the newest 100 whatever their age. | Ship the server log to VictoriaLogs if you need a copy or a longer record. |
 
 If you think you have found something like this, please report it rather than opening a public issue.
+
+## Orchestrator messaging
+
+Podium can carry messages between one person's own orchestrators (#347): the server since #412, the mod's tools since
+#414, the owner's My reporters page since #415, the Admin's pages since #416 and Traffic since #417. It is off until the Admin turns on Orchestrator messaging and the person turns on the
+reporter's `peers` option on each machine and gives the pair a right. What it exposes:
+
+| Topic | How it works |
+|---|---|
+| **Who** | Only between reporters with the same owner. The server refuses a right or a message between two people, and any reporter on the admin secret, whatever the settings say. An Admin can propose a right, which applies only when the owner accepts it; an Admin's pause or removal applies at once. |
+| **In the session** | Only the orchestrator can send; the mod refuses any tool call from a subagent. A received message always starts with Podium's line saying it is another agent's text, never the person's, and it never answers a question or permission prompt, runs a command, or changes a mode or permission rule. A message waiting for the owner's approval, and an orchestrator's reason for asking for access, are shown only to the person (a toast), never to the model. |
+| **Who a message is from** | The person's token and the reporting session that send it, never a name in the message. A `to` is looked up only among that person's own live orchestrators, so another person's orchestrator cannot be named, or found by guessing. |
+| **What it lets a token do** | Anyone holding a person's token can send text into that person's linked orchestrators, within the rights and limits that person set. The text becomes a new turn in the receiving session, marked as another agent's text. Its permission prompts still ask, but what an auto or accept-edits mode allows is not a prompt (DECISIONS 37). |
+| **What is kept** | The text of each message is stored on the server, with its sender, receiver and delivery state, until 30 days after the last message on its link (the Admin can set 1 to 365 days), and deleted with its sessions. Only its owner and an Admin can read it. Everyone else can see that two orchestrators talk, and how much. The mod replaces anything that looks like a secret on the sending machine; that is best effort. |
+| **Limits** | Round trips in a conversation before the owner approves the next message, messages per minute on a link, and the longest message, set by the Admin; an owner can only make them stricter. Over a limit a message is refused, never cut. |
+| **Audit** | Each message sent, delivered, approved, declined or dropped, and each right set, proposed, accepted, declined, paused, resumed or removed, is written to the Admin log and the server log with who, to whom and whose, never the text. |
+
+A way to put text into a session without these switches, from another person's token, through the admin secret, past
+a limit, or a way to read a conversation's text as anyone but its owner or an Admin, is in scope.
 
 ## Where to read more
 
@@ -74,7 +94,8 @@ If you think you have found something like this, please report it rather than op
 | What the security sweep found, fixed and accepted | `docs/DECISIONS.md` 31, with 32 (guess throttling) and 33 (the Host check) |
 | The rules the server and the mod follow | `docs/SPEC.md` 7.7 "Hardening": "Who a report is from", "Who", "The browser's credential", "The mod never trusts the server" and "The admin log" |
 | How a person turns responding on and uses it | `docs/USER_GUIDE.md`, "Answering a session from Podium" |
-| What is open by design | `docs/GOTCHAS.md` and the README ("Several people on one Podium") |
+| How orchestrator messaging is set up, and what is kept | `docs/MESSAGING.md`, with the reasoning in `docs/DECISIONS.md` 37 |
+| What is open by design | `docs/GOTCHAS.md` and [Running the server](../docs/SERVER.md#run-it-with-podiumctl) ("Several people on one Podium") |
 
 ## Reporting a vulnerability
 

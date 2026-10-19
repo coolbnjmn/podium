@@ -12,8 +12,10 @@ import { Rail, type Split } from "./components/Rail";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
+import { TopBarTab } from "./components/TopBarTab";
 import { Legend } from "./components/Legend";
 import { Wall } from "./components/Wall";
+import { Board } from "./components/Board";
 import { NoticeClosed, type NoticeItem } from "./components/NoticeStack";
 import { closeNotice, removeSession, setShowBackgroundSessions, useFleet, type UseFleetOptions } from "./useFleet";
 import { useNow } from "./useNow";
@@ -34,7 +36,11 @@ import type { RailPeople } from "./components/Rail";
 import { APP_NAME, type ActivityView } from "./types";
 import { reportersLive, type FleetState } from "./store";
 import { RespondProvider, useRespond } from "./useRespond";
-import type { RespondApi } from "./respondApi";
+import { peersApi, type PeersApi, type RespondApi } from "./respondApi";
+import { useMyPeers } from "./useMyPeers";
+import { MyReportersPage } from "./MyReporters";
+import { TrafficPage } from "./Traffic";
+import { trafficApi, type TrafficApi } from "./trafficData";
 import { RespondModal } from "./components/Respond";
 import type { SessionView } from "./types";
 
@@ -67,12 +73,18 @@ function useEntering(ids: readonly string[], ready: boolean): (id: string) => bo
 }
 
 export interface FleetAppProps {
+  /** The kanban board (#346) instead of the wall; the rest of the console is the same. */
+  board?: boolean;
+  /** My reporters (#415) in the middle of the console instead of the wall, with the rail and the Activity panel collapsed at first (#446). */
+  myReporters?: boolean;
+  /** Traffic (#417) under the console's top bar, with no rail, wall or Activity panel. */
+  traffic?: boolean;
   /** For tests: drive the app from a given state instead of the server. */
   state?: FleetState;
   fleetOptions?: UseFleetOptions;
 }
 
-function LiveFleetApp({ fleetOptions }: { fleetOptions?: UseFleetOptions }) {
+function LiveFleetApp({ fleetOptions, board, myReporters, traffic }: { fleetOptions?: UseFleetOptions; board?: boolean; myReporters?: boolean; traffic?: boolean }) {
   const live = useFleet(fleetOptions);
   const [every, setEvery] = useState(readUpdateEvery);
   // The page below redraws once per chosen interval (#138); a session needing the viewer or a failure shows at once.
@@ -81,24 +93,34 @@ function LiveFleetApp({ fleetOptions }: { fleetOptions?: UseFleetOptions }) {
     setEvery(n);
     writeUpdateEvery(n);
   }, []);
-  return <FleetView state={state} updateEvery={every} onUpdateEvery={change} />;
+  return <FleetView state={state} updateEvery={every} onUpdateEvery={change} board={board} myReporters={myReporters} traffic={traffic} />;
 }
 
 export function FleetApp(props: FleetAppProps = {}) {
   useEffect(() => {
     document.title = APP_NAME;
   }, []);
-  if (props.state) return <FleetView state={props.state} />;
-  return <LiveFleetApp fleetOptions={props.fleetOptions} />;
+  if (props.state) return <FleetView state={props.state} board={props.board} myReporters={props.myReporters} traffic={props.traffic} />;
+  return <LiveFleetApp fleetOptions={props.fleetOptions} board={props.board} myReporters={props.myReporters} traffic={props.traffic} />;
 }
 
 interface FleetViewProps {
   state: FleetState;
+  /** Show the kanban board in the middle instead of the wall or an orchestrator's page (#346). */
+  board?: boolean;
   /** Seconds between redraws; the clock moves on the same interval. */
   updateEvery?: number;
   onUpdateEvery?: (seconds: number) => void;
   /** For tests: the respond API, so the sign-in the wall reads "me" from can be faked. */
   respondApi?: RespondApi;
+  /** Show My reporters (#415) in the middle instead of the wall or an orchestrator's page, between the rail and the Activity panel (#446). */
+  myReporters?: boolean;
+  /** For tests: My reporters' API. */
+  peersApi?: PeersApi;
+  /** Show Traffic (#417) under the top bar instead of the rail, the middle and the Activity panel. */
+  traffic?: boolean;
+  /** For tests: Traffic's API. */
+  trafficApi?: TrafficApi;
 }
 
 // Memoized so the held state, which keeps its identity between updates, stops a parent render from redrawing it.
@@ -106,13 +128,24 @@ interface FleetViewProps {
 export const FleetView = memo(function FleetView(props: FleetViewProps) {
   const respondFlags = props.state.features.respond === true && props.state.features["activity-feed"] !== false;
   return (
-    <RespondProvider flagsOn={respondFlags} api={props.respondApi}>
-      <FleetViewBody state={props.state} updateEvery={props.updateEvery} onUpdateEvery={props.onUpdateEvery} />
+    <RespondProvider flagsOn={respondFlags} diffOn={props.state.features["file-diff"] === true} peersOn={props.state.features["peer-messaging"] === true} api={props.respondApi}>
+      <FleetViewBody
+        state={props.state}
+        updateEvery={props.updateEvery}
+        onUpdateEvery={props.onUpdateEvery}
+        board={props.board}
+        myReporters={props.myReporters}
+        peersApi={props.peersApi}
+        traffic={props.traffic}
+        trafficApi={props.trafficApi}
+      />
     </RespondProvider>
   );
 });
 
-function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps) {
+function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, myReporters = false, peersApi: peersApiProp, traffic = false, trafficApi: trafficApiProp }: FleetViewProps) {
+  // My reporters and Traffic draw no wall. Traffic is one page under the top bar; My reporters keeps the rail and the Activity panel (#446).
+  const consolePage = myReporters || traffic;
   const now = useNow(updateEvery * 1000);
   const theme = useTheme();
   const [sel, setSel] = useState<string | null>(null);
@@ -126,7 +159,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
   const cols = useRef<HTMLDivElement>(null);
   const container = useCallback(() => cols.current, []);
   const resize = useResizable(container);
-  const panes = usePanes();
+  const panes = usePanes(board ? "board" : myReporters ? "reporters" : "fleet");
   const idle = useIdle(panes.wall);
   const visible = usePageVisible();
   const root = useRef<HTMLDivElement>(null);
@@ -147,6 +180,10 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
   // Who "me" is comes from the browser's sign-in (#245): a signed-in person, never Admin. Signed out there is no "me".
   const signedIn = useRespond()?.me;
   const me = signedIn?.signedIn && signedIn.name && signedIn.name.toLowerCase() !== ADMIN.toLowerCase() ? signedIn.name : null;
+  // My reporters (#415): read while orchestrator messaging is on and a person is signed in, so the top bar can say how many
+  // requests wait; often while the page is open. The admin secret has no reporters of its own.
+  const peersOn = state.features["peer-messaging"] === true;
+  const peers = useMyPeers(peersApiProp ?? peersApi, peersOn && me !== null, myReporters);
   // A remembered Me means nothing without a sign-in, so the wall is grouped by People until someone signs in.
   const groupBy: GroupBy = people.prefs.groupBy === "me" && !me ? "people" : people.prefs.groupBy;
   const myKey = active ? meKey(sorted, me) : null;
@@ -165,7 +202,9 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
   const ready = state.phase !== "loading";
   const enteringSession = useEntering(all.map((s) => s.id), ready);
   const newEvent = useEntering(state.events.map((e) => e.id), ready);
-  const selected = sel ? state.sessions[sel] ?? null : null;
+  // The board and My reporters stand in for an orchestrator's page and show none of it; both clear the selection, below.
+  const showsOrchestrator = !board && !consolePage;
+  const selected = sel && showsOrchestrator ? state.sessions[sel] ?? null : null;
 
   const { prefs } = people;
   const spendByOwner = state.kpis?.costTodayByOwner ?? [];
@@ -227,7 +266,16 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
     flashTimer.current = setTimeout(() => setFlash(null), 1700);
   }, []);
 
+  // Opening the board or My reporters leaves any orchestrator page behind, so a session that ends later does not raise a notice there (#446).
+  useEffect(() => {
+    if (!board && !myReporters) return;
+    setSel(null);
+    setSelAgent(null);
+  }, [board, myReporters]);
+
   const selectSession = (id: string | null) => {
+    // Opening a session, or the fleet, from the board, My reporters or Traffic leaves that page; the selection is made before the route changes.
+    if (board || consolePage) window.location.hash = "#/";
     setSel(id);
     setSelAgent(null);
     setNotice(null);
@@ -255,6 +303,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
     const s = state.sessions[e.sessionId];
     if (!s || state.gone[e.sessionId]) return;
     const agent = e.agentId && s.agents.some((a) => a.id === e.agentId) ? e.agentId : null;
+    if (board || consolePage) window.location.hash = "#/";
     setSel(e.sessionId);
     setSelAgent(agent);
     setNotice(null);
@@ -281,16 +330,14 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
   const startWall = (fromClick: boolean) => {
     enterWall();
     if (!fromClick) return;
-    try {
-      const asked = document.documentElement.requestFullscreen?.();
-      if (asked) {
-        fullscreen.current = true;
-        asked.catch(() => {
-          fullscreen.current = false;
-        });
-      }
-    } catch {
+    const refused = () => {
       fullscreen.current = false;
+    };
+    fullscreen.current = true;
+    try {
+      document.documentElement.requestFullscreen().catch(refused);
+    } catch {
+      refused();
     }
   };
   const stopWall = exitWall;
@@ -314,34 +361,42 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
   }, [exitWall]);
 
   const { toggle } = panes;
-  // In the top bar's own row while it is open, floating in the corner once it is collapsed.
+  // In the top bar's own row while it is open, floating in the corner once it is collapsed. My reporters and Traffic have no
+  // wall to show, so they offer none (#415, #417); a wall left on from before still shows its way out.
   const wallButton = panes.wall ? (
     <button type="button" className="btn wall-exit" data-wall-control onClick={stopWall} aria-label="Exit wall mode" title="Exit wall mode (Esc)">
       Exit wall mode
     </button>
-  ) : (
+  ) : consolePage ? null : (
     <button type="button" className="btn wall-enter" data-wall-control onClick={() => startWall(true)} aria-label="Enter wall mode" title="Collapse everything for a wall display (w)">
       Wall mode
     </button>
   );
   useHotkeys((e) => {
-    if (e.key === "[") toggle("left");
-    else if (e.key === "]") toggle("right");
-    else if (e.key === "\\") toggle("top");
-    else if (e.key === "w" || e.key === "W") (panes.wall ? stopWall : () => startWall(false))();
+    if (e.key === "\\") toggle("top");
+    // A wall left on from before still leaves with Esc, on My reporters too, as its Exit button says.
     else if (e.key === "Escape" && panes.wall) stopWall();
+    // Traffic draws no rail or side panel, so their keys do nothing there; the top bar's still works (#415).
+    else if (traffic) return;
+    else if (e.key === "[") toggle("left");
+    else if (e.key === "]") toggle("right");
+    // My reporters has no wall to show, so w does nothing there (#415, #446).
+    else if (myReporters) return;
+    else if (e.key === "w" || e.key === "W") (panes.wall ? stopWall : () => startWall(false))();
   });
 
   return (
     <div ref={root} className={`podium${panes.wall ? " wall-on" : ""}${idle ? " idle" : ""}${visible ? "" : " paused"}`}>
-      {panes.collapsed.top && (
+      {panes.collapsed.top && wallButton && (
         <div className="wall-ctl" data-wall-control>
           {wallButton}
         </div>
       )}
       <div className="app">
         <TopBar
-          page={selected ? "Orchestrator" : "Fleet"}
+          page={myReporters ? "My reporters" : traffic ? "Traffic" : board ? "Board" : selected ? "Orchestrator" : "Fleet"}
+          myReporters={peersOn && me !== null ? { count: peers.data ? peers.data.requests.length : null, current: myReporters } : undefined}
+          traffic={peersOn ? { current: traffic } : undefined}
           phase={state.phase}
           reporters={reporters}
           outdated={outdated}
@@ -349,12 +404,11 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
           collapsed={panes.collapsed.top}
           onCollapse={() => toggle("top")}
           wall={wallButton}
+          onFleet={() => selectSession(null)}
         />
         {panes.collapsed.top && (
           <div className={`strip${state.phase === "disconnected" ? " bad" : ""}`}>
-            <button type="button" aria-expanded="false" aria-controls="podium-top" title={"Show the top bar (\\)"} onClick={() => toggle("top")}>
-              Show top bar
-            </button>
+            <TopBarTab collapsed onToggle={() => toggle("top")} />
           </div>
         )}
         {state.phase === "disconnected" ? (
@@ -365,7 +419,21 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
           <div className="banner bad" role="alert">
             <b>Cannot reach the Podium server.</b> Start it with <code>npm run dev</code> (or <code>npm run dev -w server</code>); this page connects by itself.
           </div>
-        ) : panes.collapsed.top ? null : (
+        ) : panes.collapsed.top ? null : myReporters ? (
+          <div className="banner has-picker">
+            <span>
+              <b>My reporters.</b> Your own machines, and which of them may message each other.
+            </span>
+            <ThemePicker theme={theme} />
+          </div>
+        ) : traffic ? (
+          <div className="banner has-picker">
+            <span>
+              <b>Traffic.</b> Which orchestrators message each other, and what they said.
+            </span>
+            <ThemePicker theme={theme} />
+          </div>
+        ) : (
           <div className="banner has-picker">
             <span>
               <b>Live fleet.</b> Cost is an estimate from token counts and a price table, not a bill.
@@ -376,10 +444,13 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
             </div>
           </div>
         )}
+        {traffic ? (
+          <TrafficPage me={signedIn ?? null} peersOn={peersOn} sessions={state.sessions} peers={peers} api={trafficApiProp ?? trafficApi} now={now} />
+        ) : (
         <div className="cols" ref={cols} style={colStyle}>
           <Rail
             sessions={sorted}
-            selected={sel}
+            selected={showsOrchestrator ? sel : null}
             onSelect={(id) => {
               // "All orchestrators" also drops a person or group picked in the list.
               if (id === null) setPf(NO_FILTER);
@@ -391,63 +462,72 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
             liveCount={live.length}
             onRemove={onRemove}
             version={state.server?.version ?? null}
+            build={state.server?.build ?? null}
             collapsed={panes.collapsed.left}
             onToggle={() => toggle("left")}
             people={railPeople}
           />
           <div className="mid">
-            <main className="main" id="podium-main">
-              {notice && (
-                <div className="callout notice" role="status">
-                  <div>{notice}</div>
-                </div>
-              )}
-              {state.phase === "loading" && !state.error ? (
-                <div className="none">Connecting to the Podium server…</div>
-              ) : selected ? (
-                <FocusView
-                  s={selected}
-                  now={now}
-                  config={state.config}
-                  sort={aSort}
-                  onSort={onAgentSort}
-                  selectedAgent={selAgent}
-                  flashAgent={flash}
-                  onAgent={selectAgent}
-                  onRemove={onRemove}
-                />
-              ) : (
-                <Wall
-                  sessions={shown}
-                  totalLive={all.length}
-                  kpis={state.kpis}
-                  split={split}
-                  filter={filter}
-                  onFilter={setFilter}
-                  sort={sort}
-                  onSort={setSort}
-                  cleared={state.clearedToday}
-                  now={now}
-                  config={state.config}
-                  entering={enteringSession}
-                  leaving={state.leaving}
-                  onOpen={selectSession}
-                  onRemove={onRemove}
-                  detached={{
-                    count: sets.hidden.length,
-                    costUsd: sets.hidden.reduce((n, s) => n + (s.costUsd ?? 0), 0),
-                    show: showDetached,
-                    onToggle: () =>
-                      setShowBackgroundSessions(!showDetached).catch((err: Error) => setNotice(`Could not change the setting: ${err.message}. Try again.`)),
-                  }}
-                  noticeOn={(id) => state.wall.notices[id] !== false}
-                  onCloseNotice={onCloseNotice}
-                  people={wallPeople}
-                />
-              )}
-              {closed !== null && <NoticeClosed name={closed} onDismiss={() => setClosed(null)} />}
-            </main>
-            <Legend />
+            {myReporters ? (
+              <MyReportersPage me={signedIn ?? null} peersOn={peersOn} peers={peers} api={peersApiProp ?? peersApi} now={now} notice={notice} />
+            ) : (
+              <main className="main" id="podium-main">
+                {notice && (
+                  <div className="callout notice" role="status">
+                    <div>{notice}</div>
+                  </div>
+                )}
+                {state.phase === "loading" && !state.error ? (
+                  <div className="none">Connecting to the Podium server…</div>
+                ) : board ? (
+                  <Board sessions={peopleShown} narrowed={peopleShown.length < sorted.length} kpis={state.kpis} me={me} onOpen={selectSession} />
+                ) : selected ? (
+                  <FocusView
+                    s={selected}
+                    now={now}
+                    config={state.config}
+                    sort={aSort}
+                    onSort={onAgentSort}
+                    selectedAgent={selAgent}
+                    flashAgent={flash}
+                    onAgent={selectAgent}
+                    onRemove={onRemove}
+                  />
+                ) : (
+                  <Wall
+                    sessions={shown}
+                    totalLive={all.length}
+                    kpis={state.kpis}
+                    split={split}
+                    filter={filter}
+                    onFilter={setFilter}
+                    sort={sort}
+                    onSort={setSort}
+                    cleared={state.clearedToday}
+                    now={now}
+                    config={state.config}
+                    entering={enteringSession}
+                    leaving={state.leaving}
+                    onOpen={selectSession}
+                    onRemove={onRemove}
+                    machineTitle={state.wall.cardTitleMachine === true}
+                    detached={{
+                      count: sets.hidden.length,
+                      costUsd: sets.hidden.reduce((n, s) => n + (s.costUsd ?? 0), 0),
+                      show: showDetached,
+                      onToggle: () =>
+                        setShowBackgroundSessions(!showDetached).catch((err: Error) => setNotice(`Could not change the setting: ${err.message}. Try again.`)),
+                    }}
+                    noticeOn={(id) => state.wall.notices[id] !== false}
+                    onCloseNotice={onCloseNotice}
+                    people={wallPeople}
+                  />
+                )}
+                {closed !== null && <NoticeClosed name={closed} onDismiss={() => setClosed(null)} />}
+              </main>
+            )}
+            {/* My reporters shows no legend (#446). */}
+            {!myReporters && <Legend />}
           </div>
           <SidePanel
             events={state.events}
@@ -469,6 +549,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery }: FleetViewProps
           {!panes.collapsed.left && <ResizeHandle panel="rail" r={resize} container={container} label="Resize orchestrator list" />}
           {!panes.collapsed.right && <ResizeHandle panel="side" r={resize} container={container} label="Resize activity panel" />}
         </div>
+        )}
       </div>
       <RespondHost sessions={state.sessions} now={now} adminFeedOn={state.features["activity-feed"] !== false} />
     </div>

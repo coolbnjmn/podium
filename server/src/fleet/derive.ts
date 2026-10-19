@@ -20,6 +20,7 @@ import type {
   ModelFamily,
   OwnerSpend,
   Plan,
+  PlanView,
   RespondInfo,
   SessionStatusView,
   SessionView,
@@ -66,6 +67,11 @@ export function shellQuote(s: string): string {
 
 export function resumeCommand(cwd: string, resumeId: string | null, id: string): string {
   return `cd ${shellQuote(cwd)} && claude --resume ${shellQuote(resumeId ?? id)}`;
+}
+
+/** The resume command with `--fork-session`: a new session that starts from a copy of this conversation (#352). */
+export function forkCommand(cwd: string, resumeId: string | null, id: string): string {
+  return `${resumeCommand(cwd, resumeId, id)} --fork-session`;
 }
 
 function parse<T>(text: string | null, fallback: T): T {
@@ -200,6 +206,8 @@ export interface SessionInput {
   pricing?: Pricing;
   /** Whether the reporter has the activityFeed option on, from the activity store; null when unknown. */
   activityFeed?: boolean | null;
+  /** Whether the reporter has the fileDiff option on (#319), held in memory; null when unknown. */
+  fileDiff?: boolean | null;
   /** Report.session.respond as last reported (#206), held in memory; null when unknown. */
   respond?: RespondInfo | null;
   /** The session's asks without their content, from the respond store. */
@@ -222,11 +230,13 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
     name: row.name,
     reporter: row.reporter_version === 'hooks' ? 'hooks' : 'mod',
     reporterVersion: row.reporter_version === 'hooks' ? null : row.reporter_version,
+    reporterBuild: row.reporter_version === 'hooks' ? null : row.reporter_build ?? null,
     compat: row.reporter_version === 'hooks' ? 'unknown' : checkReporter(row.reporter_version),
     project: shortenHome(row.project_root ?? row.cwd, cfg.home),
     cwd: shortenHome(row.cwd, cfg.home),
     repoName: row.repo_name,
     resumeCommand: resumeCommand(row.cwd, row.resume_id, row.id),
+    forkCommand: forkCommand(row.cwd, row.resume_id, row.id),
     git: parse<GitInfo | null>(row.git_json, null),
     model: row.model,
     modelFamily: family(row.model),
@@ -257,7 +267,7 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
         tokensAfter: b.tokens_after,
       })),
     },
-    plan: parse<Plan | null>(row.plan_json, null),
+    plan: parse<PlanView | null>(row.plan_json, null),
     loop: parse<LoopReport | null>(row.loop_json, null),
     files: parse<FilesReport | null>(row.files_json, null),
     background: parse<BackgroundWait | null>(row.background_json, null),
@@ -267,6 +277,7 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
     ownerGroup: input.ownerGroup ?? null,
     machine: parse<MachineInfo | null>(row.machine_json, null),
     activityFeed: input.activityFeed ?? null,
+    fileDiff: input.fileDiff ?? null,
     respond: input.respond ?? null,
     asks: input.asks ?? [],
     clearedFrom: row.cleared_from ?? null,
@@ -315,6 +326,7 @@ export function computeKpis(input: KpiInput, now: number): Kpis {
     waiting: 0,
     stale: 0,
     agentsRunning: 0,
+    agentsWaiting: 0,
     agentsTotal: 0,
     planDone: 0,
     planTotal: 0,
@@ -334,6 +346,7 @@ export function computeKpis(input: KpiInput, now: number): Kpis {
     else if (v.status === 'stale') k.stale++;
     k.agentsTotal += v.agents.length;
     k.agentsRunning += v.agents.filter((a) => a.status === 'running').length;
+    k.agentsWaiting += v.agents.filter((a) => a.status === 'queued').length;
     if (v.plan) {
       k.planTotal += v.plan.steps.length;
       k.planDone += v.plan.steps.filter((s) => s.state === 'done').length;

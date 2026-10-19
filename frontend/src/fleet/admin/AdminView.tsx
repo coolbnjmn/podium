@@ -5,14 +5,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import "../fleet.css";
 import "./admin.css";
-import { BrandLink } from "../components/BrandLink";
-import { ConnectionPill } from "../components/ConnectionPill";
+import { StreamTopBar } from "../components/StreamTopBar";
 import { ThemePicker } from "../components/ThemePicker";
 import { useTheme } from "../useTheme";
-import { useFleet, type UseFleetOptions } from "../useFleet";
+import type { UseFleetOptions } from "../useFleet";
+import type { PeersApi, RespondApi } from "../respondApi";
 import { useHeartbeat } from "../useHeartbeat";
 import { usePageVisible } from "../usePageVisible";
-import { reportersLive } from "../store";
 import { APP_NAME } from "../types";
 import { AdminError, makeApi } from "./adminApi";
 import { GroupsTab } from "./GroupsTab";
@@ -64,13 +63,7 @@ const GROUP_ICON: Record<GroupIconName, ReactNode> = {
   activity: <path d="M1.5 8h3l2-5 3 10 2-5h3" />,
 };
 
-/** Owns the fleet stream so its 2 s ticks re-render only this pill, not the whole Admin view. */
-function FleetPill({ options }: { options?: UseFleetOptions }) {
-  const fleet = useFleet(options);
-  return <ConnectionPill phase={fleet.phase} reporters={reportersLive(fleet.sessions, fleet.leaving)} />;
-}
-
-export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string; fleetOptions?: UseFleetOptions }) {
+export function AdminView({ base = "/api/admin", fleetOptions, respondApi, peersApi }: { base?: string; fleetOptions?: UseFleetOptions; respondApi?: RespondApi; peersApi?: PeersApi }) {
   const theme = useTheme();
   // The reporters pill's dot pulses on the fleet page's shared beat, which this root carries as data-beat.
   const root = useRef<HTMLDivElement>(null);
@@ -79,6 +72,7 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
   const [status, setStatus] = useState<Status>("checking");
   const [notice, setNotice] = useState("");
   const [version, setVersion] = useState<string | null>(null);
+  const [build, setBuild] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>(() => (window.location.hash === "#/admin/settings" ? "settings" : "people"));
   const [created, setCreated] = useState<Created | null>(null);
   const [counts, setCounts] = useState<Partial<Record<TabId, number>>>({});
@@ -109,10 +103,11 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
   );
   useEffect(() => {
     let live = true;
-    api<{ enabled: boolean; unlocked: boolean; version?: string }>("GET", "/session")
+    api<{ enabled: boolean; unlocked: boolean; version?: string; build?: string | null }>("GET", "/session")
       .then(async (s) => {
         if (!live) return;
         setVersion(s.version ?? null);
+        setBuild(s.build ?? null);
         if (s.enabled && !s.unlocked && (await openFromRespond())) return live && setStatus("open");
         if (live) setStatus(!s.enabled ? "disabled" : s.unlocked ? "open" : "locked");
       })
@@ -159,15 +154,7 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
   return (
     <div ref={root} className="podium">
       <div className="app" style={{ gridTemplateRows: "auto auto 1fr" }}>
-        <header className="top">
-          <BrandLink />
-          <span className="pill">Admin</span>
-          <FleetPill options={fleetOptions} />
-          <span className="spacer" />
-          <a className="btn" href="#/">
-            Back to fleet
-          </a>
-        </header>
+        <StreamTopBar page="Admin" fleetOptions={fleetOptions} respondApi={respondApi} peersApi={peersApi} />
         <div className="banner has-picker">
           <span>
             <b>Admin.</b> Tokens, groups, reporters and settings for this server.
@@ -178,7 +165,7 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
           {status === "checking" && (
             <div className="solo">
               <div className="solo-in empty">Checking…</div>
-              <AdminFoot version={version} />
+              <AdminFoot version={version} build={build} />
             </div>
           )}
           {status === "disabled" && (
@@ -189,7 +176,7 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
                   <p className="lead">This server is running without a token, so there is nothing to protect Admin with. Run podiumctl config unset PODIUM_TOKEN and podiumctl restart (the first start makes one), then reload.</p>
                 </div>
               </div>
-              <AdminFoot version={version} />
+              <AdminFoot version={version} build={build} />
             </div>
           )}
           {status === "locked" && (
@@ -197,7 +184,7 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
               <div className="solo-in">
                 <LockForm api={api} notice={notice} onUnlocked={() => (setNotice(""), setStatus("open"))} />
               </div>
-              <AdminFoot version={version} />
+              <AdminFoot version={version} build={build} />
             </div>
           )}
           {status === "open" && (
@@ -227,7 +214,7 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
                     <span className="hint">Locks after 10 minutes without activity.</span>
                   </div>
                 </div>
-                <AdminFoot version={version} />
+                <AdminFoot version={version} build={build} />
               </nav>
               <div className="apage" ref={pageRef}>
                 <div className="apage-in">
@@ -242,7 +229,7 @@ export function AdminView({ base = "/api/admin", fleetOptions }: { base?: string
                   {tab === "spend" && <SpendTab fleetOptions={fleetOptions} onCount={onCountSpend} />}
                   {tab === "log" && <LogTab api={api} {...paging.log} onPaging={onLogPaging} onCount={onCountLog} onLocked={onLocked} />}
                 </div>
-                <AdminFoot version={version} className="afoot-narrow" />
+                <AdminFoot version={version} build={build} className="afoot-narrow" />
               </div>
             </div>
           )}
@@ -257,6 +244,10 @@ function LockForm({ api, notice, onUnlocked }: { api: ReturnType<typeof makeApi>
   const [token, setToken] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const nameField = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    nameField.current?.focus();
+  }, []);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !token) return setErr("Enter your name and your token.");
@@ -291,7 +282,7 @@ function LockForm({ api, notice, onUnlocked }: { api: ReturnType<typeof makeApi>
         </div>
       )}
       <label htmlFor="admin-name">Name</label>
-      <input className="field" id="admin-name" type="text" autoComplete="off" autoFocus value={name} onChange={(e) => setName(e.target.value)} aria-describedby="admin-secret-hint" />
+      <input className="field" id="admin-name" type="text" autoComplete="off" ref={nameField} value={name} onChange={(e) => setName(e.target.value)} aria-describedby="admin-secret-hint" />
       <label htmlFor="admin-secret">Token</label>
       <input className="field mono" id="admin-secret" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} aria-describedby="admin-secret-hint" />
       {err && (

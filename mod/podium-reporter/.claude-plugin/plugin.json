@@ -1,6 +1,6 @@
 {
   "name": "podium-reporter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Reports this Claude Code session (model, effort, plan, agents, context, cost, git, failures) to a local Podium fleet console.",
   "types": "./types/index.d.ts",
   "author": {
@@ -68,6 +68,12 @@
       "description": "While someone has an agent's panel open in Podium, send that agent's recent tool calls and the text it writes between them (the last 20, each cut to 300 characters, secrets redacted). Nothing is sent for an agent nobody is watching, and the server keeps it in memory only. Off by default.",
       "default": false
     },
+    "fileDiff": {
+      "type": "boolean",
+      "title": "Send a file's diff on request",
+      "description": "When the owner of a session opens a changed file in Podium's Files list, read that one file's diff and send it. Anything that looks like a secret is replaced with [redacted] before it leaves this machine, and .env, key and credentials files are never sent. Nothing is sent for a file nobody opens, and the server keeps no copy. Off by default.",
+      "default": false
+    },
     "respond": {
       "type": "string",
       "title": "Respond from Podium",
@@ -79,6 +85,12 @@
         "everything"
       ],
       "default": "off"
+    },
+    "peers": {
+      "type": "boolean",
+      "title": "Message my other orchestrators",
+      "description": "Let this machine's orchestrators message your other orchestrators through Podium, within the rights you set in Podium > My reporters. Gives the main loop three tools (podium_peers, podium_send, podium_request_access); a subagent's call is refused. A message is sent with secrets replaced by [redacted], and one that arrives starts a new turn once this session is idle, marked as another agent's text that cannot approve anything. Needs the Podium server's Orchestrator messaging switch. Off by default.",
+      "default": false
     }
   }
 }

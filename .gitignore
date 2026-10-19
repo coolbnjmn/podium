@@ -1,7 +1,10 @@
 node_modules/
 dist/
+coverage/
 .env
 *.tsbuildinfo
 data/
 *.sqlite*
 mod/podium-reporter/.claude-plugin/types/
+.claude/worktrees/
+server/build.json

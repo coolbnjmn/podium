@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podium kanban board</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+<!-- Mockup for issue #346, for approval; updated for #409 (running orchestrator and subagent counts at the top of the page) #359 (the no-open-steps strip pinned to the bottom of the page) and #426 (a Plans | All switch in the Board header). A read-only board of every active orchestrator's plan steps by state. Token values are copied from frontend/src/fleet/fleet.css, as in podium-orchestrator.html. -->
+<style>
+/* Layout: a review page. The controls bar above the specimen is page chrome; the specimen is the console under test and carries Podium's own tokens. */
+:root {
+  --pg-bg: #eef0f2; --pg-panel: #ffffff; --pg-ink: #16181b; --pg-ink2: #4a4f57; --pg-muted: #6a707a; --pg-line: #d9dde2; --pg-accent: #1c6fd1;
+  --font-ui: "Schibsted Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root { --pg-bg: #101113; --pg-panel: #17191c; --pg-ink: #ecedef; --pg-ink2: #b6bac1; --pg-muted: #8d929b; --pg-line: #2a2d32; --pg-accent: #6aa8f0; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--pg-bg); color: var(--pg-ink); font: 15px/1.55 var(--font-ui); -webkit-font-smoothing: antialiased; padding-block: 28px 72px; padding-inline: max(16px, env(safe-area-inset-left, 0px)); }
+.page { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+h1 { font-size: 28px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; text-wrap: balance; }
+h2 { font-size: 18px; margin: 0 0 6px; }
+p { margin: 0; max-width: 72ch; color: var(--pg-ink2); }
+kbd { font: 11px var(--font-mono); padding: 0 5px; border: 1px solid var(--pg-line); border-radius: 3px; }
+code { font-family: var(--font-mono); font-size: 13px; }
+.ctl { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; padding: 12px 14px; background: var(--pg-panel); border: 1px solid var(--pg-line); border-radius: 10px; font-size: 13px; }
+.ctl fieldset { border: 0; margin: 0; padding: 0; display: flex; gap: 4px; align-items: center; }
+.ctl legend { float: left; margin-right: 8px; color: var(--pg-muted); padding: 0; }
+.ctl label { cursor: pointer; padding: 4px 10px; border: 1px solid var(--pg-line); border-radius: 6px; }
+.ctl input { position: absolute; opacity: 0; }
+.ctl input:checked + span { font-weight: 600; }
+.ctl label:has(input:checked) { background: var(--pg-ink); color: var(--pg-bg); border-color: var(--pg-ink); }
+.ctl label:has(input:focus-visible) { outline: 2px solid var(--pg-accent); outline-offset: 2px; }
+.decisions { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.decisions div { background: var(--pg-panel); border: 1px solid var(--pg-line); border-radius: 10px; padding: 12px 14px; font-size: 13.5px; color: var(--pg-ink2); }
+.decisions b { display: block; color: var(--pg-ink); margin-bottom: 3px; }
+
+/* ---------- Podium tokens (verbatim from fleet.css) ---------- */
+.th-dark {
+  --bg: #0d0d0d; --surface: #1a1a19; --raised: #222220; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781; --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --opus: #9085e9; --sonnet: #3987e5; --haiku: #199e70; --fable: #d95926;
+  --good: #0ca30c; --good-text: #3dbb3d; --warn: #fab219; --warn-text: #fab219; --deleg: #2fa4e0; --deleg-text: #5cbcf0; --serious: #ec835a; --serious-text: #ec835a; --crit: #d03b3b; --crit-text: #ee6a6a;
+  --focus: #6aa8f0; color-scheme: dark;
+}
+.th-light {
+  --bg: #f9f9f7; --surface: #fcfcfb; --raised: #f1f0ec; --ink: #0b0b0b; --ink2: #52514e; --muted: #6b6a64; --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --opus: #6250d6; --sonnet: #2a78d6; --haiku: #1baf7a; --fable: #eb6834;
+  --good: #0ca30c; --good-text: #006300; --warn: #fab219; --warn-text: #8a5b00; --deleg: #0a7fb8; --deleg-text: #07608c; --serious: #ec835a; --serious-text: #a9431c; --crit: #d03b3b; --crit-text: #b52a2a;
+  --focus: #1c6fd1; color-scheme: light;
+}
+.specs { display: grid; gap: 22px; }
+.specs.both { grid-template-columns: 1fr; }
+.shell { max-width: 100%; background: var(--bg); color: var(--ink); border: 1px solid var(--pg-line); border-radius: 10px; overflow: hidden; font: 13px/1.4 var(--font-ui); container-type: inline-size; }
+.shell.narrow { max-width: 390px; }
+.shell.narrow .cols { height: 640px; }
+.shell > .tag { font: 11.5px var(--font-mono); color: var(--muted); padding: 8px 14px 0; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: inherit; }
+a { color: inherit; text-decoration: none; }
+:is(button, a, [tabindex]):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* console shell, as in the running app: top bar, banner, left rail, centre, right activity panel */
+.app { display: flex; flex-direction: column; position: relative; }
+.top { display: flex; align-items: center; gap: 14px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface); flex-wrap: wrap; }
+.top[hidden], .banner[hidden], .strip[hidden] { display: none; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+.logo svg { width: 20px; height: 20px; display: block; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--ink2); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.sp { flex: 1; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--raised); font-size: 12px; font-weight: 500; }
+.btn:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.btn[aria-current="page"] { background: color-mix(in srgb, var(--ink) 9%, transparent); border-color: var(--axis); font-weight: 600; }
+.strip { height: 4px; background: var(--axis); position: relative; }
+.strip button { position: absolute; top: 0; left: 50%; transform: translateX(-50%); height: 18px; padding: 0 12px; font-size: 11px; line-height: 16px; background: var(--axis); color: var(--ink); border-radius: 0 0 6px 6px; opacity: 0; }
+.strip:hover button, .strip button:focus-visible { opacity: 1; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 5px 16px; font-size: 12px; color: var(--ink2); background: var(--raised); border-bottom: 1px solid var(--border); }
+.banner b { color: var(--ink); font-weight: 600; }
+.bannerctl { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bannerctl .sel, .bannerctl .btn { padding-block: 2px; }
+.cols { --rail-w: 252px; --side-w: 340px; display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--side-w); height: 760px; transition: grid-template-columns .18s ease; position: relative; }
+.cols.l-off { --rail-w: 24px; } .cols.r-off { --side-w: 24px; }
+.rail, .side { position: relative; overflow: hidden; background: var(--surface); }
+.rail { border-right: 1px solid var(--border); } .side { border-left: 1px solid var(--border); }
+.rail-body, .side-body { height: 100%; overflow: auto; }
+.l-off .rail-body, .r-off .side-body { visibility: hidden; }
+.pane-tab { position: absolute; top: 6px; z-index: 6; width: 24px; height: 26px; display: grid; place-items: center; color: var(--ink2); border-radius: 4px; }
+.pane-tab:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
+.pane-tab svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.rail .pane-tab { right: 0; } .side .pane-tab { left: 0; }
+.rail h2, .side h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+.rail:not(.collapsed) .rail-head { padding-right: 34px; }
+.rail-head { padding: 12px 14px 6px; display: flex; justify-content: space-between; align-items: baseline; }
+.ritem { display: block; width: 100%; padding: 9px 14px; border-left: 3px solid transparent; border-bottom: 1px solid var(--grid); }
+.ritem:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.ritem[aria-current="true"] { background: color-mix(in srgb, var(--ink) 8%, transparent); border-left-color: var(--ink); }
+.ritem .l1 { display: flex; align-items: center; gap: 8px; }
+.ritem .nm { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ritem .l2 { display: flex; align-items: center; gap: 8px; margin-top: 5px; color: var(--ink2); font-size: 12px; }
+.ritem .bar { flex: 1; }
+.bar { height: 5px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+.bar > i { display: block; height: 100%; border-radius: 3px; background: var(--good); }
+.rdot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
+.rdot.running { background: var(--good); } .rdot.waiting { background: transparent; border: 2px solid var(--warn); } .rdot.stale { background: var(--serious); } .rdot.ended { background: var(--axis); }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 4px; font-size: 11.5px; font-weight: 500; border: 1px solid var(--border); white-space: nowrap; color: var(--ink2); }
+.chip i { width: 7px; height: 7px; border-radius: 2px; background: var(--c); }
+.rail-foot { margin-top: auto; padding: 9px 14px; border-top: 1px solid var(--border); font-size: 11.5px; line-height: 1.4; color: var(--muted); display: grid; gap: 2px; }
+.rail-foot a { color: var(--ink2); text-decoration: underline; text-underline-offset: 2px; }
+.rail-body { display: flex; flex-direction: column; }
+.side:not(.collapsed) #podium-side-body { padding-top: 32px; }
+.side .sh { padding: 12px 14px 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.kpi-cap { color: var(--muted); font-size: 11.5px; }
+.ev { list-style: none; margin: 0; padding: 0; }
+.ev li { padding: 0; display: block; border-bottom: 1px solid var(--grid); }
+.ev li.new .evb { animation: evin 1.2s ease-out; }
+@keyframes evin { from { background: color-mix(in srgb, var(--good) 22%, transparent); } to { background: transparent; } }
+.ev time { color: var(--muted); font-size: 11.5px; }
+.ev .evb { display: grid; grid-template-columns: 58px 8px 1fr; gap: 8px; padding: 6px 14px; align-items: baseline; width: 100%; }
+button.evb:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.ev .ed { width: 7px; height: 7px; border-radius: 2px; background: var(--c); align-self: start; margin-top: 6px; display: block; }
+.ev .tt { min-width: 0; overflow-wrap: anywhere; }
+.ev .tt b { font-weight: 600; }
+.ev .go { color: var(--muted); font-size: 11px; display: flex; gap: 4px; align-items: center; margin-top: 1px; }
+.ev .go svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.ev .tool { font-family: var(--font-mono); font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--ink2); white-space: nowrap; display: block; width: fit-content; margin-top: 3px; }
+.side .more { display: flex; gap: 8px; padding: 10px 14px; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+.legend { flex: none; display: flex; gap: 6px 22px; flex-wrap: wrap; justify-content: center; align-items: center; text-align: center; padding: 12px 24px; background: color-mix(in srgb, var(--surface) 50%, var(--bg)); border-top: 1px solid var(--border); color: var(--ink2); font-size: 12px; }
+.legend > span { display: inline-flex; gap: 6px 8px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.legend .a { width: 10px; height: 10px; border-radius: 2px; background: var(--ink2); display: inline-block; }
+.legend .a.f { border-radius: 50%; } .legend .a.q { background: transparent; border: 1.5px dashed var(--ink2); } .legend .a.d { opacity: .3; }
+.centre { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.centre-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* #359: the strip overlays the board, so the scroll area ends with padding as tall as the strip (set from its measured height) and the last card can always be scrolled clear of it. */
+.centre-in { flex: 1; min-height: 0; overflow: auto; container-type: inline-size; padding-bottom: var(--strip-h, 0px); scroll-padding-bottom: var(--strip-h, 0px); }
+.demo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 16px; background: color-mix(in srgb, var(--warn) 10%, var(--surface)); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--ink2); }
+.demo b { color: var(--ink); }
+
+/* board header and filters */
+.bh { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 16px 10px; }
+.bh h3 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
+.bh .sum { color: var(--muted); font-size: 12.5px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { padding: 4px 10px; font-size: 12px; color: var(--ink2); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink); font-weight: 600; }
+.chipf { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--ink2); }
+.chipf[aria-pressed="true"] { color: var(--ink); border-color: var(--ink2); font-weight: 600; }
+.sel { appearance: none; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--ink2); font: 12px var(--font-ui); }
+
+/* running counts (#409): the Fleet page's .kpis/.kpi rules, copied unchanged from fleet.css. The caption wraps and is never clipped. */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin: 0 16px 14px; }
+.kpi { background: var(--surface); padding: 10px 12px; min-width: 0; }
+.kpi .k { color: var(--muted); font-size: 12px; }
+.kpi .v { font-size: 22px; font-weight: 600; margin-top: 2px; letter-spacing: -0.02em; display: flex; align-items: baseline; gap: 6px; }
+@container (max-width: 640px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* the board: one column per state; columns scroll inside, the page does not */
+.board { display: grid; grid-template-columns: repeat(5, minmax(210px, 1fr)); overflow-x: auto; gap: 12px; padding: 4px 16px 16px; align-items: start; }
+.col { background: color-mix(in srgb, var(--ink) 3%, var(--bg)); border: 1px solid var(--border); border-top: 3px solid var(--c); border-radius: 8px; min-width: 0; display: flex; flex-direction: column; max-height: 640px; }
+.col-h { display: flex; align-items: center; gap: 8px; padding: 9px 12px 8px; position: sticky; top: 0; }
+.col-h h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.col-h .n { font: 600 11.5px var(--font-mono); color: var(--ink2); background: var(--raised); border-radius: 999px; padding: 1px 8px; }
+.col-h .hint { margin-left: auto; font-size: 11px; color: var(--muted); }
+.col-b { overflow: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.c-pending { --c: var(--axis); } .c-active { --c: var(--good); } .c-blocked { --c: var(--crit); } .c-review { --c: var(--warn); } .c-done { --c: var(--muted); }
+
+/* lane label (grouped view only) */
+.lane { display: flex; align-items: center; gap: 8px; padding: 6px 2px 0; font-size: 15px; letter-spacing: -0.01em; }
+.lane .sq { width: 10px; height: 10px; }
+.lane b { font-weight: 700; }
+.lane:first-child { padding-top: 0; }
+
+/* a card is one link to the orchestrator page */
+.tc { display: block; will-change: transform; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px 10px; position: relative; }
+.tc:hover { border-color: var(--axis); background: color-mix(in srgb, var(--ink) 3%, var(--surface)); }
+.tc-title { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; font-size: 13px; }
+.tc-title b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-own { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+.tc-t { font-size: 12.5px; line-height: 1.35; color: var(--ink2); overflow-wrap: anywhere; }
+.c-active .tc-t { color: var(--good-text); }
+.tc-act { margin-top: 3px; font-size: 12px; color: var(--good-text); display: flex; gap: 6px; align-items: baseline; }
+.tc-act::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--good); translate: 0 -1px; animation: beat 2.4s ease-in-out infinite; }
+.tc.flash { animation: flash 2.6s ease-out; }
+@keyframes flash { from { background: color-mix(in srgb, var(--good) 24%, var(--surface)); border-color: var(--good); } to { background: var(--surface); } }
+.tc.fadein { animation: fadein .28s ease-out; }
+@keyframes fadein { from { opacity: 0; transform: translateY(-6px); } }
+.tc.fadeout { opacity: 0; transition: opacity .25s ease-in; }
+.live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+@keyframes beat { 50% { opacity: .35; } }
+.c-done .tc-t { color: var(--muted); }
+.c-blocked .tc { border-color: color-mix(in srgb, var(--crit) 50%, var(--border)); }
+.tc-why { margin-top: 3px; font-size: 12px; color: var(--crit-text); }
+.tc-f { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+.tc-f .own { color: var(--ink2); display: inline-flex; align-items: center; gap: 5px; }
+.tc-f .own svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.tc-f .orch { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); min-width: 0; }
+.tc-f .orch b { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12ch; }
+.sq { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--fam); }
+.tb-sep { align-self: stretch; width: 1px; min-height: 22px; background: var(--axis); }
+.tb-me { display: inline-flex; align-items: center; gap: 8px; }
+.tb-who { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); font-size: 12.5px; }
+.tb-who b { color: var(--ink); font-weight: 600; }
+.hide-orch .tc-title { display: none; }
+
+.empty { border: 1px dashed var(--axis); border-radius: 8px; padding: 14px 12px; color: var(--muted); font-size: 12px; text-align: center; }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 4px 8px; flex-wrap: wrap; padding: 8px 12px; border-top: 1px solid var(--grid); font-size: 11.5px; color: var(--muted); }
+.pager .pg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.pager .pg button { font: 500 11.5px var(--font-mono); color: var(--ink2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; }
+.pager .pg button:disabled { opacity: .4; cursor: default; }
+.pager .pg button[aria-current="page"] { color: var(--ink); border-color: var(--ink2); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+
+/* sessions with no open steps (#359): a panel pinned to the bottom of the page, just above the legend, never a column. 16px from the page edges and from the legend. */
+.noplan { position: absolute; left: 16px; right: 16px; bottom: 16px; z-index: 4; display: flex; flex-direction: column; max-height: min(42%, 200px); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px -10px rgba(0,0,0,.5); }
+.noplan-h { flex: none; padding: 9px 12px; font-size: 12.5px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.noplan-h b { font-weight: 600; }
+.noplan-h span { color: var(--muted); }
+.noplan .list { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.noplan ul { list-style: none; margin: 0; padding: 0 12px 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.noplan li a { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--ink2); }
+.noplan li a:hover { border-color: var(--axis); color: var(--ink); }
+/* the (i) note opens as a popover above the strip, so it never grows the strip or runs into the legend */
+.noplan .how { position: absolute; left: 12px; right: 12px; bottom: calc(100% + 8px); padding: 8px 10px; border: 1px solid var(--axis); border-radius: 6px; background: var(--raised); box-shadow: 0 8px 24px -10px rgba(0,0,0,.5); font-size: 12px; line-height: 1.45; color: var(--ink2); max-width: 70ch; }
+.noplan .how[hidden] { display: none; }
+.noplan .how code { font: 11.5px var(--font-mono); color: var(--ink); }
+.info { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--ink2); align-self: center; }
+.info svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.info:hover, .info[aria-expanded="true"] { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); }
+.noplan .how a { text-decoration: underline; text-underline-offset: 2px; color: var(--ink2); }
+
+/* whole-board empty state */
+.blank { margin: 8px 16px 20px; padding: 40px 20px; border: 1px dashed var(--axis); border-radius: 10px; text-align: center; color: var(--ink2); }
+.blank b { display: block; font-size: 16px; color: var(--ink); margin-bottom: 4px; }
+.blank p { margin: 0 auto; color: var(--muted); font-size: 13px; }
+
+/* narrow: one column at a time behind a tab row, counts always visible */
+.tabs { display: none; gap: 4px; padding: 0 16px 10px; overflow-x: auto; }
+.tabs button { flex: none; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6px; align-items: center; }
+.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; border-color: var(--ink2); background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.tabs .n { font: 11px var(--font-mono); color: var(--muted); }
+@container (max-width: 640px) {
+  .board { grid-template-columns: 1fr; }
+  .tabs { display: flex; }
+  .col { max-height: none; }
+  .col:not(.on) { display: none; }
+  .col-h { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .noplan { transition: none; } .tc-act::before, .tc.fadein, .ev.new { animation: none; } .tc.fadeout { transition: none; } .cols { transition: none; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Kanban board</h1>
+    <p>Mockup for issue #346. A new page, reached from the top bar next to History at <code>#/board</code>. It shows every active orchestrator's plan steps by state, read-only. Clicking a card opens that orchestrator's page. Use the controls to see each state and variant; the settings you pick change the specimens below.</p>
+  </header>
+
+  <form class="ctl" aria-label="Mockup controls" onsubmit="return false">
+    <fieldset><legend>Data</legend>
+      <label><input type="radio" name="data" value="busy" checked><span>Busy fleet (3 in strip)</span></label>
+      <label><input type="radio" name="data" value="short"><span>Short board, 1 in strip</span></label>
+      <label><input type="radio" name="data" value="many"><span>Many in strip (22)</span></label>
+      <label><input type="radio" name="data" value="none"><span>None in strip</span></label>
+      <label><input type="radio" name="data" value="noplans"><span>No plans at all</span></label>
+      <label><input type="radio" name="data" value="waiting"><span>Waiting, no plan</span></label>
+      <label><input type="radio" name="data" value="large"><span>Large fleet</span></label>
+    </fieldset>
+    <fieldset><legend>Theme</legend>
+      <label><input type="radio" name="theme" value="dark" checked><span>Dark</span></label>
+      <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+    </fieldset>
+    <fieldset><legend>Width</legend>
+      <label><input type="radio" name="width" value="wide" checked><span>Wide</span></label>
+      <label><input type="radio" name="width" value="narrow"><span>Narrow (390px)</span></label>
+    </fieldset>
+  </form>
+
+  <div class="specs" id="spec"></div>
+
+  <section aria-labelledby="dec">
+    <h2 id="dec">What this mockup proposes for the open questions</h2>
+    <div class="decisions">
+      <div><b>Columns (decided)</b>Pending, In progress, Review, Blocked, Done. Pending takes Backlog's place. Review exists for review logic to come; until then it holds in-progress steps whose session waits on its person (a question, a plan or a permission prompt), and nothing else moves in. Blocked keeps its own column, since Claude Code reports it.</div>
+      <div><b>Pinned strip (#359)</b>The "no open steps" strip is pinned to the bottom of the page, directly above the legend, 16px from the page edges and from the legend, so it reads as a panel and not as part of the footer. It overlays the board and does not move as cards come and go: try Short board, 1 in strip. The board's scroll area ends with bottom padding equal to the strip's height (measured, so it follows the strip as it changes), so the last card in the tallest column can be scrolled clear of it; try Large fleet and scroll to the end. A focused card scrolls into view clear of the strip. With nothing in the strip, nothing is pinned and the board has the full height (None in strip).</div>
+      <div><b>Long strip and the (i) note (#359)</b>The strip is at most 200px tall or 42% of the page, whichever is less. Its header stays; the chips wrap and scroll inside it past that (Many in strip), so it cannot cover most of the board. The (i) note opens as a popover above the strip, anchored to it, so it never grows the strip and is not clipped by the legend; it closes with the button again or Escape, which returns focus to the button. The strip keeps its label and its place in the tab order (after the columns).</div>
+      <div><b>Narrow layout (#359)</b>On a phone the console stacks and the page scrolls as a whole with the legend at its end. There the strip is sticky to the bottom of the viewport, above the legend, with the same padding, and the board ends with the strip's height of room so it never hides the last card. This mockup's narrow frame is a fixed-height viewport, so it shows the same pinned strip.</div>
+      <div><b>Which sessions count (decided)</b>Every session on the Fleet page is on the board: running, waiting, delegating, stale or ended. One with open steps fills columns. One with no plan, or with every step done, is listed in the strip under the board and still links to its page. A stale session's open steps show in their columns like any other.</div>
+      <div><b>Done column (decided)</b>A done step stays until its orchestrator is finished, then its Done cards fall off. Finished means every step is done and the session is idle, stale or ended. A running session with every step done keeps its Done cards, with an "all done" mark on its lane. No new signal is sent.</div>
+      <div><b>Running counts (#409)</b>The first two of the tiles under the Board header (#426 adds two more, below): Orchestrators running and Subagents running. They are the Fleet page's own KPI tiles (same classes, same label for subagents), so no new component. Both read the same two numbers the server already derives for the Fleet page (<code>Kpis.running</code> and <code>Kpis.agentsRunning</code>), and nothing new is sent or stored. The Board does not count on its own, so the two pages cannot disagree. The tile rules are the Fleet page's, unchanged, so the tiles wrap as the Fleet strip does, and the captions wrap and are never clipped. A number changing width does not move the columns, which sit below the strip. No flash or other animation: the number just changes. Proposed for the maintainer: the tile label \"Orchestrators running\" and the two captions are new wording on the existing tile (Fleet's first tile reads \"Orchestrators live\" with the running/waiting/stale split as its caption). If you would rather keep Fleet's exact tile, say so and the Board shows \"Orchestrators live\" instead.</div>
+      <div><b>What counts as running (#409)</b>Counted: an orchestrator whose status is running, and a subagent whose status is running (forks included). Not counted: an orchestrator waiting on its person, idle on background work, stale or ended; its subagents drop out once it ends. The caption under the orchestrator count says "of N live, M waiting", so a waiting session is visible without being counted. N is the server's <code>Kpis.live</code> (every session not yet dropped), and M is the server's waiting count, which leaves out a session idle on background work (#119); the page takes both from the server and never recounts. This specimen has no idle state to show. Fleet shows the running figure only as text in its first tile's caption; here it is a tile of its own. Try Simulate update 3 and 4: docs-sweep starts running (orchestrators +1), release-prep ends (orchestrators −1, subagents −1).</div>
+      <div><b>Me and layout (#409, picked)</b>The counts always show the whole fleet. Mixed or By orchestrator, the Group filter and Me change which cards show, never the counts, so they equal the Fleet page's. While Me or a group is on, the caption under Subagents reads "whole fleet" and the tile group's name says so for screen readers.</div>
+      <div><b>Plans | All switch (#426, for approval)</b>A two-state switch, <b>Plans | All</b>, at the upper left of the Board header, right after the title. It is the page's own segmented control (the Board's <code>kb-seg</code> in the app, which also holds Mixed | By orchestrator), so no new component: two real buttons with <code>aria-pressed</code>, the same focus ring, reachable by Tab and operated with Enter or Space. <b>Plans</b> shows only orchestrators that have open steps, in the columns: today's page without the strip. <b>All</b> is today's page: the columns, plus the strip of sessions with no plan, an empty plan, or only done steps. The choice is kept in <code>localStorage</code> under <code>podium.board</code> with the Board's other preferences (a new <code>view</code> field) and survives a reload. After a press the focus stays on the pressed button, and the group is named "Sessions shown" for screen readers. The switch changes nothing in the tiles, the left list, or the Me, Group and Mixed | By orchestrator controls, which work in both modes. Try Plans and All on Busy fleet, None in strip, No plans at all and Waiting, no plan.</div>
+      <div><b>Plan figures move into the tile row (#426)</b>The sentence "5 orchestrators with open steps, 19 steps" is gone from the header. Its numbers are two more tiles in the same row, the Fleet page's own tile classes, so no new component. All four tiles are whole-fleet facts, so the switch, Me and Group change none of them, as the issue requires: <b>Orchestrators with plans</b> (5, "of 8 live", so the 3 sessions All adds in the strip are visible as the difference) and <b>Plan steps</b> (19, "6 done"). The old sentence said "open steps" but counted Done cards too; the tile says what it counts. While Me or a group is on, both captions read "whole fleet", as the Subagents tile does. Both numbers are worked out from the sessions the page already receives, so nothing new is sent or stored. Tiles are a fixed size, so nothing in the header or under it moves. On a narrow board the row is 2 by 2. With nothing to put in a column, the empty state in Plans reads "None of the 8 active sessions has open steps. Switch to All to list them."; in All it keeps today's wording. The labels and captions are new wording for the maintainer to approve.</div>
+      <div><b>Open questions, with a proposal to pick from (#426)</b><b>Default:</b> All, so nothing changes for anyone until they choose. <b>A plan whose steps are all done:</b> counts as having none (it is in the strip today, so only in All). <b>A session waiting on its person with no plan:</b> counts as having a plan, because it has a card in Review; it shows there in both modes and never in the strip (Waiting, no plan: api-explore). <b>Not changed:</b> the card design, the columns, the Fleet page, which sessions the Board receives, and the Me and Group filters. If you would rather have Plans as the default, or the strip hidden by Plans instead of removed, say so.</div>
+      <div><b>Mixed or grouped</b>Mixed by default, so the board answers "what is in progress across everything". A toggle groups each column by orchestrator, with a lane label. The orchestrator name and model chip sit on every card in mixed view and drop off in grouped view.</div>
+      <div><b>Limits</b>Each column scrolls inside itself and pages at 25 cards, with the same footer as the Files and Plan tabs ("Showing 1–25 of 40" and page buttons) at the bottom of the column. Empty columns say what they are waiting for. A 100-step plan fills one lane, never the page. Each column is at least 210px wide, so a board narrower than five of them scrolls sideways inside its own area; on a phone it becomes tabs.</div>
+      <div><b>Left and right panels (decided from the running app)</b>The board is a page of the console, so it keeps the same top bar, banner, orchestrator list on the left and activity panel on the right, with the same edge tabs, <kbd>[</kbd> and <kbd>]</kbd> keys and <kbd>\</kbd> for the top bar. The left list, activity panel and legend are the same components as on the fleet page, not look-alikes: the list keeps its model chips, plan bars, agent counts, status dots and footer, and the activity panel its newest-first list. The board opens with both panels collapsed to their 24px edge tabs, so the five columns get the full width; open either from its tab. The board remembers its own panel state, separate from the fleet page's, so opening a panel here does not change the fleet page. A click on a row in the list still opens that orchestrator, and the activity panel shows the same events as on the fleet page. The top bar gets a Fleet button, which goes back to the fleet page, and a Board button, beside History; the page pill reads Board.</div>
+      <div><b>Filters</b>Group, person and a "Me" toggle, the same ones the wall has, with "Me" kept in <code>localStorage</code>. "Me" appears only when someone is signed in; signed out, the chip is not shown. Toggle the signed-in state above the console to see both.</div>
+      <div><b>Updates</b>Use Simulate update above the console. A card whose step changes slides to its new column in 200 ms and flashes for a couple of seconds. A new step fades in. When an orchestrator finishes, its Done cards fade out and it moves to the strip. Each change also adds a line to the activity panel and is announced to screen readers. Reduced motion keeps the flash and drops the slide and fades.</div>
+      <div><b>Cards</b>One link per card; its accessible name reads step, state and orchestrator. An in-progress card shows <code>activeText</code> with a slow pulse that stops under reduced motion. Nothing drags.</div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const FAM = { Opus: "var(--opus)", Sonnet: "var(--sonnet)", Haiku: "var(--haiku)", Fable: "var(--fable)" };
+const ICON_AGENT = '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="4" r="2.2"/><path d="M1.8 10.5c.5-2.2 2.3-3.2 4.2-3.2s3.7 1 4.2 3.2"/></svg>';
+
+const ORCH0 = [
+  { id: "o1", name: "podium", model: "Opus", state: "running", steps: [
+    ["done", "Read SPEC 5.6 and the plan types", "", "Explorer"],
+    ["done", "Write the failing test for the route", "", "tests"],
+    ["active", "Add the board route to route.ts", "Editing frontend/src/route.ts", "orchestrator"],
+    ["active", "Draft SPEC 8.1 section for the board", "Writing docs/SPEC.md", "docs"],
+    ["pending", "Build the column component", "", ""],
+    ["pending", "Wire live updates to the stream", "", ""],
+    ["blocked", "Check the page against a real fleet", "Waiting on a running server", "orchestrator"] ] },
+  { id: "o2", name: "docs-sweep", model: "Sonnet", state: "waiting", steps: [
+    ["done", "List stale docs", "", "orchestrator"],
+    ["active", "Rewrite USER_GUIDE install section", "Waiting on you: which OS first?", "writer"],
+    ["pending", "Rewrite REPORTER.md update steps", "", ""],
+    ["pending", "Re-run the link check", "", ""] ] },
+  { id: "o3", name: "release-prep", model: "Haiku", state: "running", steps: [
+    ["done", "Bump versions in the table", "", "orchestrator"],
+    ["done", "Update CHANGELOG links", "", "orchestrator"],
+    ["done", "Run npm test", "", "orchestrator"] ], allDone: true },
+  { id: "o4", name: "sim-fleet", model: "Fable", state: "running", steps: [
+    ["active", "Replay the 40-agent scenario", "Step 12 of 40", "sim"],
+    ["pending", "Compare card counts to the fixture", "", ""],
+    ["blocked", "Capture a GIF of the wall", "Needs a browser tab", ""] ] },
+  { id: "o5", name: "hotfix-348", model: "Sonnet", state: "stale", steps: [["done", "Write the failing test", "", ""], ["done", "Fix the parser", "", ""]], note: "" },
+  { id: "o8", name: "old-spike", model: "Haiku", state: "stale", steps: [["pending", "Try the other index", "", ""], ["active", "Benchmark both", "Left running", "bench"]], note: "" },
+  { id: "o6", name: "scratch", model: "Haiku", state: "running", steps: [], note: "" },
+  { id: "o7", name: "api-explore", model: "Opus", state: "running", steps: [], note: "" }
+];
+// A "large fleet": 14 orchestrators, one with a 100-step plan.
+function large() {
+  const names = ["podium", "docs-sweep", "release-prep", "sim-fleet", "billing", "infra", "mobile", "etl", "search", "auth", "ml-eval", "web", "cli", "tools"];
+  const ms = ["Opus", "Sonnet", "Haiku", "Fable"];
+  return names.map((n, i) => {
+    const count = i === 0 ? 100 : 4 + (i * 3) % 9;
+    const steps = Array.from({ length: count }, (_, k) => {
+      const st = k < count * .4 ? "done" : k < count * .5 ? "active" : k > count * .93 && i % 4 === 0 ? "blocked" : "pending";
+      return [st, "Step " + (k + 1) + " of the " + n + " plan, a typical task title", st === "active" ? "Working on step " + (k + 1) : "", st === "pending" ? "" : "agent-" + (k % 3 + 1)];
+    });
+    return { id: "L" + i, name: n, model: ms[i % 4], state: i === 5 ? "waiting" : "running", steps };
+  });
+}
+
+// Subagents running now, per orchestrator (the mod's agent list; forks included). An ended session has none.
+const AGENTS = { o1: 3, o2: 1, o3: 1, o4: 12, o8: 1 };
+const agentsOf = o => o.state === "ended" ? 0 : AGENTS[o.id] ?? (o.id[0] === "L" ? +o.id.slice(1) % 4 : 0);
+// The one definition, shared with the Fleet page (Kpis.running and Kpis.agentsRunning): an orchestrator counts when its status is running; waiting, idle on background work, stale and ended do not. A subagent counts when its own status is running.
+function counts(data) { return { orch: data.filter(o => o.state === "running").length, live: data.filter(o => o.state !== "ended").length, waiting: data.filter(o => o.state === "waiting").length, agents: data.reduce((n, o) => n + agentsOf(o), 0) }; }
+let ORCH = JSON.parse(JSON.stringify(ORCH0));
+const S = { view: "all", info: false, signedIn: true, left: true, right: true, top: false, sim: 0, data: "busy", theme: "dark", width: "wide", group: false, me: false, tab: "active", pg: {} };
+const PER = 25;
+const COLS = [["pending", "Pending", "Not started"], ["active", "In progress", ""], ["review", "Review", "Waiting on a person"], ["blocked", "Blocked", "Needs something"], ["done", "Done", "Until its orchestrator finishes"]];
+const EMPTY = {
+  pending: "Nothing waiting. Every step has started or finished.",
+  active: "Nothing in progress. Sessions are idle or between steps.",
+  blocked: "No blocked steps. Claude Code marks a step blocked when it cannot proceed.",
+  review: "Nothing waiting on a person right now.",
+  done: "Nothing done yet."
+};
+// Review is empty of logic for now: an in-progress step whose session waits on its person lands here. Later review rules will move steps in.
+function colOf(o, st) { return st === "active" && o.state === "waiting" ? "review" : st; }
+const KEY = (o, k) => o.id + ":" + k;
+function card(o, s, k) {
+  const [st, text, act, own] = s;
+  const label = text + ", " + st + ", " + o.name;
+  // The live wording replaces the step's text while it is in progress; the agent doing it is the last line.
+  const work = st === "active" && act ? act : text;
+  return '<a class="tc" data-key="' + KEY(o, k) + '" href="#orchestrator-' + o.id + '" aria-label="' + esc(label) + '">' +
+    '<div class="tc-title"><i class="sq" style="--fam:' + FAM[o.model] + '"></i><b>' + esc(o.name) + '</b></div>' +
+    '<div class="tc-t">' + esc(work) + '</div>' + (own ? '<div class="tc-own">' + esc(own) + '</div>' : '') + '</a>';
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function finished(o) { return o.steps.length && o.steps.every(s => s[0] === "done") && (o.state === "stale" || o.state === "ended"); }
+
+const LOGO = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="1" y="9" width="5" height="9" rx="1" fill="currentColor" opacity=".55"/><rect x="7.5" y="2" width="5" height="16" rx="1" fill="currentColor"/><rect x="14" y="6" width="5" height="12" rx="1" fill="currentColor" opacity=".75"/></svg>';
+const PANE_ARROW = (side, collapsed) => '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + (((side === "left") !== collapsed) ? "M10 3 5 8l5 5" : "M6 3l5 5-5 5") + '"/></svg>';
+const EVENTS = [["14:02", "podium", "started Agent", "Explorer", "Opus"], ["14:01", "docs-sweep", "is waiting: which OS first?", "", "Sonnet"], ["13:58", "sim-fleet", "finished Bash", "npm test", "Fable"], ["13:55", "release-prep", "finished Edit", "CHANGELOG.md", "Haiku"]];
+let lastNote = "";
+let flashKeys = new Set(), newEvent = false;
+
+function buildData() {
+  if (S.data === "short") return [{ ...ORCH0[1], state: "running", steps: ORCH0[1].steps.slice(0, 2) }];
+  if (S.data === "none") return ORCH0.filter(o => o.steps.length && !finished(o));
+  if (S.data === "many") return ORCH0.concat(Array.from({ length: 19 }, (_, i) => ({ id: "m" + i, name: ["scratch", "api-explore", "notes", "triage", "spike", "demo", "lint-fix"][i % 7] + "-" + (i + 1), model: ["Opus", "Sonnet", "Haiku", "Fable"][i % 4], state: "running", steps: [], note: "" })));
+  if (S.data === "waiting") return ORCH.map(o => o.id === "o7" ? { ...o, state: "waiting" } : o);
+  return S.data === "noplans" ? ORCH.map(o => ({ ...o, steps: [], note: o.note })) : S.data === "large" ? large().concat(ORCH.slice(4)) : ORCH;
+}
+
+// The board's bottom padding follows the strip: its height, plus the 16px above the legend and a 16px gap above the strip.
+function measure() { const w = $(".centre-wrap"), st = $(".noplan"); if (w) w.style.setProperty("--strip-h", st ? st.offsetHeight + 32 + "px" : "0px"); }
+addEventListener("resize", measure);
+function render() {
+  const data = buildData();
+  const withPlan = data.filter(o => o.steps.length && !finished(o));
+  // A session with no plan that waits on its person has a Review card on All only (#443): on Plans it is in no column and not in the strip.
+  const asking = data.filter(o => !o.steps.length && o.state === "waiting");
+  const without = data.filter(o => (!o.steps.length || finished(o)) && !asking.includes(o));
+  const plansOnly = S.view === "plans";
+  const cols = COLS;
+  const total = withPlan.reduce((n, o) => n + o.steps.filter(s => s[0] !== "done").length + o.steps.filter(s => s[0] === "done").length, 0);
+  const ctab = cols.some(c => c[0] === S.tab) ? S.tab : "active";
+
+  const buckets = Object.fromEntries(cols.map(c => [c[0], []]));
+  for (const o of withPlan) o.steps.forEach((s, k) => buckets[colOf(o, s[0])]?.push([o, s, k]));
+  if (!plansOnly) for (const o of asking) buckets.review.push([o, ["active", "Waiting on you: which branch should this start from?", "", ""], "w"]);
+  // The step that changed last comes first; the rest keep plan order.
+  for (const k in buckets) buckets[k].sort((a, b) => (b[1][4] || 0) - (a[1][4] || 0));
+
+  const colHtml = cols.map(([key, label, hint]) => {
+    const items = buckets[key];
+    const pages = Math.max(1, Math.ceil(items.length / PER));
+    const at = Math.min(S.pg[key] || 0, pages - 1), from = at * PER;
+    let body;
+    if (!items.length) body = '<div class="empty">' + EMPTY[key] + '</div>';
+    else {
+      const slice = items.slice(from, from + PER);
+      if (S.group) {
+        const out = []; let last = null;
+        for (const [o, st, k] of slice) {
+          if (o !== last) { out.push('<div class="lane"><i class="sq" style="--fam:' + FAM[o.model] + '"></i><b>' + esc(o.name) + '</b>' + (o.allDone ? '<span style="color:var(--muted);font-size:12px">all done</span>' : '') + '</div>'); last = o; }
+          out.push(card(o, st, k));
+        }
+        body = out.join("");
+      } else body = slice.map(([o, st, k]) => card(o, st, k)).join("");
+    }
+    // The same footer as the Files and Plan tabs: the range shown, then page buttons once there is more than one page.
+    const pager = items.length > 0 ? '<div class="pager"><span>Showing ' + (from + 1) + '–' + (from + Math.min(PER, items.length - from)) + ' of ' + items.length + '</span>' +
+      (pages > 1 ? '<nav class="pg" aria-label="' + label + ' pages"><button aria-label="Previous page" data-pg="' + key + ':' + (at - 1) + '"' + (at === 0 ? " disabled" : "") + '>‹</button>' +
+        Array.from({ length: pages }, (_, n) => '<button data-pg="' + key + ':' + n + '"' + (n === at ? ' aria-current="page"' : "") + '>' + (n + 1) + '</button>').join("") +
+        '<button aria-label="Next page" data-pg="' + key + ':' + (at + 1) + '"' + (at === pages - 1 ? " disabled" : "") + '>›</button></nav>' : '<span>' + PER + ' per page</span>') + '</div>' : "";
+    return '<section class="col c-' + key + (key === ctab ? " on" : "") + '" aria-label="' + label + ', ' + items.length + ' steps">' +
+      '<div class="col-h"><h4>' + label + '</h4><span class="n">' + items.length + '</span><span class="hint">' + hint + '</span></div>' +
+      '<div class="col-b' + (S.group ? " hide-orch" : "") + '">' + body + '</div>' + pager + '</section>';
+  }).join("");
+
+  const tabs = '<div class="tabs" role="tablist" aria-label="Board columns">' + cols.map(([k, l]) =>
+    '<button role="tab" aria-selected="' + (k === ctab) + '" data-tab="' + k + '">' + l + '<span class="n">' + buckets[k].length + '</span></button>').join("") + '</div>';
+
+  const noplan = without.length && !plansOnly ? '<section class="noplan" aria-label="Sessions with no open steps">' +
+    '<div class="noplan-h"><b>' + without.length + ' ' + (without.length === 1 ? "session has" : "sessions have") + ' no open steps</b><button class="info" data-info aria-label="How to get steps here" aria-expanded="' + S.info + '" aria-controls="how"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v3.6M8 5.1v.1"/></svg></button><span>' +
+    (data.length === without.length ? "Podium builds the board from each session's task list." : "Every session on the Fleet page is here. These have nothing to show in a column.") + '</span></div>' +
+    '<div class="list"><ul>' + without.map(o => '<li><a href="#orchestrator-' + o.id + '"><i class="sq" style="--fam:' + FAM[o.model] + '"></i>' + esc(o.name) + (o.steps.length ? " · all done" : o.note ? " · " + esc(o.note) : " · no plan") + '</a></li>').join("") + '</ul></div>' +
+    '<div class="how" id="how" role="note"' + (S.info ? "" : " hidden") + '>Podium builds the board from each session\'s task list. Start Claude Code with <code>CLAUDE_CODE_ENABLE_TODO_TOOLS=1</code> or add it to the <code>env</code> block of <code>~/.claude/settings.json</code>, then ask Claude to track the work as a task list. <a href="#gotcha">A session shows no plan</a></div></section>' : "";
+
+  // Plan figures (#426): whole-fleet like the two tiles before them, so neither the switch nor Me and Group changes any tile. Under a filter the captions say so, as the Subagents tile does.
+  const done = withPlan.reduce((n, o) => n + o.steps.filter(x => x[0] === "done").length, 0);
+  const whole = S.me || S.group;
+  const boardTiles = '<div class="kpi"><div class="k">Orchestrators with plans</div><div class="v mono">' + withPlan.length + '</div><div class="kpi-cap">' + (whole ? 'whole fleet' : 'of ' + data.filter(o => o.state !== "ended").length + ' live') + '</div></div>' +
+    '<div class="kpi"><div class="k">Plan steps</div><div class="v mono">' + total + '</div><div class="kpi-cap">' + (whole ? 'whole fleet' : done + ' done') + '</div></div>';
+  const blankText = !data.length ? "No sessions are active." : plansOnly
+    ? "None of the " + data.length + " active sessions has open steps. Switch to All to list them."
+    : "None of the " + data.length + " active sessions has a task list yet. Sessions with no plan are listed below.";
+  const board = withPlan.length || (!plansOnly && asking.length) ? '<div class="board">' + colHtml + '</div>' : '<div class="blank"><b>No plans on the board</b><p>' + blankText + '</p></div>';
+
+  const topbar = '<header class="top" id="podium-top"' + (S.top ? " hidden" : "") + '><a class="logo" href="#fleet" aria-label="Podium, fleet">' + LOGO + 'Podium</a><span class="pill">Board</span>' +
+    '<span class="pill"><i class="dot"></i>4 reporters live</span><span class="sp"></span>' +
+    '<a class="btn" href="#fleet">Fleet</a><a class="btn" href="#history">History</a>' +
+    '<button class="btn" data-top aria-expanded="true" aria-controls="podium-top">Hide top bar</button><button class="btn">Wall mode</button><a class="btn" href="#admin">Admin</a>' + '<span class="tb-sep" aria-hidden="true"></span>' + (S.signedIn ? '<span class="tb-me"><span class="tb-who"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.7"/><path d="M2.8 13.5c.7-2.6 2.8-4 5.2-4s4.5 1.4 5.2 4"/></svg>Signed in as <b>Ed</b></span><button class="btn" data-sign>Sign out</button></span>' : '<button class="btn" data-sign aria-haspopup="dialog">Sign in</button>') + '</header>' +
+    (S.top ? '<div class="strip"><button data-top aria-expanded="false" aria-controls="podium-top">Show top bar</button></div>' : "");
+  const banner = S.top ? "" : '<div class="banner"><span><b>Live fleet.</b> Cost is an estimate from token counts and a price table, not a bill.</span><div class="bannerctl"><select class="sel" aria-label="Update every"><option>Update every 5s</option></select><span class="seg" role="radiogroup" aria-label="Mode"><button aria-pressed="false">Light</button><button aria-pressed="false">Dark</button><button aria-pressed="true">System</button></span></div></div>';
+
+  const FAMN = { Opus: "opus", Sonnet: "sonnet", Haiku: "haiku", Fable: "fable" };
+  const cn = counts(data);
+  const kpis = '<div class="kpis" role="group" aria-label="Running now and plans, whole fleet">' +
+    '<div class="kpi"><div class="k">Orchestrators running</div><div class="v mono">' + cn.orch + '</div><div class="kpi-cap">of ' + cn.live + ' live' + (cn.waiting ? ', ' + cn.waiting + ' waiting' : '') + '</div></div>' +
+    '<div class="kpi"><div class="k">Subagents running</div><div class="v mono">' + cn.agents + '</div><div class="kpi-cap">' + ((S.me || S.group) ? 'whole fleet' : 'forks included') + '</div></div>' + boardTiles + '</div>';
+  const chip = m => '<span class="chip" style="--c:' + FAM[m] + '"><i></i>' + m + '</span>';
+  const split = { r: data.filter(o => o.state === "running").length, w: data.filter(o => o.state === "waiting").length, st: data.filter(o => o.state === "stale").length };
+  const ritem = o => { const d = o.steps.filter(x => x[0] === "done").length, n = o.steps.length;
+    return '<div class="ritem-slot"><a class="ritem" href="#orchestrator-' + o.id + '" aria-current="false"><div class="l1"><i class="rdot ' + o.state + '" aria-hidden="true"></i><span class="nm">' + esc(o.name) + '</span>' + chip(o.model) + '</div>' +
+      '<div class="l2">' + (n ? '<div class="bar plan" aria-hidden="true"><i style="width:' + Math.round(100 * d / n) + '%"></i></div><span class="mono">' + d + '/' + n + '</span>' : '<span style="color:var(--muted)">no plan reported</span><span style="flex:1"></span>') +
+      '<span class="mono" title="running / total agents">' + (o.state === "running" ? 1 : 0) + '/' + (1 + (n % 3)) + '</span></div></a></div>'; };
+  const rail = '<nav class="rail' + (S.left ? " collapsed" : "") + '" aria-label="Orchestrators"><button class="pane-tab" data-pane="left" aria-expanded="' + !S.left + '" aria-controls="podium-rail-body" aria-label="' + (S.left ? "Expand" : "Collapse") + ' left pane" title="' + (S.left ? "Expand" : "Collapse") + ' the left pane ([)">' + PANE_ARROW("left", S.left) + '</button>' +
+    '<div id="podium-rail-body"' + (S.left ? " hidden" : "") + '><div class="rail-head"><h2>Orchestrators</h2><span class="mono" style="color:var(--muted)">' + data.length + '</span></div>' +
+    '<a class="ritem" href="#fleet" aria-current="false"><div class="l1"><span class="nm">All orchestrators</span></div><div class="l2"><span>' + split.r + ' running · ' + split.w + ' waiting · ' + split.st + ' stale</span></div></a>' +
+    data.map(ritem).join("") +
+    '<footer class="rail-foot"><span><a href="#credits">Theme credits</a> · <a href="#license">License</a></span><span>Podium v1.1.0 · © 2026 Ed Engelking</span></footer></div></nav>';
+  const JUMP = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 8l4-4M5 4h3v3"/></svg>';
+  const evRow = (t, cls, name, text, tool, fam) => '<li' + (cls ? ' class="' + cls + '"' : "") + '><a class="evb" href="#orchestrator"><time class="mono">' + t + '</time><i class="ed" style="--c:' + FAM[fam] + '" aria-hidden="true"></i><div class="tt"><b>' + esc(name) + ' </b>' + esc(text) + (tool ? '<span class="tool">' + esc(tool) + '</span>' : "") + '<span class="go">' + JUMP + 'Open orchestrator</span></div></a></li>';
+  const evs = EVENTS.map(e => evRow(e[0], "", e[1], e[2], e[3], e[4])).join("");
+  const side = '<aside class="side' + (S.right ? " collapsed" : "") + '" aria-label="Activity and agent detail"><button class="pane-tab" data-pane="right" aria-expanded="' + !S.right + '" aria-controls="podium-side-body" aria-label="' + (S.right ? "Expand" : "Collapse") + ' right pane" title="' + (S.right ? "Expand" : "Collapse") + ' the right pane (])">' + PANE_ARROW("right", S.right) + '</button>' +
+    '<div id="podium-side-body"' + (S.right ? " hidden" : "") + '><div class="sh"><h2>Activity · all orchestrators</h2><span class="kpi-cap">newest first</span></div><ul class="ev">' +
+    (lastNote ? evRow("14:03", newEvent ? "new" : "", lastNote[0], lastNote[1], "", lastNote[2]) : "") + evs + '</ul><div class="more"><span>Showing ' + (EVENTS.length + (lastNote ? 1 : 0)) + ' of ' + (EVENTS.length + (lastNote ? 1 : 0)) + '</span></div></div></aside>';
+  const legend = '<footer class="legend" aria-label="Legend"><span><i class="a"></i>subagent (blank slate)</span><span><i class="a f"></i>fork (keeps context)</span><span><i class="a q"></i>queued</span><span><i class="a d"></i>done</span><span>Square color is the model: ' + ["Opus", "Sonnet", "Haiku", "Fable"].map(chip).join(" ") + '</span></footer>';
+
+  const demo = '<div class="demo"><b>Mockup for #346, #359 and #426.</b><button class="btn" data-sim' + (S.sim >= 4 ? " disabled" : "") + '>' + (S.sim >= 4 ? "All 4 updates played" : "Simulate update (" + (S.sim + 1) + " of 4)") + '</button><button class="btn" data-reset>Reset</button><button class="btn" data-sign aria-pressed="' + S.signedIn + '">' + (S.signedIn ? "Signed in as Ed" : "Signed out") + '</button><span>' + SIMTEXT[Math.min(S.sim, 3)] + '</span></div>';
+
+  const keep = { board: $(".board")?.scrollLeft || 0, main: $(".centre-in")?.scrollTop || 0, cols: [...document.querySelectorAll(".col-b")].map(e => e.scrollTop) };
+  $("#spec").innerHTML = '<div class="shell ' + (S.theme === "dark" ? "th-dark" : "th-light") + (S.width === "narrow" ? " narrow" : "") + '"><div class="tag">#/board · ' + S.theme + ' · ' + S.width + '</div>' + demo +
+    '<div class="app">' + topbar + banner + '<div class="cols' + (S.left ? " l-off" : "") + (S.right ? " r-off" : "") + '">' + rail +
+    '<div class="centre"><div class="centre-wrap"><main class="centre-in" id="podium-main"><div class="bh"><h3>Board</h3><span class="seg" role="group" aria-label="Sessions shown"><button aria-pressed="' + plansOnly + '" data-view="plans">Plans</button><button aria-pressed="' + !plansOnly + '" data-view="all">All</button></span><span class="sp"></span>' +
+    '<span class="seg" role="group" aria-label="Layout"><button aria-pressed="' + !S.group + '" data-group="0">Mixed</button><button aria-pressed="' + S.group + '" data-group="1">By orchestrator</button></span>' +
+    '<select class="sel" aria-label="Group"><option>All groups</option><option>Platform</option><option>Docs</option></select>' + (S.signedIn ? '<button class="chipf" aria-pressed="' + S.me + '" data-me>Me</button>' : '') + '</div>' + kpis +
+    (withPlan.length || (!plansOnly && asking.length) ? tabs : "") + board + '</main>' + noplan + '</div>' + legend + '</div>' + side + '</div></div>' +
+    '<div class="live" role="status" aria-live="polite">' + esc(lastNote ? lastNote[0] + " " + lastNote[1] : "") + '</div></div>';
+  measure();
+  const b = $(".board"); if (b) b.scrollLeft = keep.board;
+  const m = $(".centre-in"); if (m) m.scrollTop = keep.main;
+  document.querySelectorAll(".col-b").forEach((e, n) => { e.scrollTop = keep.cols[n] || 0; });
+}
+
+// ---- simulated updates: a card slides to its new column (FLIP), a new card fades in, a finished orchestrator's cards fade out ----
+const SIMTEXT = [
+  "Next: podium finishes “Add the board route”, which moves to Done, and starts the next step.",
+  "Next: podium adds a new step, which fades in under Pending.",
+  "Next: docs-sweep stops waiting, so its card moves from Review to In progress.",
+  "Next: release-prep ends, so its Done cards fade out and it moves to the strip below."
+];
+const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const orch = id => ORCH.find(o => o.id === id);
+function rects() { const m = {}; document.querySelectorAll(".tc[data-key]").forEach(e => { if (e.offsetParent) m[e.dataset.key] = e.getBoundingClientRect(); }); return m; }
+function play(change, flash, note) {
+  const before = rects();
+  change(); S.sim++; lastNote = note; newEvent = true;
+  render();
+  const mv = !reduced();
+  document.querySelectorAll(".tc[data-key]").forEach(e => {
+    const k = e.dataset.key, was = before[k], now = e.getBoundingClientRect();
+    if (flash.includes(k)) e.classList.add("flash");
+    if (!was) { if (mv && !e.classList.contains("flash")) e.classList.add("fadein"); return; }
+    const dx = was.left - now.left, dy = was.top - now.top;
+    if (mv && (Math.abs(dx) > 1 || Math.abs(dy) > 1)) e.animate([{ transform: "translate(" + dx + "px," + dy + "px)" }, { transform: "none" }], { duration: 220, easing: "cubic-bezier(.2,.7,.2,1)" });
+  });
+}
+function simulate() {
+  if (S.data !== "busy") { S.data = "busy"; document.querySelector('input[name=data][value=busy]').checked = true; render(); }
+  const T = Date.now();
+  if (S.sim === 0) play(() => { const o = orch("o1"); o.steps[2] = ["done", o.steps[2][1], "", o.steps[2][3], T]; o.steps[4] = ["active", o.steps[4][1], "Writing Column.tsx", "orchestrator", T + 1]; }, ["o1:2", "o1:4"], ["podium", "moved “Add the board route to route.ts” to Done", "Opus"]);
+  else if (S.sim === 1) play(() => { orch("o1").steps.push(["pending", "Add the keyboard shortcut for the board", "", "", T]); }, ["o1:7"], ["podium", "added the step “Add the keyboard shortcut for the board”", "Opus"]);
+  else if (S.sim === 2) play(() => { orch("o2").state = "running"; orch("o2").steps[1][4] = T; }, ["o2:1"], ["docs-sweep", "moved “Rewrite USER_GUIDE install section” to In progress", "Sonnet"]);
+  else if (S.sim === 3) {
+    const out = document.querySelectorAll('.tc[data-key^="o3:"]');
+    if (!reduced()) out.forEach(e => e.classList.add("fadeout"));
+    setTimeout(() => play(() => { orch("o3").state = "ended"; }, [], ["release-prep", "ended; its Done steps left the board", "Haiku"]), reduced() ? 0 : 280);
+  }
+}
+
+document.addEventListener("change", e => {
+  const i = e.target.closest("input[type=radio]"); if (!i) return;
+  S[i.name] = i.value;
+  newEvent = false; render();
+});
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-tab],[data-group],[data-view],[data-me],[data-pane],[data-top],[data-sim],[data-reset],[data-sign],[data-pg],[data-info]"); if (!t) return;
+  if (t.hasAttribute("data-sim")) return simulate();
+  if (t.hasAttribute("data-reset")) { ORCH = JSON.parse(JSON.stringify(ORCH0)); S.sim = 0; lastNote = ""; newEvent = false; return render(); }
+  if (t.hasAttribute("data-info")) { S.info = !S.info; }
+  else if (t.hasAttribute("data-sign")) { S.signedIn = !S.signedIn; if (!S.signedIn) S.me = false; }
+  else if (t.dataset.pg) { const [k, n] = t.dataset.pg.split(":"); S.pg[k] = +n; }
+  else if (t.dataset.tab) S.tab = t.dataset.tab;
+  else if (t.dataset.view) { S.view = t.dataset.view; newEvent = false; render(); return $('[data-view="' + S.view + '"]')?.focus(); }
+  else if (t.dataset.group) S.group = t.dataset.group === "1";
+  else if (t.dataset.pane) S[t.dataset.pane] = !S[t.dataset.pane];
+  else if (t.hasAttribute("data-top")) S.top = !S.top;
+  else S.me = !S.me;
+  newEvent = false; render();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && S.info) { S.info = false; render(); $("[data-info]")?.focus(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey || /input|select|textarea/i.test(e.target.tagName)) return;
+  const k = { "[": "left", "]": "right", "\\": "top" }[e.key]; if (k) { S[k] = !S[k]; newEvent = false; render(); }
+});
+document.addEventListener("click", e => { if (e.target.closest("a[href^='#']")) e.preventDefault(); });
+render();
+</script>
+</body>
+</html>

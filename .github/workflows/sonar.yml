@@ -1,0 +1,52 @@
+name: Sonar
+
+# Scans development (push), every PR into development, and a PR into main only when it comes from development
+# (the release PR). Any other PR into main is skipped; pr-target-check.yml rejects those anyway.
+on:
+  push:
+    branches: [development]
+  pull_request:
+    branches: [development, main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  scan:
+    # A fork's PR gets no SONAR_TOKEN, so it cannot be scanned.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       (github.base_ref == 'development' || github.head_ref == 'development'))
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # Sonar needs full history for blame and new-code detection
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      # No lifecycle scripts: this job holds SONAR_TOKEN, and nothing here needs an install script (Sonar rule S6505).
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      # SonarCloud reads coverage from lcov files; without them every file reports 0% (#371).
+      - name: Test with coverage (server, frontend)
+        run: npm run test:coverage
+
+      # vitest writes paths relative to each workspace; the scanner resolves them from the repo root.
+      - name: Make the lcov paths relative to the repo root
+        run: |
+          # The simulator in scripts/ is covered by the server run and is written as ../scripts/..., which is already
+          # relative to the repo root once the leading ../ is dropped.
+          sed -i -e 's#^SF:\.\./#SF:#' -e 's#^SF:src/#SF:server/src/#' server/coverage/lcov.info
+          sed -i 's#^SF:src/#SF:frontend/src/#' frontend/coverage/lcov.info
+
+      - uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

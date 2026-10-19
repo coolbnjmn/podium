@@ -1,3 +1,4 @@
+import { serverBuild } from './build.js';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import express from 'express';
@@ -15,9 +16,9 @@ afterEach(() => {
   for (const c of closers.splice(0)) c();
 });
 
-function setup(token: string | null = null) {
+function setup(token: string | null = null, cfg: Partial<typeof DEFAULT_CONFIG> = {}) {
   const logs: string[] = [];
-  const fleet = new Fleet(new FleetDb(openDb(':memory:')), { ...DEFAULT_CONFIG, home: '/Users/dev', dbPath: ':memory:' });
+  const fleet = new Fleet(new FleetDb(openDb(':memory:')), { ...DEFAULT_CONFIG, home: '/Users/dev', dbPath: ':memory:', ...cfg });
   const app = express();
   app.use('/api/fleet', createFleetRouter(fleet, { token, log: (l) => logs.push(l) }));
   closers.push(() => fleet.close());
@@ -48,6 +49,7 @@ describe('POST /api/fleet/report', () => {
     expect(matching.body.reporterCompat).toBe('ok');
     expect(newer.body.reporterCompat).toBe('newer');
     expect(older.body.serverVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(older.body.serverBuild).toBe(serverBuild());
     expect(older.body.reporterSupport).toEqual({ min: expect.any(String), max: expect.any(String) });
   });
 
@@ -182,7 +184,8 @@ describe('reads', () => {
   describe('paging (#195)', () => {
     /** Ends `n` sessions named s1..sn, and returns the app and today's date. */
     const endMany = async (n: number) => {
-      const ctx = setup();
+      // An hour's throttle keeps the per-session broadcast timers from firing, so no tick reads agents during a request (#494).
+      const ctx = setup(null, { throttleMs: 3_600_000 });
       const r = fixtureReport();
       for (let i = 1; i <= n; i++) {
         const session = { ...r.session, id: `5f0c2a8e-1b7d-4c3e-9a51-${String(i).padStart(12, '0')}`, name: `s${i}`, status: 'done' as const, endReason: 'clear' };
@@ -341,7 +344,7 @@ describe('the activity feed (#118)', () => {
     const r = live();
     await request(app).post('/api/fleet/report').send(r);
     expect((await request(app).get(url(r, r.agents[0]!.id))).body).toMatchObject({ enabled: true, live: true });
-    expect((await request(app).get('/api/fleet/state')).body.features).toEqual({ 'activity-feed': true, respond: false });
+    expect((await request(app).get('/api/fleet/state')).body.features).toEqual({ 'activity-feed': true, respond: false, 'file-diff': false, 'peer-messaging': false });
   });
 
   it('with the Admin flag off: no lease, enabled: false, nothing watched, nothing kept; back on resumes', async () => {
@@ -358,7 +361,7 @@ describe('the activity feed (#118)', () => {
     // Turning it off drops every lease and entry at once.
     fleet.features.setFeature('activity-feed', false);
     expect(fleet.activity.size).toBe(0);
-    expect((await request(app).get('/api/fleet/state')).body.features).toEqual({ 'activity-feed': false, respond: false });
+    expect((await request(app).get('/api/fleet/state')).body.features).toEqual({ 'activity-feed': false, respond: false, 'file-diff': false, 'peer-messaging': false });
 
     const off = await request(app).get(url(r, aid));
     expect(off.status).toBe(200);
@@ -388,7 +391,7 @@ describe('the activity feed (#118)', () => {
     fleet.features.setFeature('activity-feed', false);
     const all = seen.join('');
     expect(all).toContain('event: snapshot');
-    expect(all).toContain('"features":{"activity-feed":false,"respond":false}');
+    expect(all).toContain('"features":{"activity-feed":false,"respond":false,"file-diff":false,"peer-messaging":false}');
   });
 
   it('a session that is deleted takes its feed with it', async () => {
@@ -477,7 +480,7 @@ describe('GET /stream', () => {
 describe('wall notices', () => {
   it('closes a known notice without a token, rejects an unknown one, and carries the switches in the state body', async () => {
     const { app, fleet } = setup('t');
-    expect((await request(app).get('/api/fleet/state')).body.wall).toEqual({ notices: { 'background-sessions': true }, showBackgroundSessions: false });
+    expect((await request(app).get('/api/fleet/state')).body.wall).toEqual({ notices: { 'background-sessions': true }, showBackgroundSessions: false, cardTitleMachine: false });
     expect((await request(app).post('/api/fleet/notices/nope/close')).status).toBe(400);
     expect((await request(app).post('/api/fleet/notices/background-sessions/close')).status).toBe(200);
     expect((await request(app).get('/api/fleet/state')).body.wall.notices['background-sessions']).toBe(false);

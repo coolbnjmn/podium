@@ -4,6 +4,7 @@
 import { SAME_USAGE } from './db.js';
 import type { CostOf, FleetDb, RetentionPolicy, SessionRow } from './db.js';
 import { activityView, computeKpis, family, isUnused, repriced, sessionStatus, sessionView, shortenHome, staleAfterFor, startOfDay, type DeriveConfig } from './derive.js';
+import { serverBuild } from './build.js';
 import { REPORTER_SUPPORT, serverVersion } from './compat.js';
 import { ingestReport, type IngestResult } from './ingest.js';
 import { hookToReport } from './hookIngest.js';
@@ -13,8 +14,11 @@ import { formatSse, SseHub } from './sse.js';
 import { ModelPriceStore } from './modelPrices.js';
 import { WallSettings } from './wallSettings.js';
 import { ActivityStore } from './activity.js';
-import { ACTIVITY_FEED, FeatureFlags, RESPOND } from './featureFlags.js';
+import { ACTIVITY_FEED, FeatureFlags, FILE_DIFF, PEER_MESSAGING, RESPOND } from './featureFlags.js';
+import { DiffBroker } from './fileDiffs.js';
 import { RespondStore } from './respond.js';
+import { PeerService } from './peers.js';
+import { ReporterStore } from './reporters.js';
 import { MAIN_LOOP } from './protocol.js';
 import { checkReporter } from './compat.js';
 import { silentLogger, type Logger } from '../logging/logger.js';
@@ -102,10 +106,14 @@ export class Fleet {
   readonly prices: ModelPriceStore;
   /** The agent activity feed (#118): in memory only, and only for loops a viewer is watching. */
   readonly activity: ActivityStore;
+  /** A file's diff on demand (#319): in memory only, held just while the owner's browser waits. */
+  readonly diffs = new DiffBroker();
   /** The Admin's feature flags. Turning the activity feed off drops what it held; any change reaches open browsers. */
   readonly features: FeatureFlags;
   /** Responding from Podium (#206): asks, answers and messages, in memory only. */
   readonly respond: RespondStore;
+  /** Orchestrator messaging (#347, #412): rights, requests and messages, in the database. */
+  readonly peers: PeerService;
   private readonly live = new Map<string, LiveEntry>();
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly startedAt: number;
@@ -124,8 +132,11 @@ export class Fleet {
     this.startedAt = now();
     this.features = new FeatureFlags(db.db, (id, on) => {
       if (id === ACTIVITY_FEED && !on) this.activity.clear();
+      if (id === FILE_DIFF && !on) this.diffs.clear();
       // Responding needs both flags: either going off drops every ask and answer the server holds.
       if ((id === ACTIVITY_FEED || id === RESPOND) && !on) this.respond.clear();
+      // Messaging going off drops every message still waiting; the rights stay.
+      if (id === PEER_MESSAGING && !on) this.peers.dropAll();
       this.hub.broadcast('snapshot', this.state());
     });
     this.activity = new ActivityStore(now, () => this.features.featureOn(ACTIVITY_FEED));
@@ -140,6 +151,7 @@ export class Fleet {
         remove: (sid, ref) => this.activity.removePodium(sid, ref),
       },
     );
+    this.peers = new PeerService(db.db, new ReporterStore(db.db, this.startedAt).peerLookup(), now, () => this.features.featureOn(PEER_MESSAGING));
     this.wall = new WallSettings(db.db, () => this.hub.broadcast('wall', this.wall.view()));
     // A price change moves every cost on the wall, so open browsers get a fresh snapshot.
     this.prices = new ModelPriceStore(db.db, () => {
@@ -188,6 +200,7 @@ export class Fleet {
     const res = ingestReport(this.db, report, this.now(), owner);
     this.clockSkew.set(res.sessionId, res.clockSkewMs);
     this.activity.ingest(report, res.clockSkewMs);
+    if (typeof report.session.fileDiff === 'boolean') this.diffs.noteOption(res.sessionId, report.session.fileDiff);
     this.respond.noteReport(report, this.respondFlagsOn());
     this.noteReporter(report, owner);
     const entry = this.live.get(res.sessionId);
@@ -299,6 +312,7 @@ export class Fleet {
         ownerGroup: this.db.groupOfOwner(row.owner),
         pricing: this.prices.pricing(),
         activityFeed: this.activity.feedOn(row.id),
+        fileDiff: this.diffs.optionOn(row.id),
         respond: this.respond.info(row.id),
         asks: this.respond.summaries(row.id),
       },
@@ -418,7 +432,7 @@ export class Fleet {
       kpis: this.kpis(sessions),
       clearedToday: this.clearedToday(),
       events: this.events({ limit: STATE_EVENTS }),
-      server: { version: serverVersion(), reporterSupport: REPORTER_SUPPORT },
+      server: { version: serverVersion(), build: serverBuild(), reporterSupport: REPORTER_SUPPORT },
       wall: this.wall.view(),
       features: this.features.view(),
     };
@@ -429,7 +443,7 @@ export class Fleet {
     return formatSse('snapshot', this.state());
   }
 
-  health(): { ok: true; dbPath: string; liveSessions: number; uptimeSec: number; reporterVersionsSeen: string[]; serverVersion: string; reporterSupport: ReporterSupport; sseClients: number; maxClockSkewMs: number } {
+  health(): { ok: true; dbPath: string; liveSessions: number; uptimeSec: number; reporterVersionsSeen: string[]; serverVersion: string; serverBuild: string | null; reporterSupport: ReporterSupport; sseClients: number; maxClockSkewMs: number } {
     let skew = 0;
     for (const id of this.live.keys()) skew = Math.max(skew, Math.abs(this.clockSkew.get(id) ?? 0));
     return {
@@ -439,6 +453,7 @@ export class Fleet {
       uptimeSec: Math.floor((this.now() - this.startedAt) / 1000),
       reporterVersionsSeen: this.db.distinctReporterVersions(),
       serverVersion: serverVersion(),
+      serverBuild: serverBuild(),
       reporterSupport: REPORTER_SUPPORT,
       sseClients: this.hub.size,
       maxClockSkewMs: skew,
@@ -451,7 +466,9 @@ export class Fleet {
     const wasLive = this.live.delete(id);
     this.clockSkew.delete(id);
     this.activity.dropSession(id);
+    this.diffs.drop(id);
     this.respond.dropSession(id);
+    this.peers.deleted([id]);
     const t = this.pending.get(id);
     if (t) clearTimeout(t);
     this.pending.delete(id);
@@ -488,8 +505,10 @@ export class Fleet {
     this.live.delete(row.id);
     this.clockSkew.delete(row.id);
     this.activity.dropSession(row.id);
+    this.diffs.drop(row.id);
     this.respond.endSession(row.id);
     this.respond.dropSession(row.id);
+    this.peers.ended(row.id);
     const t = this.pending.get(row.id);
     if (t) clearTimeout(t);
     this.pending.delete(row.id);
@@ -585,8 +604,10 @@ export class Fleet {
   }
 
   /** Hourly: retention. */
-  retain(): { samples: number; events: number; sessions: number; adminLog: number } {
-    return this.db.retain(this.now(), this.cfg.retention);
+  retain(): { samples: number; events: number; sessions: number; adminLog: number; peerMessages: number; peerRequests: number } {
+    const out = this.db.retain(this.now(), this.cfg.retention);
+    const peers = this.peers.retain();
+    return { ...out, peerMessages: peers.messages, peerRequests: peers.requests };
   }
 
   close(): void {

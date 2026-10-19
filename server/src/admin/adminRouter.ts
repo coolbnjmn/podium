@@ -7,6 +7,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { ADMIN_SECRET_ACTOR, PeopleError, sourceAddress, type PeopleStore, type PersonRow } from '../fleet/people.js';
 import { checkNameToken } from '../fleet/nameToken.js';
 import type { RespondBridge } from '../fleet/respondBridge.js';
+import { serverBuild } from '../fleet/build.js';
 import { serverVersion } from '../fleet/compat.js';
 import { NOTICES, isNoticeId, type WallSettings } from '../fleet/wallSettings.js';
 import type { ModelPriceStore } from '../fleet/modelPrices.js';
@@ -14,6 +15,10 @@ import { REPORTER_STATES, type IgnoreKind, type ReporterState, type ReporterStor
 import { FEATURES, isFeatureId, RESPOND, type FeatureFlags } from '../fleet/featureFlags.js';
 import { PRICES_AS_OF, type PriceSet } from '../fleet/pricing.js';
 import { Lockout } from '../fleet/lockout.js';
+import type { PeerService } from '../fleet/peers.js';
+import { messageView, rangeOf } from '../fleet/peerRoutes.js';
+import { PEER_LEVELS, type PeerLevel } from '../fleet/protocol.js';
+import type { Actor, Refusal } from '../fleet/peerTypes.js';
 import { createLogger, loggerFromLine, type Fields, type Logger } from '../logging/logger.js';
 
 export interface AdminRouterOptions {
@@ -28,6 +33,8 @@ export interface AdminRouterOptions {
   features?: FeatureFlags;
   /** Every reporter the server has heard from (#142). Without it the Reporters tab has nothing to list. */
   reporters?: ReporterStore;
+  /** Orchestrator messaging (#347): the limits, a reporter's links, proposals, Pause all links and the conversations. */
+  peers?: PeerService;
   now?: () => number;
   /** Idle time before a session ends. */
   idleMs?: number;
@@ -80,7 +87,7 @@ function publicPerson(p: PersonRow, groupName: string | null) {
 }
 
 export function createAdminRouter(opts: AdminRouterOptions): Router {
-  const { people, wall, prices, features, reporters } = opts;
+  const { people, wall, prices, features, reporters, peers } = opts;
   const now = opts.now ?? Date.now;
   const idleMs = opts.idleMs ?? 10 * 60_000;
   const maxFails = opts.maxFails ?? 5;
@@ -115,7 +122,7 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
   });
 
   router.get('/session', (req, res) => {
-    res.json({ enabled: opts.secret !== null, unlocked: opts.secret !== null && sessionValid(req), version: serverVersion() });
+    res.json({ enabled: opts.secret !== null, unlocked: opts.secret !== null && sessionValid(req), version: serverVersion(), build: serverBuild() });
   });
 
   // Admin is off without a token: the console is open to everyone who can reach it, so there is nothing to gate it with.
@@ -279,6 +286,27 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
     res.json({ ok: true });
   });
 
+  // One route for one person or many (#243). All or nothing: a refusal deletes nobody.
+  router.post('/people/delete', (req, res) => {
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > MAX_BULK || ids.some((i) => !Number.isSafeInteger(i) || i < 1)) {
+      return void res.status(400).json({ ok: false, error: `ids must be 1 to ${MAX_BULK} person ids` });
+    }
+    const sid = readCookie(req, COOKIE);
+    const me = sid ? sessions.get(sid)?.personId : null;
+    if (me != null && ids.includes(me)) {
+      return void res.status(400).json({ ok: false, error: 'You are signed in to Admin as this person, so they cannot be deleted. Nothing was deleted.' });
+    }
+    try {
+      const gone = people.deleteMany(ids as number[]);
+      if (gone.length === 0) return void res.status(404).json({ ok: false, error: 'unknown person' });
+      for (const p of gone) audit(req, 'person_deleted', `Deleted ${p.name}`, { person_id: p.id });
+      res.json({ ok: true, removed: gone.length });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   router.put('/people/:id/group', (req, res) => {
     const id = idParam(req.params.id);
     if (id === null) return void res.status(400).json({ ok: false, error: 'bad id' });
@@ -399,6 +427,76 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
     res.json({ ...d, serverTime: now() });
   });
 
+  // Orchestrator messaging on Admin > Reporters > a reporter (#347). A change is a proposal the owner must accept;
+  // Pause all links and a removal apply at once. Each is logged through the messaging trail, with this Admin as actor.
+  const peerActor = (req: Request): Actor => ({ name: actorOf(req) ?? ADMIN_SECRET_ACTOR, admin: true });
+  const peerFail = (res: Response, out: Refusal) => res.status(out.status).json({ ok: false, error: out.error });
+  const withPeerSource = <T>(req: Request, fn: () => T): T => (peers ? peers.withSource(sourceOf(req), fn) : fn());
+
+  router.get('/reporters/:key/peers', (req, res) => {
+    const ref = peers?.reporters.get(req.params.key);
+    if (!peers || !ref) return void res.status(404).json({ ok: false, error: 'unknown reporter' });
+    const owner = ref.owner;
+    const mine = owner && !ref.adminSecret ? peers.reporters.ofOwner(owner).filter((r) => !r.adminSecret) : [];
+    // The stored rights and requests of every pair of the owner's reporters, not only this one's: the page's Grid draws
+    // them all, in one read (#416). The effective levels are this reporter's pairs only, for Pause all links: working
+    // them out for every pair would cost a few queries per pair on each poll, and the Grid reads levels from the rights.
+    const keys = new Set(mine.map((r) => r.key));
+    res.json({
+      reporter: ref,
+      peers: mine,
+      trust: owner && mine.length ? peers.rights.defaults(owner).trust : false,
+      rights: owner ? peers.rights.rightsOf(owner).filter((r) => keys.has(r.from) && keys.has(r.to)) : [],
+      effective: mine.flatMap((o) => [
+        { from: ref.key, to: o.key, ...peers.rights.effective(ref.key, o.key) },
+        ...(o.key === ref.key ? [] : [{ from: o.key, to: ref.key, ...peers.rights.effective(o.key, ref.key) }]),
+      ]),
+      requests: mine.length && owner ? peers.rights.openRequests(owner).filter((r) => keys.has(r.fromKey) && keys.has(r.toKey)).map((r) => peers.ownerRequestView(r)) : [],
+    });
+  });
+
+  router.post('/reporters/:key/peers/propose', (req, res) => {
+    if (!peers) return void res.status(404).json({ ok: false, error: 'not available' });
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const from = typeof b.from === 'string' ? b.from : req.params.key;
+    if (typeof b.to !== 'string' || !(PEER_LEVELS as readonly unknown[]).includes(b.level)) return void res.status(400).json({ ok: false, error: 'to must be a reporter key, level one of none, see, ask, send' });
+    if (from !== req.params.key && b.to !== req.params.key) return void res.status(400).json({ ok: false, error: 'a proposal on this page must involve this reporter' });
+    const out = withPeerSource(req, () => peers.rights.propose(from, b.to as string, b.level as PeerLevel, peerActor(req)));
+    if (!out.ok) return void peerFail(res, out);
+    res.status(202).json({ ok: true, requestId: out.request.id });
+  });
+
+  router.put('/reporters/:key/peers/pause', (req, res) => {
+    if (!peers) return void res.status(404).json({ ok: false, error: 'not available' });
+    const paused = (req.body as { paused?: unknown } | undefined)?.paused;
+    if (typeof paused !== 'boolean') return void res.status(400).json({ ok: false, error: 'paused must be true or false' });
+    const out = withPeerSource(req, () => peers.rights.pauseReporter(req.params.key, paused, peerActor(req)));
+    if (!out.ok) return void peerFail(res, out);
+    res.json(out);
+  });
+
+  router.delete('/reporters/:key/peers/:other', (req, res) => {
+    if (!peers) return void res.status(404).json({ ok: false, error: 'not available' });
+    const out = withPeerSource(req, () => peers.removeLink(null, req.params.key, req.params.other, peerActor(req)));
+    if (!out.ok) return void peerFail(res, out);
+    res.json(out);
+  });
+
+  router.get('/peers/conversations', (req, res) => {
+    if (!peers) return void res.status(404).json({ ok: false, error: 'not available' });
+    // As the browser's read (SPEC 7.1): `live` is the default.
+    const range = rangeOf(req.query.range, now());
+    if (!range) return void res.status(400).json({ ok: false, error: 'range must be live, 24h or 30d' });
+    res.json({ conversations: peers.messages.conversations(range) });
+  });
+
+  router.get('/peers/conversations/:a/:b', (req, res) => {
+    if (!peers) return void res.status(404).json({ ok: false, error: 'not available' });
+    const rows = peers.messages.conversation(req.params.a, req.params.b);
+    if (!rows.length) return void res.status(404).json({ ok: false, error: 'no such conversation' });
+    res.json({ messages: rows.map(messageView) });
+  });
+
   router.delete('/reporters/:key', (req, res) => {
     if (!reporters) return void res.status(404).json({ ok: false, error: 'not available' });
     const key = reporterKey(req.params.key);
@@ -420,12 +518,14 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
       features: featureList(),
       notices: noticeList(),
       showBackgroundSessions: wall?.showBackgroundSessions() ?? false,
+      cardTitleMachine: wall?.cardTitleMachine() ?? false,
       modelPrices: prices?.view() ?? { asOf: PRICES_AS_OF, models: [] },
       forgetReporters: reporters?.forgetSetting() ?? { enabled: false, days: 30 },
+      ...(peers ? { peerMessaging: peers.settings.get() } : {}),
     });
   });
 
-  // One setting per call: allowAdminSecretReporting, showBackgroundSessions, features ({ id: boolean }), notices ({ id: boolean }),
+  // One setting per call: allowAdminSecretReporting, showBackgroundSessions, cardTitleMachine, features ({ id: boolean }), notices ({ id: boolean }),
   // modelPrice ({ key, std, long? }: one model's prices) or resetModelPrice (a key).
   router.put('/settings', (req, res) => {
     const body = req.body ?? {};
@@ -449,12 +549,28 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
       audit(req, 'reporters_forget_changed', now_.enabled ? `Forgetting reporters not heard from for ${now_.days} days turned on` : 'Forgetting reporters by age turned off', { on: now_.enabled, days: now_.days });
       return void res.json({ ok: true, forgetReporters: now_ });
     }
+    if ('peerMessaging' in body) {
+      const p = body.peerMessaging;
+      if (!peers || !p || typeof p !== 'object' || Array.isArray(p)) return void res.status(400).json({ ok: false, error: 'peerMessaging must give roundTrips, perMinute, maxChars and/or retainDays' });
+      const out = peers.settings.set(p);
+      if (!out.ok) return void res.status(400).json({ ok: false, error: out.error });
+      const v = out.settings;
+      audit(req, 'peer_limits_changed', `Orchestrator messaging limits: ${v.roundTrips} round trips, ${v.perMinute} a minute, ${v.maxChars} characters, kept ${v.retainDays} days`, { ...v });
+      return void res.json({ ok: true, peerMessaging: v });
+    }
     if ('showBackgroundSessions' in body) {
       const v = body.showBackgroundSessions;
       if (typeof v !== 'boolean' || !wall) return void res.status(400).json({ ok: false, error: 'showBackgroundSessions must be true or false' });
       wall.setShowBackgroundSessions(v);
       audit(req, 'wall_background_changed', `Background sessions ${v ? 'shown' : 'hidden'} on the wall`, { on: v });
       return void res.json({ ok: true, showBackgroundSessions: v });
+    }
+    if ('cardTitleMachine' in body) {
+      const v = body.cardTitleMachine;
+      if (typeof v !== 'boolean' || !wall) return void res.status(400).json({ ok: false, error: 'cardTitleMachine must be true or false' });
+      wall.setCardTitleMachine(v);
+      audit(req, 'wall_card_title_changed', `Cards ${v ? 'titled with the machine and the session' : 'titled with the session name alone'}`, { on: v });
+      return void res.json({ ok: true, cardTitleMachine: v });
     }
     if ('features' in body) {
       const f = body.features;

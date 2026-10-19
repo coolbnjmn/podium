@@ -10,6 +10,10 @@ export class PeopleError extends Error {
   }
 }
 
+/** How long a machine stays in a person's list without reporting, and how many are kept (#379). */
+const MACHINE_MAX_AGE_MS = 30 * 86_400_000;
+const MACHINES_KEPT = 10;
+
 export const MAX_PAGE_SIZE = 100;
 export const DEFAULT_PAGE_SIZE = 50;
 /** The owner of a session reported with the admin secret. */
@@ -183,15 +187,51 @@ export class PeopleStore {
     return Number(this.stmt('UPDATE people SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now, id).changes) > 0;
   }
 
-  /** Records a report from a person: the time and the machine it came from. */
-  touch(personId: number, machine: string | null, now: number): void {
-    this.stmt('UPDATE people SET last_report_at = ? WHERE id = ?').run(now, personId);
-    if (machine) {
-      this.stmt(
-        `INSERT INTO person_machines (person_id, machine, last_seen_at) VALUES (?, ?, ?)
-         ON CONFLICT(person_id, machine) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
-      ).run(personId, machine.slice(0, 120), now);
+  /**
+   * Deletes these people in one step (#243); unknown ids are skipped. Their machines go with them. Sessions, spend and
+   * Admin log entries keep the name as text. Refuses, deleting nobody, if it would leave Administrators empty.
+   * Returns the people it removed.
+   */
+  deleteMany(ids: number[]): PersonRow[] {
+    const found = [...new Set(ids)].map((id) => this.getPerson(id)).filter((p): p is PersonRow => p !== undefined);
+    const adminsId = this.administratorsGroupId();
+    // Only an active member can open Admin (isAdministrator), so only an active one counts as "the last".
+    const goingAdmins = found.filter((p) => p.groupId === adminsId && p.revokedAt === null);
+    if (adminsId !== null && goingAdmins.length > 0) {
+      const members = Number((this.stmt('SELECT COUNT(*) AS n FROM people WHERE group_id = ? AND revoked_at IS NULL').get(adminsId) as { n: number }).n);
+      if (goingAdmins.length >= members) {
+        throw new PeopleError('invalid', `That would remove the last person in ${ADMINISTRATORS_GROUP}. Add or move another person into it first.`);
+      }
     }
+    this.db.exec('BEGIN');
+    try {
+      for (const p of found) this.stmt('DELETE FROM people WHERE id = ?').run(p.id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return found;
+  }
+
+  /**
+   * Records a report from a person: the time and the machine it came from. A machine that sent an id is listed once as
+   * `name (first four of id)`; one that did not is listed by its source address. The list is bounded (#379): machines
+   * unseen for MACHINE_MAX_AGE_MS go, and so does everything past the MACHINES_KEPT most recent.
+   */
+  touch(personId: number, address: string | null, now: number, machine?: { name: string; id: string } | null): void {
+    this.stmt('UPDATE people SET last_report_at = ? WHERE id = ?').run(now, personId);
+    const label = machine ? `${machine.name} (${machine.id.slice(0, 4)})` : address;
+    if (!label) return;
+    this.stmt(
+      `INSERT INTO person_machines (person_id, machine, last_seen_at) VALUES (?, ?, ?)
+       ON CONFLICT(person_id, machine) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+    ).run(personId, label.slice(0, 120), now);
+    this.stmt('DELETE FROM person_machines WHERE person_id = ? AND last_seen_at < ?').run(personId, now - MACHINE_MAX_AGE_MS);
+    this.stmt(
+      `DELETE FROM person_machines WHERE person_id = ? AND machine NOT IN
+         (SELECT machine FROM person_machines WHERE person_id = ? ORDER BY last_seen_at DESC, machine LIMIT ?)`,
+    ).run(personId, personId, MACHINES_KEPT);
   }
 
   setGroup(personId: number, groupId: number | null): boolean {

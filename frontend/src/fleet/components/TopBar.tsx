@@ -2,10 +2,25 @@ import type { ReactNode } from "react";
 import type { Phase } from "../store";
 import { BrandLink } from "./BrandLink";
 import { ConnectionPill } from "./ConnectionPill";
-import { TopBarSignIn } from "./SignIn";
+import { TopBarSignIn, type MyReportersLink } from "./SignIn";
+import { TopBarTab } from "./TopBarTab";
 import { useRespond } from "../useRespond";
 
-export function TopBar(props: { page: string; phase: Phase; reporters: number; outdated?: number; newer?: number; collapsed?: boolean; onCollapse?: () => void; wall?: ReactNode }) {
+export function TopBar(props: {
+  page: string;
+  phase: Phase;
+  reporters: number;
+  outdated?: number;
+  newer?: number;
+  collapsed?: boolean;
+  onCollapse?: () => void;
+  wall?: ReactNode;
+  onFleet?: () => void;
+  /** The My reporters link (#415), while orchestrator messaging is on and a person is signed in; left off on its own page. */
+  myReporters?: MyReportersLink;
+  /** The Traffic link (#417), while orchestrator messaging is on; `current` on the Traffic page, where the link is left off. */
+  traffic?: { current: boolean };
+}) {
   const { phase, reporters } = props;
   // Admin is offered only to a signed-in Administrator (#215). The server checks it again; hiding the button is not the gate.
   const admin = useRespond()?.me?.admin === true;
@@ -29,22 +44,49 @@ export function TopBar(props: { page: string; phase: Phase; reporters: number; o
         </span>
       )}
       <span className="spacer" />
-      <a className="btn" href="#/history">
-        History
-      </a>
-      {props.onCollapse && (
-        <button type="button" className="btn" onClick={props.onCollapse} aria-expanded={!props.collapsed} aria-controls="podium-top" title={"Hide the top bar (\\)"}>
-          Hide top bar
-        </button>
+      {/* Fleet goes back to the wall (#346), clearing an open orchestrator too; it is a link so it still works in a new tab. The wall's own pill names it, so it is left off there. */}
+      {props.page !== "Fleet" && (
+        <a
+          className="btn"
+          href="#/"
+          onClick={(e) => {
+            if (!props.onFleet || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+            e.preventDefault();
+            props.onFleet();
+          }}
+        >
+          Fleet
+        </a>
+      )}
+      {/* The Board page's own pill names it, so the button is left off there. */}
+      {props.page !== "Board" && (
+        <a className="btn" href="#/board">
+          Board
+        </a>
+      )}
+      {/* History's own pill names it, so the button is left off there (#452). */}
+      {props.page !== "History" && (
+        <a className="btn" href="#/history">
+          History
+        </a>
+      )}
+      {/* Traffic (#417) shows only while orchestrator messaging is on. Its map and counts are open to every reader. Its own page's pill names it, so the button is left off there (#468). */}
+      {props.traffic && !props.traffic.current && (
+        <a className="btn" href="#/traffic">
+          Traffic
+        </a>
       )}
       {props.wall}
-      {admin && (
+      {/* The Admin page's own pill names it (#468). */}
+      {admin && props.page !== "Admin" && (
         <a className="btn" href="#/admin" title="People, groups, reporters, settings, model prices, spend and the Admin log">
           Admin
         </a>
       )}
       {/* Sign in to respond (#206) stays at the far end, after a divider, so nothing before it moves on signing in or out. */}
-      <TopBarSignIn />
+      <TopBarSignIn myReporters={props.myReporters} />
+      {/* Out of the flex row (absolute, at 50% of the bar), so nothing above can collide with it or move it as the pills' text changes (#91, #402). */}
+      {props.onCollapse && <TopBarTab collapsed={false} onToggle={props.onCollapse} />}
     </header>
   );
 }

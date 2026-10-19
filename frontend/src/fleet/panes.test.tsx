@@ -35,6 +35,18 @@ describe("usePanes", () => {
     expect(second.result.current.collapsed.right).toBe(true);
   });
 
+  it("gives the Board and My reporters their own flags, both side panels collapsed at first (#346, #446)", () => {
+    const board = renderHook(() => usePanes("board"));
+    const mine = renderHook(() => usePanes("reporters"));
+    expect(board.result.current.collapsed).toEqual({ left: true, right: true, top: false });
+    expect(mine.result.current.collapsed).toEqual({ left: true, right: true, top: false });
+    act(() => mine.result.current.toggle("left"));
+    expect(JSON.parse(localStorage.getItem("podium.collapsed.reporters")!)).toEqual({ left: false, right: true, top: false });
+    expect(localStorage.getItem("podium.collapsed")).toBeNull();
+    expect(localStorage.getItem("podium.collapsed.board")).toBeNull();
+    expect(renderHook(() => usePanes()).result.current.collapsed).toEqual({ left: false, right: false, top: false });
+  });
+
   it("ignores junk in storage and survives a storage that throws", () => {
     localStorage.setItem("podium.collapsed", JSON.stringify({ left: "yes", right: 1 }));
     expect(renderHook(() => usePanes()).result.current.collapsed).toEqual({ left: false, right: false, top: false });
@@ -208,6 +220,25 @@ describe("FleetView collapsible shell", () => {
     expect(screen.getByText(/Live fleet\./)).toBeVisible();
   });
 
+  it("hides and shows the top bar with an icon-only tab that keeps its name, tooltip and aria attributes (#402)", () => {
+    const { container } = render(<FleetView state={stateFrom()} />);
+    const hide = screen.getByRole("button", { name: "Hide top bar" });
+    expect(hide).toHaveTextContent("");
+    expect(hide).toHaveAttribute("data-tip", "Hide top bar");
+    expect(hide).toHaveAttribute("aria-expanded", "true");
+    expect(hide).toHaveAttribute("aria-controls", "podium-top");
+    expect(container.querySelector("#podium-top")!.contains(hide)).toBe(true);
+    fireEvent.click(hide);
+    const show = screen.getByRole("button", { name: "Show top bar" });
+    expect(show).toHaveTextContent("");
+    expect(show).toHaveAttribute("data-tip", "Show top bar");
+    expect(show).toHaveAttribute("aria-expanded", "false");
+    expect(show).toHaveAttribute("aria-controls", "podium-top");
+    expect(screen.queryByRole("button", { name: "Hide top bar" })).toBeNull();
+    fireEvent.click(show);
+    expect(document.getElementById("podium-top")).toBeVisible();
+  });
+
   it("keeps the disconnect alert with everything collapsed, and clears it on reconnect", () => {
     const { rerender } = render(<FleetView state={lost()} />);
     fireEvent.keyDown(document, { key: "w" });
@@ -276,6 +307,14 @@ describe("FleetView collapsible shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Exit wall mode" }));
     expect(left()).toHaveAttribute("aria-expanded", "true");
     expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("wall mode still works when the browser has no fullscreen API", () => {
+    render(<FleetView state={stateFrom()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Enter wall mode" }));
+    expect(left()).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Exit wall mode" }));
+    expect(left()).toHaveAttribute("aria-expanded", "true");
   });
 
   it("leaving fullscreen with the browser's own Esc also leaves wall mode", async () => {

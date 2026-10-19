@@ -8,6 +8,7 @@ import { Tip } from "../components/Tip";
 import { Pager } from "./Pager";
 import { Panel, Section } from "./Page";
 import { failText, useList } from "./useList";
+import { useReporterMessaging, WarnIcon } from "./ReporterMessaging";
 
 export interface ReporterPaging {
   page: number;
@@ -84,16 +85,6 @@ const REMOVE_HINT = "Remove from list takes the row away and nothing else: the s
 const ADMIN_HINT =
   "This reporter sends the admin secret instead of a token made for one person. Anyone holding the secret can report as anyone, and its sessions belong to no one. Make a token for the person in Admin > People, then enter it, and their name, in the reporter's options.";
 
-function WarnIcon() {
-  return (
-    <svg className="wicon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M8 2.2L14.4 13H1.6L8 2.2z" />
-      <path d="M8 6.6v3" />
-      <path d="M8 11.4v.1" />
-    </svg>
-  );
-}
-
 /** The token a reporter uses. The admin secret is a warning, always: an icon and words, focusable, with its reason. */
 function Token({ r }: { r: Pick<ReporterRow, "adminSecret" | "credential"> }) {
   if (r.adminSecret) {
@@ -107,8 +98,8 @@ function Token({ r }: { r: Pick<ReporterRow, "adminSecret" | "credential"> }) {
   return r.credential ? <span className="tokid mono">{r.credential}</span> : <span className="tokid">none</span>;
 }
 
-/** A hover and keyboard-focus note: the same text as the title and as a line a screen reader reads. */
-function StateBadge({ r, serverTime, serverStartedAt }: { r: Pick<ReporterRow, "state" | "lastSeenAt">; serverTime: number; serverStartedAt: number }) {
+/** A hover and keyboard-focus note: the same text as the title and as a line a screen reader reads. My reporters uses it too (#415). */
+export function StateBadge({ r, serverTime, serverStartedAt }: { r: Pick<ReporterRow, "state" | "lastSeenAt">; serverTime: number; serverStartedAt: number }) {
   const s = stateOf(r.state);
   const text = stateDetail(r, serverTime, serverStartedAt);
   return (
@@ -119,7 +110,8 @@ function StateBadge({ r, serverTime, serverStartedAt }: { r: Pick<ReporterRow, "
   );
 }
 
-function Version({ r }: { r: ReporterRow }) {
+/** A reporter's version and how it fits this server; My reporters shows it the same way (#415). */
+export function Version({ r }: { r: Pick<ReporterRow, "version" | "compat"> }) {
   const flag = r.compat === "outdated" || r.compat === "newer";
   return (
     <span className={`compat ${r.compat}`} title={COMPAT[r.compat]}>
@@ -460,6 +452,8 @@ function Detail(props: { api: AdminApi; id: string; onBack: () => void; onLocked
   const [pageSize, setPageSize] = useState(50);
   const one = useList<ReporterDetail>(api, `${path}${query({ page, pageSize })}`, props.onLocked);
   useRefresh(one.reload);
+  // Orchestrator messaging (#416): nothing while the peer-messaging flag is off.
+  const messaging = useReporterMessaging(api, id, props.onLocked, REFRESH_MS);
   const [confirm, setConfirm] = useState(false);
   const [ignoring, setIgnoring] = useState(false);
   const [ignoreKind, setIgnoreKind] = useState<IgnoreRule["kind"]>("key");
@@ -527,6 +521,7 @@ function Detail(props: { api: AdminApi; id: string; onBack: () => void; onLocked
           {d.adminSecret && <Token r={d} />}
         </h2>
         <div className="dacts">
+          {messaging.pause}
           {!ignoring && !confirm && (
             <button type="button" className="btn sm" title={IGNORE_HINT} onClick={() => setIgnoring(true)}>
               Ignore…
@@ -626,6 +621,7 @@ function Detail(props: { api: AdminApi; id: string; onBack: () => void; onLocked
           {kv([
             ["Version", <span key="v" className="mono">{d.version}</span>],
             ["Compatibility", <span key="c" className={`compat ${d.compat}`}>{COMPAT[d.compat]}</span>],
+            ...messaging.rows,
             ["Claude Code", <span key="e" className="mono">{d.engineVersion ?? "not reported"}</span>],
             ["First seen", <>{day(d.firstSeenAt)} <span className="hint">({ago(d.serverTime, d.firstSeenAt)})</span></>],
             ["Last report", ago(d.serverTime, d.lastSeenAt)],
@@ -645,6 +641,7 @@ function Detail(props: { api: AdminApi; id: string; onBack: () => void; onLocked
         </section>
       </div>
     </Panel>
+    {messaging.section}
     <Section id="rep-sessions-h" title="Recent sessions" help="The sessions this reporter sent that the server still holds, newest first.">
       <Panel>
         {d.recentTotal ? (

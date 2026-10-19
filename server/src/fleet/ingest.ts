@@ -1,5 +1,5 @@
 // Report -> rows, events, blowouts and samples (SPEC 7.3 steps 1-4). One transaction per report.
-import type { AgentReport, Report, TokenCounts } from './protocol.js';
+import type { AgentReport, Plan, PlanStepView, PlanView, Report, TokenCounts } from './protocol.js';
 import { SAME_USAGE } from './db.js';
 import type { AgentRow, EventRow, FleetDb, SampleRow, SessionRow } from './db.js';
 import { family } from './derive.js';
@@ -47,6 +47,40 @@ function startedAt(claimed: number, prev: SessionRow | undefined, serverTime: nu
   return Math.abs(claimed - serverTime) <= START_TOLERANCE_MS ? claimed : serverTime;
 }
 
+/** Two plans are the same plan when they share a source and title and agree on the text of every step id they have in common (#465). */
+function samePlan(a: PlanView, b: Plan): boolean {
+  if (a.source !== b.source || a.title !== b.title) return false;
+  const texts = new Map(a.steps.map((x) => [x.id, x.text]));
+  const shared = b.steps.filter((x) => texts.has(x.id));
+  return shared.length > 0 && shared.every((x) => texts.get(x.id) === x.text);
+}
+
+/**
+ * Numbers the steps in the order the server saw them finish (#454), so the Plan list can end with the done steps in that order.
+ * A step keeps its number while it stays done and loses it when reopened. Steps already done in the first plan seen get none.
+ * `prevJson` is the last plan stored for the session; a different plan (see `samePlan`) starts over (#465).
+ */
+function stampDoneOrder(plan: Plan | null, prevJson: string | null | undefined): PlanView | null {
+  if (!plan || !plan.steps.some((x) => x.state === 'done')) return plan;
+  let before: PlanView | null = null;
+  try {
+    before = prevJson ? (JSON.parse(prevJson) as PlanView) : null;
+  } catch {
+    before = null;
+  }
+  if (before && !samePlan(before, plan)) before = null;
+  const seen = new Map((before?.steps ?? []).map((x) => [x.id, x]));
+  let next = Math.max(0, ...(before?.steps ?? []).map((x) => x.doneSeq ?? 0)) + 1;
+  // A reporter's plan never carries doneSeq (the parser keeps only the wire fields), so x is copied as it came.
+  const steps = plan.steps.map((x: PlanStepView) => {
+    if (x.state !== 'done' || !before) return x;
+    const old = seen.get(x.id);
+    if (old?.state === 'done') return old.doneSeq === undefined ? x : { ...x, doneSeq: old.doneSeq };
+    return { ...x, doneSeq: next++ };
+  });
+  return { ...plan, steps };
+}
+
 function sessionRow(r: Report, prev: SessionRow | undefined, serverTime: number, owner: string | null): SessionRow {
   const s = r.session;
   const done = s.status === 'done';
@@ -78,8 +112,11 @@ function sessionRow(r: Report, prev: SessionRow | undefined, serverTime: number,
     tok_cw: s.tokens.cacheWrite,
     rate_limits_json: json(s.rateLimits),
     blowouts: s.blowouts,
-    plan_json: json(s.plan),
+    plan_json: json(stampDoneOrder(s.plan, prev?.plan_json ?? prev?.plan_kept_json)),
+    // While a report carries no plan, the last one is kept here so the finish order survives the gap (#465).
+    plan_kept_json: s.plan ? null : prev?.plan_json ?? prev?.plan_kept_json ?? null,
     reporter_version: r.reporter.version,
+    reporter_build: r.reporter.build ?? null,
     engine_version: r.reporter.engineVersion,
     loop_json: json(s.loop),
     files_json: json(s.files),

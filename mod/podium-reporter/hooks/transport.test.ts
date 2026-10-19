@@ -68,6 +68,36 @@ describe('transport', () => {
     expect(await run({ ok: true })).toEqual([false, []])
   })
 
+  test('reads the file diffs the server asks for, at most four, and nothing from a server that does not say (#319)', async () => {
+    const run = async (body: unknown) => {
+      const t = new Transport(fake([{ status: 200, ok: true, text: JSON.stringify(body) }]).fetch, { serverUrl: 'http://127.0.0.1', token: '', heartbeatMs: 5000, version: '1.2.0' })
+      await t.send(build, 0)
+      return t.diffs
+    }
+    const r = (n: number) => ({ id: `r${n}`, path: `f${n}.ts` })
+    expect(await run({ ok: true, diffs: [r(1), { id: 7, path: 'x' }, { id: 'y' }, { id: '', path: 'z' }, null, r(2)] })).toEqual([r(1), r(2)])
+    expect(await run({ ok: true, diffs: [1, 2, 3, 4, 5, 6].map(r) })).toEqual([1, 2, 3, 4].map(r))
+    expect(await run({ ok: true, diffs: 'nope' })).toEqual([])
+    expect(await run({ ok: true })).toEqual([])
+  })
+
+  test('reads whether the session takes part in messaging, its messages and notices, and its requests, and nothing from an older server (#414)', async () => {
+    const run = async (body: unknown) => {
+      const t = new Transport(fake([{ status: 200, ok: true, text: JSON.stringify(body) }]).fetch, { serverUrl: 'http://127.0.0.1', token: '', heartbeatMs: 5000, version: '1.2.0' })
+      await t.send(build, 0)
+      return [t.peers, t.peerDeliveries, t.peerRequests]
+    }
+    const m = { id: 'dlv_1', kind: 'message', at: 1, from: { name: 'a', machine: 'b', owner: 'Ed' }, text: 'hi' }
+    const n = { id: 'dlv_2', kind: 'notice', at: 2, from: null, text: 'dropped' }
+    const q = { id: 'prq_1', kind: 'access', at: 1, from: { machine: 'a', name: 'x' }, to: { machine: 'b', name: null }, level: 'send', by: 'x', reason: 'r', text: null }
+    const bad = [null, { id: 'dlv_3', kind: 'command', at: 1, text: 'clear' }, { id: '', kind: 'message', at: 1, text: 'x' }, { id: 'dlv_4', kind: 'message', at: 1 }]
+    const badReq = [null, { ...q, id: '' }, { ...q, kind: 'other' }, { ...q, from: null }, { ...q, by: 7 }]
+    expect(await run({ ok: true, peers: true, peerDeliveries: [m, ...bad, n], peerRequests: [q, ...badReq] })).toEqual([true, [m, n], [q]])
+    expect(await run({ ok: true, peers: false, peerDeliveries: [m], peerRequests: [q] })).toEqual([false, [], []])
+    expect(await run({ ok: true, peers: true, peerDeliveries: Array.from({ length: 30 }, (_, i) => ({ ...m, id: `d${i}` })) }).then((r) => (r[1] as unknown[]).length)).toBe(20)
+    expect(await run({ ok: true })).toEqual([false, [], []])
+  })
+
   test('reads where the server places this reporter, and says what to do about it', async () => {
     const reply = (c: unknown): HttpResult => ({ status: 200, ok: true, text: JSON.stringify({ ok: true, liveSessions: 2, serverVersion: '0.3.0', reporterCompat: c }) })
     const run = async (r: HttpResult) => {
@@ -96,6 +126,41 @@ describe('transport', () => {
     expect(t.versionNotice()).not.toBeNull()
     await t.send(build, 10)
     expect(t.versionNotice()).toBeNull()
+  })
+
+  test('puts the build of a dev mod after the version in every state, set off by a pipe (#400)', async () => {
+    const cfg = { serverUrl: 'http://127.0.0.1', token: '', heartbeatMs: 5000, version: '1.1.0', build: 'a1b2c3d4' }
+    expect(new Transport(fake([]).fetch, cfg).statusText()).toBe('podium v1.1.0 | dev: a1b2c3d4 ○ connecting')
+    const live = new Transport(fake([ok(0, 2)]).fetch, cfg)
+    await live.send(build, 0)
+    expect(live.statusText()).toBe('podium v1.1.0 | dev: a1b2c3d4 ● 2 live')
+    const offline = new Transport(fake([{ status: 500, ok: false, text: '' }]).fetch, cfg)
+    await offline.send(build, 0)
+    expect(offline.statusText()).toBe('podium v1.1.0 | dev: a1b2c3d4 ○ offline')
+    const refused = new Transport(fake([{ status: 401, ok: false, text: '' }]).fetch, cfg)
+    await refused.send(build, 0)
+    expect(refused.statusText()).toBe('podium v1.1.0 | dev: a1b2c3d4 ○ token refused')
+    const behind = new Transport(fake([{ status: 200, ok: true, text: JSON.stringify({ ok: true, liveSessions: 2, serverVersion: '1.2.0', reporterSupport: { min: '0.9.0', max: '1.2.0' }, reporterCompat: 'ok' }) }]).fetch, cfg)
+    await behind.send(build, 0)
+    expect(behind.statusText()).toBe('podium v1.1.0 | dev: a1b2c3d4 ● 2 live · update available')
+  })
+
+  test('a release mod, and one with no build, show the version alone, with the warning in front over plain http (#400)', () => {
+    expect(new Transport(fake([]).fetch, { serverUrl: 'http://127.0.0.1', token: '', heartbeatMs: 5000, version: '1.1.0', build: null }).statusText()).toBe('podium v1.1.0 ○ connecting')
+    expect(new Transport(fake([]).fetch, { serverUrl: 'http://203.0.113.5:4317', token: '', heartbeatMs: 5000, version: '1.1.0', build: 'a1b2c3d4' }).statusText()).toBe('⚠ podium v1.1.0 | dev: a1b2c3d4 ○ connecting')
+  })
+
+  test('reads the server build from the reply, and nothing from a server that does not say (#400)', async () => {
+    const reply = (b: unknown): HttpResult => ({ status: 200, ok: true, text: JSON.stringify({ ok: true, serverVersion: '1.1.0', serverBuild: b }) })
+    const run = async (r: HttpResult) => {
+      const t = new Transport(fake([r]).fetch, { serverUrl: 'http://127.0.0.1', token: '', heartbeatMs: 5000, version: '1.1.0' })
+      await t.send(build, 0)
+      return t.serverBuild
+    }
+    expect(await run(reply('a1b2c3d4'))).toBe('a1b2c3d4')
+    expect(await run(reply(null))).toBeNull()
+    expect(await run(reply(7))).toBeNull()
+    expect(await run(ok())).toBeNull()
   })
 
   test('shows the version before the server has answered', () => {

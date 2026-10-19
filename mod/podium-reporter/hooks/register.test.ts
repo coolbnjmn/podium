@@ -9,6 +9,18 @@ const SID = 'sess-e2e-0001'
 /** A compaction leaves at least one message: its summary. */
 const SUMMARY = [{ role: 'user' as const, text: 'Summary of the work so far.', toolUses: [] }]
 const CWD = '/Users/dev/app/.claude/worktrees/feat-x'
+/** A pre-warmed spare of the desktop app, and the project it is moved to (#382). */
+const SPARE = '/Users/dev/.claude/spares/spare-eB3Cs1'
+const PROJECT = '/Users/dev/web/podium'
+const PROJECT_GIT: Record<string, string> = {
+  'rev-parse --abbrev-ref HEAD': 'main',
+  'rev-parse --git-dir': '.git',
+  'rev-parse --git-common-dir': '.git',
+  'rev-parse --path-format=absolute --git-common-dir': `${PROJECT}/.git`,
+  'rev-parse --show-toplevel': PROJECT,
+  'status --porcelain=v1 -b': '## main...origin/main\n',
+  'config --get remote.origin.url': 'git@github.com:acme/podium.git',
+}
 
 interface World {
   posts: Report[]
@@ -27,6 +39,16 @@ interface World {
   chunks: { value: TurnStepChunk[] }
   /** The files the plugin reads and writes by path, from memory; `broken` makes every access fail. */
   files: { text: Record<string, string>; broken: boolean }
+  /** Where `$.session` says the session is: `cwd` null makes `cwd()` fail; `repo` null is a folder that is not a repository (#382). */
+  place: { cwd: string | null; root: string; repo: { root: string; remote: string | null; internal: boolean; name: string | null } | null }
+  /** Git's answers for a folder other than the default one: null is a folder that is not a repository (#382). */
+  gitAt: Record<string, Record<string, string> | null>
+  /** The commit the mod's own folder is a dev checkout at (#400); null is an installed copy, which has no repository. */
+  devBuild: { value: string | null }
+  /** Every status line the plugin set. */
+  statuses: (string | undefined)[]
+  /** What the server's reply says about itself: its build (#400). */
+  serverBuild: { value: string | null }
 }
 
 const GIT: Record<string, string> = {
@@ -58,12 +80,21 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
     return { value: undefined }
   })
   const ran: string[][] = []
+  const place: World['place'] = { cwd: CWD, root: CWD, repo: { root: '/Users/dev/app', remote: 'git@github.com:acme/app.git', internal: false, name: null } }
+  const gitAt: World['gitAt'] = {}
+  const devBuild: World['devBuild'] = { value: null }
+  const statuses: World['statuses'] = []
+  const serverBuild: World['serverBuild'] = { value: null }
   const watch: World['watch'] = { value: [] }
   const chunks: World['chunks'] = { value: [] }
   on('session.id', () => ({ value: sessionId.value }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('session.root', () => ({ value: CWD }))
-  on('session.repo', () => ({ value: { root: '/Users/dev/app', remote: 'git@github.com:acme/app.git', internal: false, name: null } }))
+  on('session.cwd', () => {
+    if (place.cwd === null) throw new Error('no cwd')
+    return { value: place.cwd }
+  })
+  on('session.root', () => ({ value: place.root }))
+  on('session.repo', () => ({ value: place.repo }))
   on('session.version', () => ({ value: { version: '2.1.296' } }))
   on('session.usage', () => ({ value: { startedAt: 1_800_000_000_000, context: { tokens: 120_000, window: 1_000_000, percent: 12 }, rateLimits: [], cost: { usd: 1.25 } } }))
   on('session.surfaces', () => {
@@ -75,11 +106,26 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('agent.list', () => ({ value: [] }))
   on('command.register', () => ({ value: { command: 'podium' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__podium-reporter__plan' } }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', (_$, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('process.run', (_$, e) => {
     ran.push([...e.argv])
+    if (e.argv[1] === '-C') {
+      // the mod's own folder: a dev checkout names a commit, an installed copy is no repository (#400)
+      const sub = e.argv.slice(3).join(' ')
+      const out = devBuild.value === null ? undefined : sub === 'rev-parse --short=8 HEAD' ? `${devBuild.value}\n` : sub === 'ls-files --error-unmatch .claude-plugin/plugin.json' || sub === 'status --porcelain -- .' ? '' : undefined
+      return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    const at = e.init?.cwd
+    const here = at !== undefined && at in gitAt ? gitAt[at] : undefined
+    if (here !== undefined) {
+      const out = here?.[e.argv.slice(1).join(' ')]
+      return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     if (e.argv[0] === 'hostname') return { value: { exitCode: 0, stdout: 'Devs-MBP.local\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     return { value: { exitCode: e.argv[1] === 'rev-parse' || e.argv[1] === 'status' ? 0 : 1, stdout: GIT[e.argv.slice(1).join(' ')] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -89,7 +135,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
     if (fetchMode.mode === 'hang') return new Promise(() => {})
     posts.push(body)
     headers.push(e.init?.headers ?? {})
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, ackedEvents: body.events.length, liveSessions: 3, watch: watch.value }) } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, ackedEvents: body.events.length, liveSessions: 3, watch: watch.value, serverVersion: '1.1.0', serverBuild: serverBuild.value }) } }
   })
   on('session.start', () => ({ cwd: CWD }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
@@ -119,7 +165,9 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   })
   on('classic.PermissionRequest', () => ({}))
   on('classic.Notification', () => ({}))
-  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, chunks, files: kept }
+  on('classic.SessionStart', () => ({}))
+  on('classic.UserPromptSubmit', () => ({}))
+  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, chunks, files: kept, place, gitAt, devBuild, statuses, serverBuild }
 }
 
 type StepArgs = Parameters<Engine['turn']['step']>[0]
@@ -226,6 +274,20 @@ describe('podium-reporter end to end', () => {
     await $.session.start({ cwd: CWD, surface: null, isInteractive: false })
     await w.clock.advance(1000)
     expect(w.headers[0]!['X-Podium-Token']).toBe('s3cret')
+  })
+
+  // A tool's result must be text, content blocks or nothing: Claude Code turns any other shape into an error,
+  // and an errored call never sets the title.
+  test('the plan tool answers in text and the console gets the title', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    const res = await $.tool.call({ tool: 'mcp__podium-reporter__plan', title: 'Ship the booth game', phase: 'M1' } as never)
+    expect(res).not.toHaveProperty('isError', true)
+    expect(typeof (res as { result?: unknown }).result).toBe('string')
+    // A plan is reported once it has a step.
+    await $.tool.call({ tool: 'TaskCreate', subject: 'Engine', description: 'build it' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.plan).toMatchObject({ title: 'Ship the booth game · M1' })
   })
 
   test('every hook passes the engine result through unchanged', async ($, on) => {
@@ -431,6 +493,125 @@ describe('podium-reporter end to end', () => {
     await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
     await w.clock.advance(1000)
     expect(w.posts.at(-1)!.session.name).toBe('invoice work')
+  })
+
+  test('a mod run from a dev checkout reports its commit and shows it after the version in the status line, /podium and the report (#400)', async ($, on) => {
+    const w = world(on)
+    w.devBuild.value = 'a1b2c3d4'
+    w.serverBuild.value = '9f8e7d6c'
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(w.posts[0]!.reporter.build).toBe('a1b2c3d4')
+    expect(w.statuses.at(-1)).toBe('podium v1.2.0 | dev: a1b2c3d4 ● 3 live')
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('Versions: reporter 1.2.0 · Dev: a1b2c3d4, server 1.1.0 · Dev: 9f8e7d6c')
+    expect(w.ran.filter((a) => a[1] === '-C').length).toBeGreaterThan(0)
+  })
+
+  test('an installed mod, which is a release, reports no build and shows the version alone (#400)', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(w.posts[0]!.reporter).not.toHaveProperty('build')
+    expect(w.statuses.at(-1)).toBe('podium v1.2.0 ● 3 live')
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('Versions: reporter 1.2.0, server 1.1.0')
+  })
+
+  test("Claude Code's own session name is the display name once a hook carries it (#322)", async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    // nothing named yet: the worktree branch, as before
+    expect(w.posts.at(-1)!.session.name).toBe('x')
+    await $.classic.UserPromptSubmit({ prompt: 'hi', session_title: '  Calendar filters  ' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('Calendar filters')
+    // a prompt with no title leaves the name alone
+    await $.classic.UserPromptSubmit({ prompt: 'again' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('Calendar filters')
+    // a rename shows on the next prompt
+    await $.classic.UserPromptSubmit({ prompt: 'more', session_title: 'Pi display' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('Pi display')
+  })
+
+  test("a title on classic.SessionStart names the session too, and /podium name still wins (#322)", { options: { sessionName: 'from option' } }, async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.classic.SessionStart({ source: 'resume', session_title: 'Pi display' })
+    await w.clock.advance(1000)
+    // above the sessionName option
+    expect(w.posts.at(-1)!.session.name).toBe('Pi display')
+    await $.command.run(podium('name explicit'))
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.name).toBe('explicit')
+  })
+
+  test("Claude Code's name does not carry over to a new session id (#322)", async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.classic.UserPromptSubmit({ prompt: 'hi', session_title: 'Calendar filters' })
+    await w.clock.advance(1000)
+    w.sessionId.value = 'sess-after-clear'
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.id).toBe('sess-after-clear')
+    expect(w.posts.at(-1)!.session.name).toBe('x')
+  })
+
+  test('a spare the app moves to a project reports the project once $.session answers it (#382)', async ($, on) => {
+    const w = world(on)
+    w.place.cwd = SPARE
+    w.place.root = SPARE
+    w.place.repo = null
+    w.gitAt[SPARE] = null
+    w.gitAt[PROJECT] = PROJECT_GIT
+    await $.session.start({ cwd: SPARE, surface: 'desktop', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ name: 'spare-eB3Cs1', cwd: SPARE, projectRoot: SPARE, git: null })
+    w.place.cwd = PROJECT
+    w.place.root = PROJECT
+    w.place.repo = { root: PROJECT, remote: 'git@github.com:acme/podium.git', internal: false, name: null }
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ name: 'podium', cwd: PROJECT, projectRoot: PROJECT, repoName: 'acme/podium', git: { branch: 'main' } })
+  })
+
+  test('a spare whose $.session keeps the spare folder takes the folder a hook carries, from git (#382)', async ($, on) => {
+    const w = world(on)
+    w.place.cwd = SPARE
+    w.place.root = SPARE
+    w.place.repo = null
+    w.gitAt[SPARE] = null
+    w.gitAt[PROJECT] = PROJECT_GIT
+    await $.session.start({ cwd: SPARE, surface: 'desktop', isInteractive: true })
+    await $.classic.UserPromptSubmit({ prompt: 'hi', cwd: PROJECT })
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ name: 'podium', cwd: PROJECT, projectRoot: PROJECT, repoName: 'acme/podium', git: { branch: 'main' } })
+    // $.session still answers the spare folder: a later poll does not take the session back there
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: PROJECT, projectRoot: PROJECT, git: { branch: 'main' } })
+  })
+
+  test('a hook cwd inside the place already reported is a cd, not a move (#382)', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.classic.UserPromptSubmit({ prompt: 'hi', cwd: `${CWD}/src` })
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, projectRoot: '/Users/dev/app' })
+  })
+
+  test('a session moved to a folder that is not a repository reports that folder (#382)', async ($, on) => {
+    const w = world(on)
+    w.place.cwd = SPARE
+    w.place.root = SPARE
+    w.place.repo = null
+    w.gitAt[SPARE] = null
+    w.gitAt['/Users/dev/notes'] = null
+    await $.session.start({ cwd: SPARE, surface: 'desktop', isInteractive: true })
+    await $.classic.SessionStart({ source: 'startup', cwd: '/Users/dev/notes' })
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ name: 'notes', cwd: '/Users/dev/notes', projectRoot: '/Users/dev/notes', repoName: 'notes', git: null })
   })
 
   test('reports whether any client is attached, from the roster', async ($, on) => {

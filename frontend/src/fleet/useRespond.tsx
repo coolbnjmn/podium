@@ -12,6 +12,8 @@ export interface RespondContext {
   me: RespondMe | null;
   /** The Admin's respond and activity-feed flags, from the console's state. */
   flagsOn: boolean;
+  /** The Admin's file-diff flag (#319). On its own it lets a person sign in, so the Files list can open a diff. */
+  diffOn: boolean;
   /** A sign-in ended while the page was open (12 idle hours, a restart, a new token): the next form says so once. */
   expired: boolean;
   signIn: (name: string, token: string) => Promise<SignInResult>;
@@ -35,7 +37,7 @@ export function useRespond(): RespondContext | null {
 /** How often the page checks the sign-in is still there, so an ended one is noticed before the next answer. */
 const CHECK_MS = 60_000;
 
-export function RespondProvider(props: { children: ReactNode; api?: RespondApi; flagsOn: boolean }) {
+export function RespondProvider(props: { children: ReactNode; api?: RespondApi; flagsOn: boolean; diffOn?: boolean; peersOn?: boolean }) {
   const api = props.api ?? respondApi;
   const [me, setMe] = useState<RespondMe | null>(null);
   const [expired, setExpired] = useState(false);
@@ -55,16 +57,17 @@ export function RespondProvider(props: { children: ReactNode; api?: RespondApi; 
   }, [api]);
 
   // Asked again when the Admin's flags flip, and once a minute.
-  // With the Admin's flags off nobody can respond, so the server is not even asked.
+  // With the Admin's flags off nobody can respond, so the server is not even asked. Orchestrator messaging (#415) also
+  // lets a person sign in, for My reporters, even with responding off.
   useEffect(() => {
-    if (!props.flagsOn) {
+    if (!props.flagsOn && !props.diffOn && !props.peersOn) {
       setMe(null);
       return;
     }
     void refresh();
     const t = setInterval(() => void refresh(), CHECK_MS);
     return () => clearInterval(t);
-  }, [refresh, props.flagsOn]);
+  }, [refresh, props.flagsOn, props.diffOn, props.peersOn]);
 
   const signIn = useCallback(
     async (name: string, token: string): Promise<SignInResult> => {
@@ -103,6 +106,7 @@ export function RespondProvider(props: { children: ReactNode; api?: RespondApi; 
   }, []);
 
   const flagsOn = props.flagsOn;
-  const value = useMemo<RespondContext>(() => ({ me, flagsOn, expired, signIn, signOut, refresh, openFor, open, close, api }), [me, flagsOn, expired, signIn, signOut, refresh, openFor, open, close, api]);
+  const diffOn = props.diffOn === true;
+  const value = useMemo<RespondContext>(() => ({ me, flagsOn, diffOn, expired, signIn, signOut, refresh, openFor, open, close, api }), [me, flagsOn, diffOn, expired, signIn, signOut, refresh, openFor, open, close, api]);
   return <Ctx.Provider value={value}>{props.children}</Ctx.Provider>;
 }

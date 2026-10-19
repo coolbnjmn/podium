@@ -109,8 +109,8 @@ describe('unlocking', () => {
 
   it('reports whether this browser is unlocked', async () => {
     const { agent } = await unlocked();
-    expect((await agent.get('/api/admin/session').set(H)).body).toEqual({ unlocked: true, enabled: true, version: expect.any(String) });
-    expect((await request(setup().app).get('/api/admin/session').set(H)).body).toEqual({ unlocked: false, enabled: true, version: expect.any(String) });
+    expect((await agent.get('/api/admin/session').set(H)).body).toEqual({ unlocked: true, enabled: true, version: expect.any(String), build: null });
+    expect((await request(setup().app).get('/api/admin/session').set(H)).body).toEqual({ unlocked: false, enabled: true, version: expect.any(String), build: null });
   });
 });
 
@@ -227,6 +227,23 @@ describe('groups and settings', () => {
     expect(people.listLog({ page: 1, pageSize: 50 }).rows.map((x) => x.kind)).toEqual(expect.arrayContaining(['wall_notice_changed', 'wall_background_changed']));
   });
 
+  it('lists the card title setting off by default, changes it, refuses a non-boolean and logs the change (#480)', async () => {
+    const { agent, people, wall } = await unlocked();
+    expect((await agent.get('/api/admin/settings').set(H)).body.cardTitleMachine).toBe(false);
+    expect(wall.view().cardTitleMachine).toBe(false);
+    const put = await agent.put('/api/admin/settings').set(H).send({ cardTitleMachine: true });
+    expect(put.status).toBe(200);
+    expect(put.body).toEqual({ ok: true, cardTitleMachine: true });
+    expect(wall.cardTitleMachine()).toBe(true);
+    expect(wall.view().cardTitleMachine).toBe(true);
+    expect((await agent.get('/api/admin/settings').set(H)).body.cardTitleMachine).toBe(true);
+    expect((await agent.put('/api/admin/settings').set(H).send({ cardTitleMachine: 'yes' })).status).toBe(400);
+    expect(wall.cardTitleMachine()).toBe(true);
+    expect((await agent.put('/api/admin/settings').set(H).send({ cardTitleMachine: false })).status).toBe(200);
+    expect(wall.cardTitleMachine()).toBe(false);
+    expect(people.listLog({ page: 1, pageSize: 50 }).rows.map((x) => x.kind)).toContain('wall_card_title_changed');
+  });
+
   describe('feature flags (#118)', () => {
     it('refuses the flags before unlocking', async () => {
       const { app } = setup();
@@ -247,6 +264,18 @@ describe('groups and settings', () => {
           id: 'respond',
           name: 'Respond from Podium',
           description: 'Lets people answer and message the sessions they own. Each answer is written to the admin log with who sent it.',
+          on: false,
+        },
+        {
+          id: 'file-diff',
+          name: 'File diff',
+          description: expect.stringContaining('and only the owner, open a changed file'),
+          on: false,
+        },
+        {
+          id: 'peer-messaging',
+          name: 'Orchestrator messaging',
+          description: expect.stringContaining("Only between one person's own reporters."),
           on: false,
         },
       ]);
@@ -279,7 +308,7 @@ describe('groups and settings', () => {
       const { agent, features, people } = await unlocked();
       const res = await agent.put('/api/admin/settings').set(H).send({ features: { 'activity-feed': false } });
       expect(res.status).toBe(200);
-      expect(res.body.features).toEqual([expect.objectContaining({ id: 'activity-feed', on: false }), expect.objectContaining({ id: 'respond', on: false })]);
+      expect(res.body.features).toEqual([expect.objectContaining({ id: 'activity-feed', on: false }), expect.objectContaining({ id: 'respond', on: false }), expect.objectContaining({ id: 'file-diff', on: false }), expect.objectContaining({ id: 'peer-messaging', on: false })]);
       expect(features.featureOn('activity-feed')).toBe(false);
       expect((await agent.get('/api/admin/settings').set(H)).body.features[0].on).toBe(false);
       await agent.put('/api/admin/settings').set(H).send({ features: { 'activity-feed': true } });

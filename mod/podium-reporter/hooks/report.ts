@@ -19,9 +19,13 @@ export interface ReportMeta {
   version: string;
   engineVersion: string | null;
   hostSurface: string | null;
+  /** The commit of a dev build of the mod (#400); null or absent for a release. */
+  build?: string | null;
   now: number;
   /** Set with `/podium name`, kept in $.store per session id. */
   storedName: string | null;
+  /** The session's own name in Claude Code (`/rename`, or its title), from a hook's `session_title` (#322). */
+  claudeName?: string | null;
   /** The `sessionName` option. */
   optionName: string | null;
   /** The `userName` option: the person this reporter is configured as. The server checks it against the token. */
@@ -32,19 +36,24 @@ export interface ReportMeta {
   fullText?: boolean;
   /** The `activityFeed` option: send the feed of each loop the server says is watched (#118). */
   activity?: boolean;
+  /** The `fileDiff` option: answer requests for one file's diff (#319). */
+  fileDiff?: boolean;
   /** Whether and how far the session can be answered from Podium (#206); omitted by nothing that responds. */
   respond?: RespondInfo | null;
   /** The asks open now, sent only while the server takes answers (#206). */
   asks?: Ask[] | null;
   /** The session this one continues after a /clear. */
   clearedFrom?: string | null;
+  /** The `peers` option, for an interactive session (#347, #414): whether this orchestrator may take part in messaging. */
+  peers?: boolean;
 }
 
-/** Display name (SPEC 6.6): /podium name, the option, a worktree's branch or folder, the repo folder, the id. */
-export function displayName(s: Pick<SessionState, 'id' | 'git' | 'projectRoot' | 'cwd'>, storedName: string | null, optionName: string | null): string {
+/** Display name (SPEC 6.6): /podium name, Claude Code's session name, the option, a worktree's branch or folder, the repo folder, the id. */
+export function displayName(s: Pick<SessionState, 'id' | 'git' | 'projectRoot' | 'cwd'>, storedName: string | null, claudeName: string | null | undefined, optionName: string | null): string {
   const pick = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null);
   const name =
     pick(storedName) ??
+    pick(claudeName) ??
     pick(optionName) ??
     (s.git?.isWorktree ? pick(s.git.branch && !s.git.detached ? lastSegment(s.git.branch) : null) ?? pick(s.git.worktreePath ? lastSegment(s.git.worktreePath) : null) : null) ??
     pick(s.projectRoot ? lastSegment(s.projectRoot) : null) ??
@@ -170,11 +179,11 @@ export function buildReport(s0: SessionState, events: readonly ActivityEvent[], 
   return withinActivityBudget({
     v: 1,
     sentAt: meta.now,
-    reporter: { name: REPORTER_NAME, version: meta.version, engineVersion: meta.engineVersion, hostSurface: meta.hostSurface },
+    reporter: { name: REPORTER_NAME, version: meta.version, engineVersion: meta.engineVersion, hostSurface: meta.hostSurface, ...(meta.build ? { build: meta.build } : {}) },
     ...(meta.userName && meta.userName.trim() ? { userName: clip(meta.userName.trim(), 80), ...(meta.machine ? { machine: { ...meta.machine } } : {}) } : {}),
     session: {
       id: s.id,
-      name: displayName(s, meta.storedName, meta.optionName),
+      name: displayName(s, meta.storedName, meta.claudeName, meta.optionName),
       status: s.status,
       waitReason: s.status === 'waiting' ? s.waitReason : null,
       waitNote: s.status === 'waiting' && s.waitNote ? clip(s.waitNote, 160) : null,
@@ -199,10 +208,12 @@ export function buildReport(s0: SessionState, events: readonly ActivityEvent[], 
       ...(s.status === 'waiting' && s.background ? { background: s.background } : {}),
       files: { ...s.files, files: s.files.files.map((f) => ({ ...f, path: clip(f.path, 300), from: f.from === null ? null : clip(f.from, 300) })) },
       activityFeed: activity,
+      fileDiff: meta.fileDiff === true,
       ...(activity && s.main.activity.length ? { activity: feed(s.main.activity) } : {}),
       ...(meta.respond ? { respond: meta.respond } : {}),
       ...(meta.asks ? { asks: meta.asks.slice(0, 8) } : {}),
       ...(meta.clearedFrom ? { clearedFrom: meta.clearedFrom } : {}),
+      peers: meta.peers === true,
     },
     agents: withinTextBudget(agents.map((a) => agentReport(a, meta.fullText === true, activity))),
     events: events.slice(0, MAX_EVENTS_PER_REPORT).map((e) => ({ ...e, text: clip(e.text, 240) })),

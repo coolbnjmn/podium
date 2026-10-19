@@ -42,14 +42,29 @@ claude --plugin-dir /path/to/podium/mod/podium-reporter
 
 ```sh
 npm test               # server, UI, simulator and podiumctl tests (vitest)
+npm run test:coverage  # the same tests with coverage; writes server/coverage and frontend/coverage (lcov, gitignored); slower, so its test timeout is 20 s
 npm run build          # UI and server build, scripts type-check
 npm run test:mod       # the mod's tests (needs Claude Code)
 npm run typecheck:mod  # the mod against Claude Code's plugin API declarations (needs Claude Code)
-npm run podium:smoke   # end to end: server, simulator, SSE
+npm run podium:smoke   # end to end: server, simulator, SSE, directly and through Vite
+scripts/podium-soak.sh --help   # load and restart check
+scripts/gpu-sample.sh --help    # sample the Mac's GPU load while a tab is open (macOS)
+scripts/agent-context-audit.sh --help  # compare each agent's Tokens with its own transcript
+scripts/agent-tokens-sample.sh --help  # log a running agent's Tokens over time
+scripts/podium-peers-e2e.sh --help     # orchestrator messaging with real Claude Code sessions in tmux (costs model usage)
 ```
 
-CI runs `npm test` and `npm run build` on every PR into `development` or `main`. It cannot run the two mod checks, because a stock runner
-has no Claude Code, so run those yourself when you touch the mod.
+CI runs `npm test` and `npm run build` on every PR into `development` or `main`, on the project's self-hosted runners (`runs-on: [self-hosted, Linux, X64]`; a PR from a fork uses GitHub's `ubuntu-latest`); a job waits in the queue when none is free. It cannot run the two mod checks, because the runners
+have no Claude Code, so run those yourself when you touch the mod.
+
+Two scanners also run on PRs: SonarCloud (`.github/workflows/sonar.yml`, quality gate and coverage on new code) and CodeQL
+(`.github/workflows/codeql.yml`, the `security-extended` queries; results are under Security > Code scanning). Neither runs on
+your machine. Fix what they flag in your PR.
+
+SonarCloud cannot see the mod's own tests, because they run only inside Claude Code, so a line added to
+`mod/podium-reporter/hooks/register.ts` counts as uncovered. Put new mod logic in a plain module beside it that imports
+nothing from the engine (see `place.ts`, which takes what it needs from `$` as an argument), test it from `scripts/` with vitest,
+and keep `register.ts` to a few lines of glue. `server/vitest.config.ts` measures `mod/podium-reporter/hooks/*.ts` for this.
 
 When you fix a bug in code, add a test that fails for the right reason first, then fix it.
 
@@ -66,17 +81,56 @@ own conversation. Other docs should link to the spec section instead of restatin
 
 | Doc | Owns |
 |---|---|
-| `README.md` | Orientation, install, run, settings tables |
+| `README.md` | Orientation, quick start and the table of docs |
+| `docs/SERVER.md` | Running the server: `podiumctl`, several people on one server, server settings |
+| `docs/REPORTER.md` | The reporter mod: install, options, what leaves a session |
 | `docs/USER_GUIDE.md` | Using the dashboard, day-to-day |
+| `docs/MESSAGING.md` | Orchestrator messaging from start to finish: how the parts fit, setup, rights, limits, troubleshooting, the end-to-end test |
 | `docs/SPEC.md` | Intended behavior and requirements |
 | `docs/ARCHITECTURE.md` | How it was built, departures from the spec, verification, known issues |
 | `docs/DECISIONS.md` | Why a significant choice was made |
 | `docs/GOTCHAS.md` | Sharp edges that are easy to hit |
+| `docs/standards/` | How the UI looks and is built: tokens, components, patterns, voice, accessibility. Generated from the app, never edited by hand |
 | `docs/DEMO.md` | A script for showing Podium to other people |
 | `CHANGELOG.md` | One entry per release |
 
 Update the docs that describe your change in the same PR, and add a line under `[Unreleased]` in
 `CHANGELOG.md` for anything a user would notice.
+
+A change to the UI also follows the standards in `docs/standards/`, and starts with a mockup that links
+`frontend/src/fleet/tokens.css` instead of carrying a `:root` block. A PR into `development` does not edit the standards,
+the same way it does not bump the version. If the maintainer approved a change to a token, a component, a variant or a pattern rule,
+add a line that starts `Standards:` under `[Unreleased]` that names the change and the approval. A change that changes no
+standard needs no line. Either way the release-prep PR brings the standards in line (`npm run standards:sync`, then
+`npm run standards:parity` must pass), so parity can fail on `development` until then. A PR into `main` is valid only if parity passes.
+
+### Writing docs
+
+These apply when you write a new doc or change an existing one. People and agents follow the same rules.
+
+**Structure**
+
+- Each fact has one owning doc (the table above). Everywhere else, link to it instead of restating it.
+- A file over about 100 lines opens with a contents list. Keep heading depth consistent.
+- Keep paragraphs under about 8 lines. Put reference material in tables, procedures in numbered lists and
+  commands in code blocks.
+- Do not add a new standing doc when an existing one can hold the content.
+
+**Shapes**
+
+- `docs/GOTCHAS.md`: every entry has **You see**, **Why** and **Do**, in that order.
+- `docs/DECISIONS.md`: every entry has Context, Decision, Why, Alternatives and Cost, leaving out a part only
+  when there is nothing to say for it.
+- `docs/SPEC.md`: section numbers are cited from other docs, code comments and issues. Do not renumber or
+  rename a numbered heading. Add unnumbered subheadings inside a section instead.
+
+**Before you open the PR**
+
+1. Check that the headings other files link to still exist: `node scripts/check-doc-links.mjs` reports any
+   broken relative link or `#anchor`.
+2. Search for citations of anything you renamed, such as `SPEC 6.8`, in docs, code comments and open issues.
+3. If a doc disagrees with `docs/SPEC.md`, do not pick a reading. Say so in the PR and ask.
+4. Reread for the voice rules below.
 
 ### The mod version bump
 

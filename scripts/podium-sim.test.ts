@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseArgs, Simulator } from './podium-sim.ts';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { logSafe, parseArgs, post, Simulator } from './podium-sim.ts';
 import { MAIN_LOOP, validateReport, type Report } from '../server/src/fleet/protocol.ts';
 
 function run(seed: number, ticks: number, chaos = false): Report[] {
@@ -59,6 +59,15 @@ describe('podium-sim', () => {
     expect(parseArgs(['--reporter-version', '0.1.0'])).toMatchObject({ reporterVersion: '0.1.0' });
     expect(() => parseArgs(['--sessions', 'many'])).toThrow();
     expect(() => parseArgs(['--bogus'])).toThrow();
+  });
+
+  it('drops trailing slashes from --url, in linear time (#362)', () => {
+    expect(parseArgs(['--url', 'http://h:1///'])).toMatchObject({ url: 'http://h:1' });
+    expect(parseArgs(['--url', '///'])).toMatchObject({ url: '' });
+    expect(parseArgs(['--url', 'a / '])).toMatchObject({ url: 'a / ' });
+    const start = Date.now();
+    expect(parseArgs(['--url', `${'/'.repeat(100_000)}x`])).toMatchObject({ url: `${'/'.repeat(100_000)}x` });
+    expect(Date.now() - start).toBeLessThan(1000);
   });
 
   it('parses people and the unnamed share', () => {
@@ -161,5 +170,38 @@ describe('podium-sim', () => {
 
   it('sends no name or machine without --person', () => {
     expect(run(4, 20).some((r) => 'userName' in r || 'machine' in r)).toBe(false);
+  });
+});
+
+describe('logSafe', () => {
+  it('replaces newlines and control characters so logged input cannot forge a log line', () => {
+    expect(logSafe('ok\nFAKE podium-sim: forged\r\u001b[31m')).toBe('ok FAKE podium-sim: forged  [31m');
+    expect(logSafe('a\u0085b c d')).toBe('a b c d');
+    expect(logSafe('plain text')).toBe('plain text');
+  });
+
+  describe('post', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    /** Runs post() against a server that answers with `status` and `text`, and returns what was logged. */
+    async function logged(status: number, text: string, userName?: string): Promise<string> {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(text, { status })));
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const args = parseArgs([]);
+      if (args === 'help') throw new Error('unexpected help');
+      await post(args, { userName, events: [] } as unknown as Report);
+      vi.unstubAllGlobals();
+      return err.mock.calls.map((c) => String(c[0])).join('\n');
+    }
+
+    it('prints a refused reply and a name on one line', async () => {
+      const out = await logged(401, 'bad\nFAKE podium-sim: forged', 'Ann\nBob');
+      expect(out).toBe('podium-sim: report refused (401) for Ann Bob: bad FAKE podium-sim: forged');
+    });
+
+    it('prints a rejected reply on one line', async () => {
+      const out = await logged(400, 'no\r\nFAKE');
+      expect(out).toBe('podium-sim: report rejected: no  FAKE');
+    });
   });
 });

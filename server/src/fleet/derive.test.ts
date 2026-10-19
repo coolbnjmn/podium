@@ -5,6 +5,7 @@ import {
   computeKpis,
   family,
   resumeCommand,
+  forkCommand,
   sessionStatus,
   sessionView,
   shortenHome,
@@ -70,6 +71,14 @@ describe('paths and commands', () => {
     expect(resumeCommand('/Users/dev/my app', null, 'abc')).toBe("cd '/Users/dev/my app' && claude --resume abc");
     expect(resumeCommand("/tmp/it's", null, 'abc')).toBe("cd '/tmp/it'\\''s' && claude --resume abc");
   });
+
+  it('builds the fork command as the resume command plus --fork-session, with the same quoting (#352)', () => {
+    expect(forkCommand('/Users/dev/app', null, 'abc')).toBe('cd /Users/dev/app && claude --resume abc --fork-session');
+    expect(forkCommand('/Users/dev/app', 'r-1', 'abc')).toBe('cd /Users/dev/app && claude --resume r-1 --fork-session');
+    expect(forkCommand('/Users/dev/my app', null, 'abc')).toBe("cd '/Users/dev/my app' && claude --resume abc --fork-session");
+    expect(forkCommand("/tmp/it's", null, 'abc')).toBe("cd '/tmp/it'\\''s' && claude --resume abc --fork-session");
+    expect(forkCommand('/tmp/$(id) `x`; y', null, 'abc')).toBe("cd '/tmp/$(id) `x`; y' && claude --resume abc --fork-session");
+  });
 });
 
 describe('buildSeries', () => {
@@ -122,6 +131,7 @@ describe('sessionView', () => {
     expect(v.agents.find((a) => a.id === 'a1')?.toolCounts).toEqual({ Grep: 14, Read: 11, Glob: 6 });
     expect(v.series.tokensPerSec).toHaveLength(60);
     expect(v.resumeCommand).toBe('cd /Users/dev/billing-service/.claude/worktrees/invoice-v2 && claude --resume 5f0c2a8e-1b7d-4c3e-9a51-2d6f8e0b4c11');
+    expect(v.forkCommand).toBe('cd /Users/dev/billing-service/.claude/worktrees/invoice-v2 && claude --resume 5f0c2a8e-1b7d-4c3e-9a51-2d6f8e0b4c11 --fork-session');
     expect(v.secondsSinceSeen).toBe(1);
   });
 
@@ -154,6 +164,13 @@ describe('sessionView', () => {
     expect(at('0.3.1')).toEqual(['0.3.1', 'ok']);
     expect(at('99.0.0')).toEqual(['99.0.0', 'newer']);
     expect(at('0.1.0-sim')).toEqual(['0.1.0-sim', 'unknown']);
+  });
+
+  it('carries the reporter build, which only a dev build has (#400)', () => {
+    const r = fixtureReport();
+    expect(viewOf(r, 1_791_648_001_000).reporterBuild).toBeNull();
+    r.reporter.build = 'a1b2c3d4';
+    expect(viewOf(r, 1_791_648_001_000).reporterBuild).toBe('a1b2c3d4');
   });
 
   it('is stale past STALE_AFTER_MS unless done, and stale until heard after a restart', () => {
@@ -263,6 +280,18 @@ describe('agents launched by other agents (#101)', () => {
     expect(v.blowouts).toMatchObject({ orchestrator: 0, agents: 2, total: 2, loopsHit: 2, loopsTotal: 7 });
     const k = computeKpis({ views: [v], costToday: f.costSince(startOfDay(now)), tokensPerSecond: f.fleetTokensPerSecond(0), costPerMinute: f.fleetCostPerMinute(0) }, now);
     expect(k).toMatchObject({ agentsRunning: 4, agentsTotal: 6 });
+  });
+
+  it('counts the agents that are queued as waiting, and no other status (#450)', () => {
+    const now = 1_791_648_100_000;
+    const f = new FleetDb(openDb(':memory:'));
+    const r = nestedReport();
+    r.agents = r.agents.map((a) => (a.id === 'c' || a.id === 'g' ? { ...a, status: 'queued' as const, endedAt: null } : a));
+    ingestReport(f, r, now - 1000);
+    const id = r.session.id;
+    const v = sessionView({ row: f.getSession(id)!, agents: f.getAgents(id), blowouts: f.getBlowouts(id), samples: f.samplesSince(id, 0), heard: true }, now, CFG);
+    const k = computeKpis({ views: [v], costToday: f.costSince(startOfDay(now)), tokensPerSecond: f.fleetTokensPerSecond(0), costPerMinute: f.fleetCostPerMinute(0) }, now);
+    expect(k).toMatchObject({ agentsWaiting: 2, agentsRunning: 2, agentsTotal: 6 });
   });
 
   it('keeps a finished nested agent the engine no longer lists, and aborts the running ones when the session ends', () => {
