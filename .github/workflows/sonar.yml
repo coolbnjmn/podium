@@ -1,10 +1,11 @@
 name: Sonar
 
-# Scans development (push), every PR into development, and a PR into main only when it comes from development
-# (the release PR). Any other PR into main is skipped; pr-target-check.yml rejects those anyway.
+# Scans development and main (push), every PR into development, and a PR into main only when it comes from development
+# (the release PR). Any other PR into main is skipped; pr-target-check.yml rejects those anyway. main is SonarCloud's default
+# branch, so it is scanned after each release merge or its dashboard goes stale (#510).
 on:
   push:
-    branches: [development]
+    branches: [development, main]
   pull_request:
     branches: [development, main]
     types: [opened, synchronize, reopened]
