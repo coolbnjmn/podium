@@ -2122,6 +2122,47 @@ The `/api/admin/*` routes ([7.7](#77-hardening)):
       created again. It writes one `person_deleted` Admin log entry per person, naming who deleted whom.
     - The People page offers it with a checkbox per row, a selection bar (**Delete N…**, **Clear**) and a **Delete**
       button on each row. Both open a confirmation dialog first. Selection is of the rows on the current page only.
+  - Reports (#484, [8.1](#admin-layout-143-mockuppodium-adminhtml)): `GET reports/:report` for `usage`, `spend`, `people`, `sessions`,
+    `failures` and `activity`, and `GET reports/retention` for the Data kept panel.
+    - Query: `from` and `to` (`YYYY-MM-DD`, inclusive, at most 400 days apart, `to` not after today), `by`
+      (`day`, `week` or `month`; weeks start Monday), and `person`, `group` and `model` where the report has them.
+      A bad value is a `400`.
+    - Reply: `{ report, from, to, by, tz, basedOn, oldestDay, columns: [{ key, label, unit }], rows, total }`.
+      `oldestDay` is the first day the rollups hold (today when there are none yet). `partial` is `true` whenever `from` is
+      before it: a period wholly before it has `rows: []`, and one that straddles it returns the rows from `oldestDay`
+      on, so the page says so instead of drawing zeros. `basedOn` is `rollups`, `rollups and live` or `admin log`. A figure that is unknown is `null`, not 0.
+    - `format=csv` returns the same `columns` and `rows` as text (RFC 4180, a header row, a cell that starts with
+      `=`, `+`, `-` or `@` prefixed with `'`), `Content-Disposition: attachment`. The page's JSON export is the
+      reply itself, so an export always matches the screen.
+    - Today is read from the live tables, and every earlier day from the rollups.
+    - **Columns.** Every report's `rows` are objects, and `columns` names their keys in order. `period` is the bucket's
+      first day (`YYYY-MM-DD`, or `YYYY-MM` for `by=month`). A money field is `null` when no priced model was
+      involved. `breakdown` is a query value that adds a `key` column.
+      - `usage`: `period, people, reporters, sessions, peakLive`. `reporters` is the most reporters heard from on any one day
+        in the bucket (a rollup holds a count per day, so a distinct count over a week is not possible). `total` has the same keys over the whole period
+        (`people` and `reporters` counted once, `peakLive` the highest).
+      - `spend`: `breakdown` is `none` (default), `person`, `group`, `model` or `project`. Rows: `period, key, sessions,
+        tokIn, tokOut, costUsd, unpricedSessions`. `key` is absent for `none`.
+      - `people`: one row per person, no `period`: `person, group, sessions, lastReportAt, state` (`active` reported in the
+        period, `quiet` known but not in the period, `never` never reported). The reply also carries
+        `summary: { people, groups, reporters, reporterVersions: {version: count}, engineVersions: {version: count} }`.
+      - `sessions`: `breakdown` is `outcome` (default), `model`, `effort` or `plan`. Rows: `period, key, sessions,
+        avgDurationS, maxDurationS, agentsPerSession, blowouts, maxContextPct`.
+      - `failures`: `breakdown` is `class` (default), `tool` or `person`. Rows: `period, key, count, people` and, while the
+        stored sessions still exist (30 days), `sessionIds` (at most 10) for the History link.
+      - `activity`: read from `admin_log`, not the rollups; `kind` filters. Rows: `t, kind, detail, source`, newest first,
+        at most 1,000. It has no `by`.
+      - `retention`: `{ tables: [{ name, rows, oldestDay, keptDays }], detail: [{ name, keptDays }] }`.
+      - An empty person, group, model or project is `-` in every `key` and in the filters.
+      - `spend/projection` (`horizon=month|30d`, `window=7|14|30`, default 14, `by=person|group`): rows `key, runRatePerDay, spentThisMonth, projected` (`null` for both `runRatePerDay` and `projected`
+        when there is too little history, with `reason: 'history'`), a `total` row of the same keys, and the reply carries
+        `window: { from, to, days }`, `horizon`, `unpricedSessions` and `historyDays`.
+      - `spend/today/:owner`: `total` and, each adding up to it, `bySession: [{ id, name, model, costUsd, share }]`,
+        `byModel: [{ model, costUsd, share }]`, `bySource: { orchestrator, agents }`; `unpriced` is the count of sessions
+        left out. For a group, `byPerson: [{ owner, costUsd, share }]` comes first and the route takes `?group=1`.
+    - `GET reports/spend/today/:owner` (#482) returns `{ owner, total, bySession, byModel, bySource, unpriced }` for
+      the breakdown, and `GET reports/spend/projection` (#483) the projection; both are described under *Spend*.
+    - A report with names in it (person, group, model, project) returns them as text.
   - Groups: `GET/POST groups`, `DELETE groups/:id`.
   - Reporters (the Reporters page, [7.7](#77-hardening), [8.1](#81-what-the-ui-must-do)): `GET reporters`,
     `GET reporters/:key`, `DELETE reporters/:key`, and `POST reporters/remove`.
@@ -2239,6 +2280,33 @@ CREATE TABLE reporter_ignores (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT N
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);       -- allow_admin_secret_reporting: '1' (default) or '0'; feature.<id>: '0' once the Admin turns a feature flag off and '1' once on, an unset flag taking its default (on, except `respond`, `file-diff` and `peer-messaging`, which are off, #206, #319, #347); wall_notice.<id>: '0' once a notice is off; wall_show_background_sessions: '1' when on (default off); model_prices: JSON of only what the Admin changed from the built-in prices, `{ "<key>": { std?, long? } }` (#117); peer_settings: JSON of the orchestrator messaging limits and retention, `{ roundTrips, perMinute, maxChars, retainDays }` (#347)
 ```
 
+Migration 22 (#484) adds the daily rollups that Admin > Reporting reads ([8.1](#admin-layout-143-mockuppodium-adminhtml)). A rollup row
+holds counts, tokens, cost and names (a person, group, model, project and effort), never a prompt, an answer, a tool's
+input or a path. A day is a calendar day in the server's time zone (`day` is `YYYY-MM-DD`); every report states that zone.
+
+```sql
+CREATE TABLE usage_daily (      -- one row per day, person, model and project; a session counts on the day it was last seen
+  day TEXT NOT NULL, owner TEXT NOT NULL, group_name TEXT NOT NULL, model TEXT NOT NULL, project TEXT NOT NULL,  -- '' when none: no owner, no group, no model, no repo
+  sessions INTEGER NOT NULL, agents INTEGER NOT NULL, cost_usd REAL NOT NULL,   -- cost_usd: summed only from priced models (the unpriced-model dash stays a dash); unpriced_sessions says how many sessions had none
+  unpriced_sessions INTEGER NOT NULL, tok_in INTEGER NOT NULL, tok_out INTEGER NOT NULL, tok_cr INTEGER NOT NULL, tok_cw INTEGER NOT NULL,
+  PRIMARY KEY (day, owner, model, project)
+);
+CREATE TABLE sessions_daily (   -- one row per day, outcome, model, effort and plan; durations in whole seconds
+  day TEXT NOT NULL, outcome TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, plan TEXT NOT NULL,   -- outcome: the session's end_reason, or 'running' for one still live when the rollup ran; plan: where the session's plan came from (TaskCreate, TodoWrite, podium_plan) or 'none'
+  sessions INTEGER NOT NULL, duration_s INTEGER NOT NULL, max_duration_s INTEGER NOT NULL, agents INTEGER NOT NULL, blowouts INTEGER NOT NULL, max_context_pct REAL NOT NULL,
+  PRIMARY KEY (day, outcome, model, effort, plan)
+);
+CREATE TABLE failures_daily (   -- one row per day, person, failure class and tool
+  day TEXT NOT NULL, owner TEXT NOT NULL, class TEXT NOT NULL, tool TEXT NOT NULL, count INTEGER NOT NULL,
+  PRIMARY KEY (day, owner, class, tool)
+);
+CREATE TABLE fleet_daily (      -- one row per day for the fleet as a whole
+  day TEXT PRIMARY KEY, active_people INTEGER NOT NULL, active_reporters INTEGER NOT NULL,
+  sessions_started INTEGER NOT NULL, peak_live_sessions INTEGER NOT NULL,
+  reporter_versions_json TEXT NOT NULL, engine_versions_json TEXT NOT NULL   -- { "<version>": reporters heard from that day }
+);
+```
+
 Migration 15 (#206) links a session to the one it continues after a `/clear` (5.8):
 
 ```sql
@@ -2334,9 +2402,18 @@ The sweeper runs this hourly:
   up for an hour (so a long outage cannot empty the list before anyone reports), it removes reporters not heard
   from for `days` days (30 unless the Admin sets another) and writes a `reporters_forgotten` entry to the Admin
   log.
+- Before it deletes anything, the same run writes the daily rollups (#484): for each day from the oldest
+  retained session's day to today, it rebuilds that day's rows in `usage_daily`, `sessions_daily`,
+  `failures_daily` and `fleet_daily` from the rows still stored (a day that began before the session retention is
+  skipped, since what is left of it would lower its figures), in one transaction, so a run twice gives the
+  same rows. A day whose raw rows are already gone is left as it is. Rollup rows older than 395 days are deleted.
+  `peak_live_sessions` is the highest count of sessions live at one second, read from the day's samples while
+  they last and never lowered once written (a day's figure only grows).
+- A rollup holds no session content (see the schema). Admin > Reporting > Data kept lists each table, its row
+  count, its oldest day and how long it is kept.
 
-The thresholds are env-configurable: `RETAIN_SAMPLES_MS`, `RETAIN_EVENTS_MS`, `RETAIN_SESSIONS_MS` and
-`RETAIN_ADMIN_LOG_MS`. `GET /api/admin/log` also returns the period as `retainMs`, and Admin > Admin log says
+The thresholds are env-configurable: `RETAIN_SAMPLES_MS`, `RETAIN_EVENTS_MS`, `RETAIN_SESSIONS_MS`,
+`RETAIN_ADMIN_LOG_MS` and `RETAIN_ROLLUP_MS` (395 days). `GET /api/admin/log` also returns the period as `retainMs`, and Admin > Admin log says
 "Entries are kept for N days."
 
 ### 7.3 Ingest rules and derivation
@@ -3378,8 +3455,11 @@ menu and the page scroll on their own.
 - It is `<nav aria-label="Admin sections">` of buttons, the current one `aria-current="page"`, in three
   groups:
   - People and access: People, Groups, Reporters.
-  - Server: Settings, Model prices, Reporting and security.
-  - Activity: Spend, Admin log.
+  - Server: Settings, Model prices, Security.
+  - Reporting (#484): Usage, Spend, People and groups, Sessions, Failures, Admin activity, Data kept.
+  - Activity: Admin log.
+- The page that was "Reporting and security" is now **Security** (#484), so two entries do not both say
+  "Reporting". Its content is unchanged.
 - Each group has a heading (#244, `mockup/podium-admin-menu.html`): a small outline icon, the group's name at
   18 px in the primary ink, and a rule under it, with the groups 24 px apart. The name is 16 px from 761 to
   1280 px of viewport, where the rail is 224 px and 18 px would wrap "People and access". No color is used,
@@ -3406,7 +3486,79 @@ menu and the page scroll on their own.
 **Groups**
 - **Create group**, then **Manage groups**.
 
+<a id="admin-reporting-484"></a>**Reporting (#484, `mockup/podium-admin-reporting.html`)**
+- A menu group of seven pages, all Administrator-only like the rest of Admin. Every page is the usual stack: a
+  header, then one **Period and filters** section above one **Report** section.
+- **Period and filters**: a **Period** choice (Last 7 days, Last 30 days, Last 90 days, This month, Last month,
+  Custom with From and To), **By** (Day, Week, Month), and **Person**, **Group** and **Model** where the report has
+  them. The default is Last 30 days by day. Under the controls one line states the time zone ("Days are in
+  Europe/Berlin time") and what the report is based on and how far back it goes ("Based on daily rollups since
+  2026-03-02; today is read live"). The choice is remembered in `localStorage` under `podium.adminReporting`, read
+  and written with try/catch.
+- **Report**: a summary row of totals, a chart in a neutral ink (never a hue, as on Spend), the table the chart is
+  drawn from, and the pager. **Export** has **CSV** and **JSON**, and **Print** prints the page without the menu.
+  An export is exactly the table's `columns` and `rows` for the chosen period and filters ([7.7](#77-hardening),
+  `GET reports/:report`).
+- A period that reaches before the first rollup day says "Podium has no history before 2026-03-02. The figures
+  below cover 2026-03-02 to 2026-04-01." A period with no rows says "Nothing was recorded in this period."
+  Neither draws zeros.
+- The pages:
+  - **Usage**: active people, active reporters, sessions started and the peak of sessions live at once, per
+    period.
+  - **Spend**: total, and by person, group, model or project (**Break down by**), per period. It keeps the
+    content of the old Admin > Activity > Spend page: *Spend today, by person* and *by group* as Chart or Table,
+    now the first section of this page with its `podium.adminSpend` choices unchanged, above the report. Figures
+    are estimated from tokens, not a bill, and a model without a price shows a dash. A session counts on the day it
+    was last seen, so a session that runs past midnight is not split. The page has three sections, in this order:
+    *Spend today* (with the breakdown below), *Projection* and *Spend over time*.
+    - **Breakdown (#482).** A row in *Spend today, by person* is a button (Enter and Space work). It opens the
+      person's breakdown under the list, with a **Close** button, and focus moves to its heading. The breakdown
+      is of the same "since midnight" figure as the row, cut three ways, each adding up to the row:
+      - *By session*: each session that spent something today, with its name, model, the share it spent today and
+        a link to it in History.
+      - *By model*: each model's share of today's spend.
+      - *Orchestrator and agents*: the session's own loop against the agents it launched. A session's today share is
+        split in the same proportion as its whole cost (the agents' `cost_usd_est` against the rest).
+      - The amounts use the same estimate and prices as the table. A part on a model with no price shows a dash
+        and is left out of the sum, and a line under the breakdown counts those sessions ("plus 2 sessions on
+        models without a price"), so the priced parts still add up to what the row shows.
+      - On *by group*, a group row opens the same panel with a **By person** cut first (its members and their
+        shares), and a click on a member opens that person's breakdown. A row for sessions with no owner opens the
+        panel with only the by-session and by-model cuts.
+      - It reads `GET reports/spend/today/:owner` (the live sessions, as the table does; `owner` is the name,
+        `Admin`, or `-` for no owner). The people in it are drawn as text.
+    - **Projection (#483).** A forecast of spend over a horizon ahead, from the rollups.
+      - **Horizon**: *Rest of this month* (default) or *Next 30 days*. **Window**: the trailing 7, 14 (default)
+        or 30 complete days the run rate is taken over. Today is not in the window.
+      - Method: the **run rate** is the window's priced spend divided by its days. *Rest of this month* is the
+        month's spend so far, today included, plus the run rate for each day left after today. *Next 30 days* is
+        30 times the run rate. It does not allow for weekdays, a trend or a price change.
+      - Shown: the projected total, and beside it the window ("14 days, 2026-10-06 to 2026-10-19"), the run rate
+        per day, and the assumptions in one line ("Straight run rate. Models without a price are left out.
+        Not a budget."). Per person or group when **Group by** says so, each with its own run rate.
+      - With fewer than 7 complete days of history in the window (the server has less, or a person has been
+        active on fewer than 3 of them), it shows "Not enough history to project. Podium has N days so far" in
+        place of the number, never a guess. A person under that rule is listed with a dash.
+      - Models without a price are left out and the projection says how many sessions that was in the window.
+      - It reads `GET reports/spend/projection?horizon=&window=&by=person|group`, which returns the same
+        `columns` and `rows` as any report, so CSV and JSON export work. Because the rollups hold the history,
+        no extra history is recorded for it.
+  - **People and groups**: how many people, groups and reporters there are; who reported in the period; who has
+    not reported (quiet for the period, or never); the reporter versions and engine versions in use.
+  - **Sessions**: counts by outcome, model, effort and plan; average and longest duration; agents launched per
+    session; and how many sessions hit a context blowout and how full the window got.
+  - **Failures**: counts by failure class and tool, over time and by person, each class row linking to History
+    filtered to those sessions while they are within the 30 days History keeps. It is the root-cause report.
+  - **Admin activity**: the Admin log filtered by kind and period, read from `admin_log` (90 days).
+  - **Data kept**: each rollup table, its rows, its oldest day, and how long it is kept; the retention of
+    samples, events, sessions and the Admin log beside them. The text says a rollup holds counts, tokens, cost
+    and names, and no prompts or tool input.
+- Names are untrusted text, drawn as text nodes. A CSV cell is neutralized as in [7.7](#77-hardening).
+
 **Spend (#239, `mockup/podium-admin-spend.html`)**
+- Since #484 this page is Reporting > Spend, not Activity > Spend. Its content below is unchanged except that a
+  row is now a button that opens a breakdown (#482), and the projection (#483) and the over-time report sit
+  below it (see *Reporting*).
 - One section, **Spend today, by person** (or **by group**), whose lead says it is estimated from tokens, not a
   bill.
 - Its panel has a toolbar with **Group by** (People, Groups) and **Show as** (Chart, Table) and, at the right

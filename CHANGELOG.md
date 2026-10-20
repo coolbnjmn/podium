@@ -16,6 +16,12 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ### Added
 
+- **Admin > Reporting (#484, #482, #483).** A new menu group with seven pages: Usage, Spend, People and groups, Sessions, Failures, Admin activity and Data kept. Each takes a period, a day, week or month grouping and filters, states the time zone and how far back its data goes, and exports exactly what it shows as CSV or JSON (and prints). Podium now keeps daily summaries of usage, sessions, failures and the fleet for 395 days (`RETAIN_ROLLUP_MS`), written before the detailed rows are swept, so a report can reach past the 30 days of sessions and events. The summaries hold counts, tokens, cost and names, and no session content. Admin > Reporting > Data kept lists what is stored and for how long.
+  - **Spend breakdown (#482).** A person's row in Spend today opens what the figure is made of: by session, by model, and orchestrator against agents. Each cut adds up to the row, and a model without a price shows a dash.
+  - **Spend projection (#483).** A straight run rate over the last 7, 14 or 30 days projected to the end of the month or 30 days ahead, with the window and assumptions shown, and "Not enough history" when there are fewer than 7 days.
+  - `scripts/podium-seed-history.ts` fills a throwaway database with past days so the simulator can show the reports and the projection.
+  Standards: the Admin menu gains a Reporting group and the Server page "Reporting and security" is renamed Security, and new classes `exp`, `note-line`, `partial`, `chart`, `rowbtn`, `klink`, `hlinks` and `cuts` come with the page, approved with the mockup on #484 (`mockup/podium-admin-reporting.html`).
+
 - **A Discord server for Podium (#457).** The README has a Community section with the invite link, and `docs/COMMUNITY.md` says how to join, what belongs in Discord and what does not (security problems go to a private GitHub Security Advisory), how the maintainer sets the server up securely and renews the invite, which expires until Discord offers a permanent one. `SECURITY.md` and the Code of conduct now name the Discord server.
 
 - **The wall tells you when a newer Podium release is out (#499).** Once a day the server asks GitHub for the latest release, and when it is newer than the running server the wall shows a notice at the bottom: `Podium 0.15.0 is available`, in a green pill, with the version running and a link to the release notes. The X hides that release for everyone, and a still newer release shows the notice again. A check that fails (offline, rate limited, no answer) shows nothing. Admin > Settings > Feature flags has a **Release check** switch, on by default; off, the server makes no request to GitHub. Pre-releases and drafts are ignored.
@@ -27,8 +33,8 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ### Changed
 
+- Admin: Spend moved from Activity into the new Reporting group, and the Server page "Reporting and security" is now called **Security** so there is one "Reporting" (#484).
 - Standards: a green variant of the pill, `pill good`, joins the default, `warn` and `bad`. It is used first by the update notice. Approved by the maintainer on #499, with the mockups `mockup/podium-update-notice.html` and `mockup/podium-update-check-admin.html`.
-
 - Added SonarCloud quality and CodeQL status badges to the README (#517).
 
 ### Fixed
