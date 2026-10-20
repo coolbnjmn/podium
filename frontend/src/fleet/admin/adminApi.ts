@@ -117,6 +117,23 @@ export interface ModelPricesView {
   models: ModelPriceRow[];
 }
 
+/** Activity history (#432): the shapes the Data and Stored activity pages share with the server's routes. */
+export type {
+  ActivityHistoryPolicy,
+  ActivityHistoryPreview,
+  ActivityHistoryPreviewBody,
+  ActivityHistorySettings,
+  ActivityHistoryState,
+  ActivityHistoryUnit,
+  LastPurge,
+  StoredActivityList,
+  StoredDeleteBody,
+  StoredDeleteResult,
+  StoredFilter,
+  StoredSessionRow,
+  StoredTotals,
+} from "../../../../server/src/fleet/activityHistoryTypes";
+
 export class AdminError extends Error {
   constructor(
     readonly status: number,
@@ -134,6 +151,7 @@ export function makeApi(base = "/api/admin"): AdminApi {
     const res = await fetch(`${base}${path}`, {
       method,
       credentials: "same-origin",
+      cache: "no-store",
       headers: { "X-Podium-Admin": "1", ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });

@@ -21,6 +21,12 @@ import { createReportRouter } from '../fleet/reportRoutes.js';
 import type { ReportDeps } from '../fleet/reports.js';
 import { PEER_LEVELS, type PeerLevel } from '../fleet/protocol.js';
 import type { Actor, Refusal } from '../fleet/peerTypes.js';
+import type { ActivityHistory } from '../fleet/activityHistory.js';
+import { sizeText } from '../fleet/sizeText.js';
+import { capWords, countWords, policyWords } from '../fleet/activityHistoryWords.js';
+import type { ActivityHistorySettingsStore } from '../fleet/activityHistorySettings.js';
+import { ACTIVITY_LOG_KINDS, type ActivityHistorySettings, type ActivityHistoryState, type StoredDeleteBody, type StoredDeleteResult } from '../fleet/activityHistoryTypes.js';
+import { parseDeleteBody, parseFilter, parsePaging, parseSettings } from '../fleet/activityHistoryInput.js';
 import { createLogger, loggerFromLine, type Fields, type Logger } from '../logging/logger.js';
 
 export interface AdminRouterOptions {
@@ -37,6 +43,8 @@ export interface AdminRouterOptions {
   reporters?: ReporterStore;
   /** Orchestrator messaging (#347): the limits, a reporter's links, proposals, Pause all links and the conversations. */
   peers?: PeerService;
+  /** The Activity history (#432): its store and the Admin's choice. Without it the Activity history routes answer 404. */
+  activityHistory?: { history: ActivityHistory; settings: ActivityHistorySettingsStore };
   /** What the Reporting pages read (#484). Without it the report routes are not mounted. */
   reports?: ReportDeps;
   now?: () => number;
@@ -51,6 +59,8 @@ export interface AdminRouterOptions {
   respondBridge?: RespondBridge;
   /** Called when the Admin turns Respond from Podium on, for the plain-HTTP warning (#306). */
   onRespondOn?: () => void;
+  /** Called after a successful save of the Activity history setting, so open consoles get a fresh snapshot. */
+  onActivityHistoryChanged?: () => void;
   /** How long the admin log is kept (#303); `GET /log` reports it so the Admin page can say so. */
   logRetainMs?: number;
   /** The server's logger (#140): each Admin change is an `admin.<action>` event with the source address. */
@@ -158,7 +168,10 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
     next();
   });
 
-  router.use(express.json({ limit: '8kb' }));
+  // The Activity history delete takes up to 200 session ids, so its own parser (below) has a larger limit.
+  const STORED_DELETE = '/stored-activity/delete';
+  const smallJson = express.json({ limit: '8kb' });
+  router.use((req, res, next) => (req.path === STORED_DELETE ? next() : smallJson(req, res, next)));
 
   function sessionValid(req: Request): boolean {
     const sid = readCookie(req, COOKIE);
@@ -513,6 +526,9 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
 
   // ---- settings and log -----------------------------------------------------------------------
 
+  const history = opts.activityHistory;
+  const activityState = (h: NonNullable<typeof history>): ActivityHistoryState => ({ settings: h.settings.get(), totals: h.history.totals(), lastPurge: h.history.lastPurge, authOn: opts.secret !== null });
+
   const featureList = () => FEATURES.map(({ defaultOn, ...f }) => ({ ...f, on: features ? features.featureOn(f.id) : defaultOn }));
   const noticeList = () => NOTICES.map((n) => ({ ...n, on: wall ? wall.noticeOn(n.id) : true }));
 
@@ -526,6 +542,7 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
       modelPrices: prices?.view() ?? { asOf: PRICES_AS_OF, models: [] },
       forgetReporters: reporters?.forgetSetting() ?? { enabled: false, days: 30 },
       ...(peers ? { peerMessaging: peers.settings.get() } : {}),
+      ...(history ? { activityHistory: activityState(history) } : {}),
     });
   });
 
@@ -561,6 +578,15 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
       const v = out.settings;
       audit(req, 'peer_limits_changed', `Orchestrator messaging limits: ${v.roundTrips} round trips, ${v.perMinute} a minute, ${v.maxChars} characters, kept ${v.retainDays} days`, { ...v });
       return void res.json({ ok: true, peerMessaging: v });
+    }
+    if ('activityHistory' in body) {
+      const p = body.activityHistory;
+      if (!history || !p || typeof p !== 'object' || Array.isArray(p)) return void res.status(400).json({ ok: false, error: 'activityHistory must give policy, n, unit and capGb' });
+      const out = history.settings.set(p);
+      if (!out.ok) return void res.status(400).json({ ok: false, error: out.error });
+      audit(req, ACTIVITY_LOG_KINDS.changed, `Activity history set to ${policyWords(out.settings)}, ${capWords(out.settings)}`, { ...out.settings });
+      opts.onActivityHistoryChanged?.();
+      return void res.json({ ok: true, activityHistory: activityState(history) });
     }
     if ('showBackgroundSessions' in body) {
       const v = body.showBackgroundSessions;
@@ -633,6 +659,41 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
       return void res.json({ ok: true, modelPrices: prices.view() });
     }
     res.status(400).json({ ok: false, error: 'no known setting in the request' });
+  });
+
+  // ---- Activity history (#432) ----------------------------------------------------------------
+
+  // The store's heavy calls are async (they work in chunks). Express 4 does not catch a rejected promise, so a failure answers here.
+  const storeFailed = (res: Response) => () => void res.status(500).json({ ok: false, error: 'could not reach the stored activity' });
+
+  router.post('/activity-history/preview', (req, res) => {
+    if (!history) return void res.status(404).json({ ok: false, error: 'not available' });
+    const s = parseSettings((req.body as { settings?: unknown } | undefined)?.settings, opts.secret !== null);
+    if (!s.ok) return void res.status(400).json({ ok: false, error: s.error });
+    history.history.preview(s.value).then((out) => void res.json(out), storeFailed(res));
+  });
+
+  router.get('/stored-activity', (req, res) => {
+    if (!history) return void res.status(404).json({ ok: false, error: 'not available' });
+    const q = req.query as Record<string, unknown>;
+    const paging = parsePaging(q);
+    if (!paging.ok) return void res.status(400).json({ ok: false, error: paging.error });
+    const filter = parseFilter(q);
+    if (!filter.ok) return void res.status(400).json({ ok: false, error: filter.error });
+    history.history.list(filter.value, paging.value.page, paging.value.pageSize).then((out) => void res.json(out), storeFailed(res));
+  });
+
+  const how = (b: StoredDeleteBody) => ('ids' in b ? 'ticked sessions' : 'match' in b ? 'a filter' : 'everything');
+  const deletedWords = (r: StoredDeleteResult, b: StoredDeleteBody) => `Deleted ${countWords(r.entries, 'entry', 'entries')} (${sizeText(r.bytes)}) from ${countWords(r.sessions, 'session', 'sessions')}, chosen: ${how(b)}`;
+
+  router.post(STORED_DELETE, express.json({ limit: '64kb' }), (req, res) => {
+    if (!history) return void res.status(404).json({ ok: false, error: 'not available' });
+    const body = parseDeleteBody(req.body);
+    if (!body.ok) return void res.status(400).json({ ok: false, error: body.error });
+    history.history.deleteBy(body.value).then((out) => {
+      audit(req, ACTIVITY_LOG_KINDS.deleted, deletedWords(out, body.value), { entries: out.entries, sessions: out.sessions, bytes: out.bytes, chosen: how(body.value) });
+      res.json(out);
+    }).catch(storeFailed(res));
   });
 
   if (opts.reports) router.use('/reports', createReportRouter(opts.reports));
