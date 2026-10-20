@@ -14,6 +14,10 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+### Changed
+
+- Added SonarCloud quality and CodeQL status badges to the README (#517).
+
 ### Fixed
 
 - The Markdown linearity test is less sensitive to a contended CI runner: it takes the best of five measurements, allows a ratio below 10, remeasures a case once only if the first ratio exceeds the limit, and cleans up each render outside the timed interval so large DOM trees do not accumulate. A quadratic renderer still measures near 16 and fails (#514).
