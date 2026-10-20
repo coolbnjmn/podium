@@ -14,6 +14,12 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-19
+
+### Fixed
+
+- **SonarCloud's main branch is scanned after each release (#510).** The Sonar workflow ran on pushes to `development` and on PRs only, so SonarCloud's default branch, `main`, kept the analysis of the 1.1.0 release from 2026-10-17 and showed none of 1.2.0 or 1.2.1. A push to `main` now runs the scan. CI configuration only; no change to the product.
+
 ## [1.2.1] - 2026-10-19
 
 ### Fixed
@@ -620,7 +626,8 @@ and a plugin you can install from a marketplace.
 - The project was renamed from `claude-dashboard` to `podium`
   (`eengelking/podium`). (PR #5)
 
-[Unreleased]: https://github.com/eengelking/podium/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/eengelking/podium/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/eengelking/podium/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/eengelking/podium/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/eengelking/podium/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/eengelking/podium/compare/v1.0.2...v1.1.0

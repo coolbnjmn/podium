@@ -57,7 +57,7 @@ scripts/podium-peers-e2e.sh --help     # orchestrator messaging with real Claude
 CI runs `npm test` and `npm run build` on every PR into `development` or `main`, on the project's self-hosted runners (`runs-on: [self-hosted, Linux, X64]`; a PR from a fork uses GitHub's `ubuntu-latest`); a job waits in the queue when none is free. It cannot run the two mod checks, because the runners
 have no Claude Code, so run those yourself when you touch the mod.
 
-Two scanners also run on PRs: SonarCloud (`.github/workflows/sonar.yml`, quality gate and coverage on new code) and CodeQL
+Two scanners also run on PRs, and after a merge to `development` or `main`: SonarCloud (`.github/workflows/sonar.yml`, quality gate and coverage on new code) and CodeQL
 (`.github/workflows/codeql.yml`, the `security-extended` queries; results are under Security > Code scanning). Neither runs on
 your machine. Fix what they flag in your PR.
 
