@@ -399,17 +399,23 @@ function failuresReport(deps: ReportDeps, q: Query, cost: CostOf): ReportReply {
   return envelope(p, 'failures', p.by, f, [col('period', 'Period', 'date'), col('key', heading, 'text'), col('count', 'Failures', 'count'), col('people', 'People', 'count'), col('sessionIds', 'Sessions', 'text')], rows, { count: total, people: everyone.size });
 }
 
+/** The most entries the Admin activity report returns; a longer log is cut and says so (`truncated`). */
+const ACTIVITY_MAX = 1000;
+
 function activityReport(deps: ReportDeps, q: Query): ReportReply {
   const today = localDay(deps.now());
   const p = parseParams({ ...q, by: undefined }, today);
   const kind = one(q, 'kind');
   if (kind !== undefined && kind !== '' && !/^[A-Za-z0-9_.-]{1,64}$/.test(kind)) throw new ReportError('kind is not a kind of Admin log entry');
-  const sql = `SELECT t, kind, detail, source FROM admin_log WHERE t >= ? AND t < ?${kind ? ' AND kind = ?' : ''} ORDER BY id DESC LIMIT 1000`;
+  const sql = `SELECT t, kind, detail, source FROM admin_log WHERE t >= ? AND t < ?${kind ? ' AND kind = ?' : ''} ORDER BY id DESC LIMIT ${ACTIVITY_MAX + 1}`;
   const args = [dayStart(p.from), dayStart(addDays(p.to, 1)), ...(kind ? [kind] : [])];
-  const rows = deps.db.db.prepare(sql).all(...args) as unknown as Row[];
+  const found = deps.db.db.prepare(sql).all(...args) as unknown as Row[];
+  const truncated = found.length > ACTIVITY_MAX;
+  const rows = truncated ? found.slice(0, ACTIVITY_MAX) : found;
   const facts = { oldestDay: oldestRollupDay(deps.db, today) } as Facts;
   const out = envelope(p, 'activity', null, facts, [col('t', 'Time', 'time'), col('kind', 'Kind', 'text'), col('detail', 'Detail', 'text'), col('source', 'Source', 'text')], rows, { count: rows.length });
   out.partial = false;
+  out.truncated = truncated;
   out.basedOn = 'admin log';
   return out;
 }
@@ -552,7 +558,8 @@ export function spendToday(deps: ReportDeps, owner: string, isGroup: boolean): S
   const total = mine.reduce((n, r) => n + r.usd, 0);
   const share = (n: number) => (total > 0 ? n / total : 0);
   const spent = mine.filter((r) => r.priced && r.usd > 0);
-  const unpriced = mine.filter((r) => !r.priced && deps.db.getSession(r.id)!.last_seen_at >= since).length;
+  const unpriced = mine.filter((r) => !r.priced && r.lastSeenAt >= since).length;
+  const agentCosts = deps.db.agentCostsSince(since, cost);
 
   const bySession = spent.map((r) => ({ id: r.id, name: r.name, model: r.model, costUsd: r.usd, share: share(r.usd) })).sort((a, b) => b.costUsd - a.costUsd || a.name.localeCompare(b.name));
 
@@ -574,9 +581,8 @@ export function spendToday(deps: ReportDeps, owner: string, isGroup: boolean): S
     if (weighed > 0) for (const [m, w] of weights) models.set(m, (models.get(m) ?? 0) + (r.usd * w) / weighed);
     else models.set(r.model ?? '-', (models.get(r.model ?? '-') ?? 0) + r.usd);
     for (const m of dash) if (!models.has(m)) models.set(m, null);
-    const row = deps.db.getSession(r.id)!;
-    const whole = cost(row) ?? 0;
-    agents += whole > 0 ? r.usd * Math.min(1, deps.db.agentCostOf(r.id, cost) / whole) : 0;
+    const whole = r.whole ?? 0;
+    agents += whole > 0 ? r.usd * Math.min(1, (agentCosts.get(r.id) ?? 0) / whole) : 0;
   }
   const byModel = [...models].map(([model, usd]) => ({ model, costUsd: usd, share: usd === null ? null : share(usd) })).sort((a, b) => (b.costUsd ?? -1) - (a.costUsd ?? -1) || a.model.localeCompare(b.model));
 

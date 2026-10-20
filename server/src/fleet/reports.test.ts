@@ -1,10 +1,10 @@
 // Admin > Reporting's reads (#484), the Spend breakdown (#482) and the Spend projection (#483), through the Admin API.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createAdminRouter } from '../admin/adminRouter.js';
 import { DEFAULT_CONFIG, Fleet } from './fleet.js';
-import { csvCell, bucketOf, toCsv, type ReportReply } from './reports.js';
+import { csvCell, bucketOf, spendToday, toCsv, type ReportReply } from './reports.js';
 import { addDays, costFn, writeRollups } from './rollups.js';
 import { DAY_MS, NOW, TODAY, agent, at, populate, session, world, type World } from './rollupFixtures.js';
 import { reportDepsOf } from './reportDeps.js';
@@ -203,6 +203,20 @@ describe('activity and Data kept', () => {
     expect(((await get('activity?kind=person_created&from=' + addDays(TODAY, -2))).body as ReportReply).rows).toHaveLength(1);
   });
 
+  it('says when the log is longer than the 1,000 rows it returns (#529)', async () => {
+    const w = filled();
+    for (let i = 0; i < 1001; i++) w.people.log('unlock', `entry ${i}`, '10.0.0.1', at(0, 9) + i);
+    const { get } = await api(w);
+    const r = (await get(`activity?from=${addDays(TODAY, -1)}`)).body as ReportReply;
+    expect(r.rows).toHaveLength(1000);
+    expect(r.truncated).toBe(true);
+    expect(r.total).toEqual({ count: 1000 });
+    expect(r.rows.some((x) => x.detail === 'entry 0')).toBe(false);
+    expect(r.rows.some((x) => x.detail === 'entry 1000')).toBe(true);
+    const some = (await get('activity?kind=person_created')).body as ReportReply;
+    expect(some.truncated).toBe(false);
+  });
+
   it('lists the rollup tables and how long everything is kept', async () => {
     const { get } = await api(filled());
     const r = (await get('retention')).body as { tables: { name: string; rows: number; oldestDay: string | null; keptDays: number }[]; detail: { name: string; keptDays: number }[]; tz: string };
@@ -369,5 +383,22 @@ describe('Spend breakdown (#482)', () => {
     expect(deps.now()).toBe(NOW);
     expect(deps.retention).toBe(fleet.cfg.retention);
     expect(deps.pricing()).toBeDefined();
+  });
+});
+
+describe('spendToday reads each session once (#529)', () => {
+  it('asks for no session or agent cost one by one, and counts the sessions on a model without a price', () => {
+    const w = world();
+    populate(w);
+    const sessionOf = vi.spyOn(w.fdb, 'getSession');
+    const agentsOf = vi.spyOn(w.fdb, 'agentCostsSince');
+    const reply = spendToday(w.deps, 'Priya', false);
+    expect(reply.total).toBeGreaterThan(0);
+    expect(reply.bySource.agents).toBeGreaterThan(0);
+    expect(sessionOf).not.toHaveBeenCalled();
+    expect(agentsOf).toHaveBeenCalledTimes(1);
+    expect(reply.unpriced).toBe(0);
+    w.fdb.upsertSession(session({ id: 'free', owner: 'Priya', started_at: at(0, 11), last_seen_at: at(0, 12), ended_at: at(0, 12), cost_usd: null, model: 'llama-local' }));
+    expect(spendToday(w.deps, 'Priya', false).unpriced).toBe(1);
   });
 });
