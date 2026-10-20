@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'claude-code/testing'
-import { cleanOs, hostOf, isMachineId, trimTrailingSlashes, machineIdPath, machineInfo, newMachineId, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile } from './machine.ts'
+import { cleanOs, hostOf, isMachineId, trimTrailingSlashes, machineIdPath, machineInfo, newMachineId, platformRandom, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile } from './machine.ts'
 
 describe('machine', () => {
   test('trailing slashes are dropped from a URL, in linear time (#362)', () => {
@@ -99,5 +99,17 @@ describe('machine', () => {
     expect(cleanOs(`Linux\u0007 ${'x'.repeat(200)}`)!.length).toBeLessThanOrEqual(80)
     expect(cleanOs('a\tb\nc\u001b[31m')).toBe('a b c [31m')
     expect(cleanOs('   ')).toBeNull()
+  })
+
+  test('the random source is the platform generator, and without one still gives distinct values in [0, 1) (#515)', () => {
+    const fixed = { getRandomValues: (a: Uint32Array) => { a[0] = 2 ** 31; return a } }
+    expect(platformRandom(fixed)).toBe(0.5)
+    const draws = Array.from({ length: 50 }, () => platformRandom(undefined))
+    for (const d of draws) {
+      expect(d).toBeGreaterThanOrEqual(0)
+      expect(d).toBeLessThan(1)
+    }
+    expect(new Set(draws).size).toBeGreaterThan(40)
+    expect(newMachineId(() => platformRandom(undefined))).toMatch(/^[0-9a-f]{12}$/)
   })
 })

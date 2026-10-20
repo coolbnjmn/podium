@@ -49,6 +49,26 @@ export function parseMachineIdFile(text: string | null | undefined): string | nu
   return isMachineId(id) ? id : null;
 }
 
+/** A generator with the platform's `getRandomValues`, when the sandbox has one. */
+export interface RandomSource {
+  getRandomValues?: (a: Uint32Array) => Uint32Array;
+}
+
+let fallbackSeed = 0;
+
+/**
+ * A number in [0, 1): the platform's generator where the sandbox has one. Without it, a hash of the clock and a
+ * counter, which is enough for an identifier that is not a secret (#515).
+ */
+export function platformRandom(c: RandomSource | undefined): number {
+  if (c?.getRandomValues) return c.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
+  fallbackSeed = (fallbackSeed + 1) >>> 0;
+  let h = (Date.now() ^ Math.imul(fallbackSeed, 0x9e3779b1)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 2 ** 32;
+}
+
 /** A new random id of 12 hex characters. */
 export function newMachineId(random: () => number): string {
   let s = '';

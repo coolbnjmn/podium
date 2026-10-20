@@ -334,11 +334,9 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
       fullscreen.current = false;
     };
     fullscreen.current = true;
-    try {
-      document.documentElement.requestFullscreen().catch(refused);
-    } catch {
-      refused();
-    }
+    const request = document.documentElement.requestFullscreen?.();
+    if (request) request.catch(refused);
+    else refused();
   };
   const stopWall = exitWall;
   // Wall mode ends by any route (button, Esc, opening a pane from its tab), so fullscreen is released here.
