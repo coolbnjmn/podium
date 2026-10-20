@@ -298,6 +298,18 @@ describe("FleetView collapsible shell", () => {
     expect(exit).toHaveBeenCalled();
   });
 
+  it("wall mode still works when the browser has no requestFullscreen, and leaves fullscreen alone (#515)", async () => {
+    const exit = fullscreenApi(vi.fn());
+    Reflect.deleteProperty(document.documentElement, "requestFullscreen");
+    render(<FleetView state={stateFrom()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Enter wall mode" }));
+    await act(async () => {});
+    expect(left()).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Exit wall mode" }));
+    expect(left()).toHaveAttribute("aria-expanded", "true");
+    expect(exit).not.toHaveBeenCalled();
+  });
+
   it("wall mode still works when the browser refuses fullscreen", async () => {
     const exit = fullscreenApi(vi.fn().mockRejectedValue(new Error("refused")));
     render(<FleetView state={stateFrom()} />);

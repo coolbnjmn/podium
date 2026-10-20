@@ -53,8 +53,8 @@ import {
 import { nextCronAt } from './cron.ts';
 import { isDelivery, Transport, type FetchLike } from './transport.ts';
 import { activityCall, activityText, explainPrompt } from './failures.ts';
-import { pickIdentity, worthHolding, type Identity } from './identity.ts';
-import { hostOf, isMachineId, MACHINE_ID_KEY, machineIdPath, machineInfo, newMachineId, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile, trimTrailingSlashes } from './machine.ts';
+import { nameArg, pickIdentity, worthHolding, type Identity } from './identity.ts';
+import { hostOf, isMachineId, MACHINE_ID_KEY, machineIdPath, machineInfo, newMachineId, platformRandom, type RandomSource, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile, trimTrailingSlashes } from './machine.ts';
 import type { Ask, Delivery, DeliveryResult, MachineInfo, PeerDelivery, PeerRequest, PeerResult, RespondInfo, RespondKind, RespondLevel } from './protocol.ts';
 import { redactText } from './diffRedact.ts';
 import {
@@ -711,9 +711,7 @@ async function explain($: Engine, sessionId: string, agentId: string, prompt: st
 
 /** A random number in [0, 1): the platform's generator where the sandbox has one. */
 function random(): number {
-  const c = (globalThis as { crypto?: { getRandomValues?: (a: Uint32Array) => Uint32Array } }).crypto;
-  if (c?.getRandomValues) return c.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
-  return Math.random();
+  return platformRandom((globalThis as { crypto?: RandomSource }).crypto);
 }
 
 /**
@@ -1667,9 +1665,8 @@ async function podiumCommand($: Engine, args: string): Promise<string> {
   const r = rt;
   const verb = parseAnswer(args);
   if (verb) return answerRequest($, verb.answer, verb.id);
-  const m = /^name\s+([\s\S]+)$/i.exec(args.trim());
-  if (m && r) {
-    const name = m[1]!.trim().slice(0, 80);
+  const name = nameArg(args);
+  if (name !== null && r) {
     try {
       await $.store.set(`name:${r.state.id}`, name);
     } catch (err) {

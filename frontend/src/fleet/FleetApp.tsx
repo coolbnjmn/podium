@@ -334,9 +334,9 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
       fullscreen.current = false;
     };
     fullscreen.current = true;
-    try {
+    if (typeof document.documentElement.requestFullscreen === "function") {
       document.documentElement.requestFullscreen().catch(refused);
-    } catch {
+    } else {
       refused();
     }
   };
