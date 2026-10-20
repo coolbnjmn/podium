@@ -57,13 +57,14 @@ export interface RandomSource {
 let fallbackSeed = 0;
 
 /**
- * A number in [0, 1): the platform's generator where the sandbox has one. Without it, a hash of the clock and a
- * counter, which is enough for an identifier that is not a secret (#515).
+ * A number in [0, 1): the platform's generator where the sandbox has one. Without it, a hash of the clock, its
+ * fine-grained timer and a counter, which is enough for an identifier that is not a secret (#515).
  */
 export function platformRandom(c: RandomSource | undefined): number {
   if (c?.getRandomValues) return c.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
   fallbackSeed = (fallbackSeed + 1) >>> 0;
-  let h = (Date.now() ^ Math.imul(fallbackSeed, 0x9e3779b1)) >>> 0;
+  const fine = Math.floor((globalThis.performance?.now() ?? 0) * 1000);
+  let h = (Date.now() ^ fine ^ Math.imul(fallbackSeed, 0x9e3779b1)) >>> 0;
   h = Math.imul(h ^ (h >>> 16), 0x85ebca6b) >>> 0;
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
   return ((h ^ (h >>> 16)) >>> 0) / 2 ** 32;
