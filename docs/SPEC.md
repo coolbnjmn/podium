@@ -859,8 +859,8 @@ points are marked **Verified** with what it found (ARCHITECTURE "Mod API finding
 
 | Tool | What it does | What it answers |
 |---|---|---|
-| `podium_peers()` | Lists the orchestrators this one can see, on the owner's other reporters and its own | Name, machine, OS, project, status, and whether it can send there (with or without approval). Says which reporters are left out and why. |
-| `podium_send(to, text)` | Sends a message to `name@machine` | Sent; waiting for the receiver's turn to end; waiting for the owner's approval; or not sent, with the reason in plain words |
+| `podium_peers()` | Lists the orchestrators this one can see, on the owner's other reporters and its own | Name, machine, OS, project, status, and whether it can send there (with or without approval). When orchestrators on one machine share a name, each also shows its short id and says that only `name@machine#id` reaches it. Says which reporters are left out and why. |
+| `podium_send(to, text)` | Sends a message to `name@machine`, or to `name@machine#id` when several orchestrators share the name | Sent; waiting for the receiver's turn to end; waiting for the owner's approval; or not sent, with the reason in plain words |
 | `podium_request_access(to, right, reason)` | Asks the owner for a right to see or to send | Asked, and that the answer arrives as a message |
 
 - A call from a subagent answers: Not sent. Only an orchestrator can send. Put the message in your result and ask
@@ -1996,13 +1996,16 @@ take part`, `not your session`, `messaging is off on this machine: turn on the r
 refusal is `{ ok: false, error }`, the error in words the mod can show the model as is.
 
 **`GET /api/fleet/sessions/:id/peers`**: what `podium_peers` answers.
-- `200 { ok: true, peers, leftOut }`. `peers` lists the orchestrators this one can see: `{ address: "name@machine", name,
-  machine, os, project, status, level: "see" | "ask" | "send", paused }`. `leftOut` lists the owner's reporters with no
+- `200 { ok: true, peers, leftOut }`. `peers` lists the orchestrators this one can see: `{ address: "name@machine", id, duplicate, name,
+  machine, os, project, status, level: "see" | "ask" | "send", paused }`. `id` is the first eight characters of the
+  session id; `duplicate` is true when more than one orchestrator the asker can reach has that name and machine. `leftOut` lists the owner's reporters with no
   orchestrator listed, and why: `messaging off on the machine`, `reporter too old to message`, `no right to see it`, `no
   orchestrator running`.
 
 **`POST /api/fleet/sessions/:id/peers/messages`**: `podium_send`.
-- Body `{ to: "name@machine", text }`, at most 128 KB.
+- Body `{ to: "name@machine" | "name@machine#id", text }`, at most 128 KB. `id` is a prefix of the target's session id,
+  as `podium_peers` lists it; it picks one of several orchestrators that share the name. A plain `name@machine` that
+  matches more than one is a `409` that lists the `name@machine#id` forms to use (#500).
 - `202 { ok: true, id, state, paused, approvalWhy, requestId, to: { name, machine }, roundTrips: { used, cap } }`.
   `state` is `sent` (the receiver is idle and gets it in its next reply), `turn` (it gets it when its turn ends) or
   `approval` (it waits for the owner; `approvalWhy` is `link` or `round-trips`, and `requestId` names the request).
@@ -2788,7 +2791,9 @@ so every rule here holds whatever else is set. The routes are in [7.1](#71-endpo
 - The sender is the session and token of the request that carries it, never a name in the message. The server
   resolves `to` (`name@machine`, case-insensitive) only among the same owner's live orchestrators whose `peers` is on
   and that the sender's reporter can see. A name it cannot find there, another person's, and one it has no right to see
-  all get the same `404`, so a refusal says nothing about who else exists. Two that match are a `409`.
+  all get the same `404`, so a refusal says nothing about who else exists. Two that match are a `409`, which names the ids that tell them apart. An inbound message carries the sender's
+  short id (`from.id`), and the mod frames the reply address as `name@machine#id`, so a reply reaches the sender even when
+  others share its name (#500).
 - A message is only for an orchestrator, and only an orchestrator sends one.
 
 **Limits**, set by the Admin in Admin > Settings, in an Orchestrator messaging section shown while the flag is on
@@ -3130,6 +3135,10 @@ activity panel and legend as the wall, with the board in the middle.
   is pinned. In the stacked narrow layout, where the page scrolls as a whole, the strip is pinned to the bottom
   of the viewport instead, above the legend. It keeps its label and its place in the tab order, after the
   columns.
+- In wall mode the columns are as tall as the space between the Board header and the legend, and end at the
+  legend's top edge, so they follow the window as it is resized or goes fullscreen. A column with more cards
+  than fit scrolls inside itself and the page does not scroll. With the strip showing, the columns end above it,
+  which keeps its 16 px of space from the legend (#497).
 - A finished session is one whose steps are all done and whose status is stale or done, so its Done cards
   leave the board. A running or waiting session whose steps are all done keeps them.
 - When no session has steps the board says "No plans on the board" and the pinned strip lists them all.
@@ -3233,6 +3242,9 @@ one page of rows and a pager. When they fit there is no pager and no scrollbar, 
   orchestrators"). The pager buttons are real buttons: "Previous page" and "Next page".
 - When the list changes the page stays unless it no longer exists, then the last page shows.
 - Paging never touches the wall: every card stays on it.
+- **Stacked (#474).** At 1040 px and below the panes stack and the page scrolls as a whole, so the rail has no height
+  to fit rows into and does not page: it lists every row and shows no pager. Widening past 1040 px while the page is
+  open pages again and lands on the page that holds the selection (the first page when nothing is selected).
 
 #### Fleet wall (default view)
 
