@@ -351,6 +351,30 @@ the state or the stream. `ingest.ts` never sees the entries, because it copies n
   pass (`activityText`). Both go through `addActivity`, which does nothing for a loop that is not watched.
 - `report.ts` sends `session.activityFeed` always, and a loop's `activity` only when the option is on and the
   ring is not empty, within a 60,000-character budget per report.
+- Since #431 an entry may also carry a Bash call's `id`, whole `command` and, with the `activityOutput` option and the
+  reply's `watchOutput` listing the loop, its `output` and exit status. They have a separate 200,000-character budget
+  per report, enforced by `withinActivityBudget` in `protocol.ts`, which also drops output the session's option does
+  not allow. DECISIONS 41 has the reasoning.
+- The mod (#431): `activityDetail.ts` builds the pieces. `tool.call` adds a Bash entry with its `id` and `commandDetail`
+  (control characters stripped, `redactBounded` from `recording.ts`, cut at 20,000 characters with the marker). When the call
+  returns, and only with both options on and the loop in `watchOutput` (`setWatchedOutput`, from the transport's
+  `watchOutput`, never wider than `watch`), `finishActivity` adds `output`, `done`, `failed` and `exitCode` to the entry with
+  that `id`, so the next report carries it again. `bashOutput` reads the result record's `stdout` and `stderr`, else the text
+  the model reads; the types have no numeric exit code, so `exitCode` is parsed only from an "Exit code N" in that text.
+  `report.ts` keeps commands and output to 200,000 characters (`withinDetailBudget`) and the body to 480,000 bytes
+  (`withinSize`), output first, then commands, oldest first.
+- The server (#431): `ActivityStore` merges an entry that carries an `id` into the one it already holds, so output that
+  arrives after the entry first went out attaches to it. It holds `output`, `done`, `exitCode` and `failed` on the lease
+  only, takes them only while the `activity-output` and `activity-feed` flags and the session's `activityOutput` option are
+  on, serves them only while the flags are on, and drops them with the lease, the session, a flag turned off, and a
+  restart (`dropOutput`). `watchedOutput` is the reply's `watchOutput`: the lease loops, never the loops the history lists.
+  The Activity history (schema version 5) stores `command` and `command_cut`, and has no column for output, status or id.
+- The console (#431): `BashRow.tsx` is the one Bash row, shared by the feed's `Entry` (panel, Expand modal and Respond modal) and the
+  replay's `Row`. Only Bash rows open; the open state is the row's own React state, so it follows the entry's key across the refresh.
+  `useRowAnchor` keeps the list's place when a row opens or closes. `useActivityFeed` takes a changed `output`, `done`, `failed` or
+  `exitCode` on a seq it already has, and lays a live twin's output over a stored row. A row with no `output` says why in order: stored
+  history, the Admin's flag (`ActivityOutputFlag`, from the state's features), the session's `activityOutput`, then "not collected". A
+  call still running cannot be told from one that finished before the panel opened (neither has `output` or `done`), so no row says it is running.
 
 **UI**
 
@@ -395,7 +419,7 @@ reasoning and the alternatives are DECISIONS 39. The seeder for load tests is `s
   report's clock skew), which the purge and the filters use. Entries sent from Podium are written through the
   respond bridge with their ref, sender and note.
 - **Aggregates, so nothing scans the table.** `stored_sessions` also holds each session's `entries`, `bytes` (an
-  estimate: text and labels plus 48 bytes a row) and `oldest_t` (schema version 2), and a `loops` table
+  estimate: text, a Bash command and labels plus 48 bytes a row) and `oldest_t` (schema version 2), and a `loops` table
   holds each loop's entry count and its first and last times (schema version 3), kept in step in the same
   transaction as every insert, Podium-entry change and removal chunk. The live feed's `history` note and a history page
   therefore cost one indexed read, whatever the loop's size. `totals()` and a `list` that filters only on a
