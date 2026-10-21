@@ -1266,3 +1266,33 @@ recording already holds (#353); it adds no second copy.
 - A person who opens a row after the command finished may find no output, because it was not captured before the feed
   was open.
 - A result over about 90 KB shows a stub, not the output.
+
+**Amended (#598): a finished call says so, with or without output.** Under #431 a Bash entry got `done` only together with
+output, so a call still running and one that finished before the panel opened looked alike, and the row said "Output was
+not collected." for both.
+
+- **What the mod sends.** While `activityFeed` is on, the mod sends `done`, `failed` and `exitCode` on a Bash entry
+  whenever the call finishes, with or without output. Output itself is unchanged: it still needs the `activityOutput`
+  option, the `activity-output` flag and the loop in `watchOutput`.
+- **What the server does.** It keeps the three fields with the entry in memory, as it keeps the rest of the entry. The
+  Activity history stores none of them; it stores only the whole command, as before.
+- **What the row says.** No `done` and the loop active: "Running." and the word running on the line. `done` with no
+  output: "Output was not collected." and the status mark (a bare check for exit 0, a cross and "Exit N, failed" or
+  "Failed"), on the line and beside Output. No `done` and the loop not active: "Output was not collected." with no mark,
+  a stale call whose end was never reported.
+- **An older mod.** It sends no `done` without output, so its rows keep today's wording: running while the loop is
+  active, otherwise "Output was not collected." with no mark. An older server drops `done`, `failed` and `exitCode`
+  from a session that does not report `activityOutput: true`, so it ignores the new use and its rows stay as they
+  were; with the option on it keeps them, which only helps. Neither case is an error, since the fields are optional on
+  the entry.
+- **A call that throws.** It returns no result, so the mod marks nothing: `done` stays unknown, and the row reads as
+  it does for a stale call. A denied call is `done` and `failed` as before, and its reason is output, so it is sent
+  only with the output switches on.
+- **Running or stale (console).** Only the newest entry of the feed can read as running: a Bash call with no `done`
+  and no output, last in the list, in a loop that is working. An older mod never sends `done` without output, so any
+  earlier call with none may have finished long ago; a later entry, text included, means the call returned. A call
+  that runs beside another reads as not collected until it reports, which claims nothing false. The flag and option
+  wording stay ahead of "Running.", since output will not come; the line still says running. The replay is unchanged:
+  it knows from the recording whether a call has a result and never says running.
+- **Why.** The mod knows when a call ends; the server cannot tell a finished call from a running one without being told.
+  The mockup is `mockup/podium-feed-expand.html`, "Rows without output".
