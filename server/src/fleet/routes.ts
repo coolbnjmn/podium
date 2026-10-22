@@ -16,6 +16,8 @@ import { mountPeerBrowserRoutes, mountPeerRoutes, peerReplyFor, peersEnabled, ty
 import { mountRecordingBrowserRoutes, mountRecordingRoutes, recordingEnabled, wireRecordingLogs } from './recordingRoutes.js';
 import type { RespondBridge } from './respondBridge.js';
 import { isNewer } from './updateCheck.js';
+import { refusableOverHttp, type ReporterTransport } from '../tlsHttp.js';
+import { certAuth, type ClientSocket, type PersonCertStore } from '../tlsClientAuth.js';
 
 export interface FleetRouterOptions {
   /** The admin secret (PODIUM_TOKEN). When set, POST /report, DELETE and POST /hook need a credential in X-Podium-Token: this, or a person's token. */
@@ -36,6 +38,10 @@ export interface FleetRouterOptions {
   respondBridge?: RespondBridge;
   /** Runs ahead of the sign-in to respond, to note a plain-HTTP connection (#306). It never blocks. */
   onSignIn?: RequestHandler;
+  /** Built-in TLS (#583): the certificates people authenticate with. A client certificate on the connection decides who the sender is, ahead of any token. */
+  certs?: { store: PersonCertStore; trustedIssuers: () => string[] };
+  /** Built-in TLS (#589): told which transport each reporter last used, for the Admin's count of reporters on HTTP. */
+  transport?: ReporterTransport;
 }
 
 export const BODY_LIMIT = '512kb';
@@ -138,6 +144,22 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
   const requireToken = (req: Request, res: Response, next: NextFunction) => {
     const given = req.get('x-podium-token');
     const source = machineOf(req) ?? 'unknown';
+    // A client certificate is checked on every request, so a revoke reaches a connection that is still open. One that is
+    // presented but not trusted is refused outright and never falls back to a token (SPEC 6, *Authenticating by certificate*).
+    if (opts.certs && opts.people) {
+      const c = certAuth(req.socket as unknown as ClientSocket, { certs: opts.certs.store, people: opts.people, trustedIssuers: opts.certs.trustedIssuers, now: fleet.now });
+      if (c.kind === 'person') {
+        res.locals.identity = { kind: 'person', person: c.person } satisfies Identity;
+        return next();
+      }
+      if (c.kind === 'refused') {
+        const route = routeName(req);
+        logger.warn('auth.failed', `podium: refused ${req.method} ${route} from ${source}: ${c.reason}`, { route, method: req.method, status: 401, reason: c.reason, source: machineOf(req) });
+        opts.reporters?.rejected(machineOf(req), c.reason, fleet.now());
+        res.status(401).json({ ok: false, error: 'client certificate refused', path: '$' });
+        return;
+      }
+    }
     // A throttled address gets no answer for anything that could be a guess, even the right secret, or the throttle would confirm one.
     const lockedFor = opts.token && mayBeGuess(given) ? guesses.lockedFor(source) : 0;
     if (lockedFor > 0) {
@@ -238,6 +260,7 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
           },
           fleet.now(),
         );
+        if (key) opts.transport?.note(key, !refusableOverHttp(req), fleet.now());
         // Orchestrator messaging (#347) knows a session by its reporter, and only a person's own reporter takes part.
         if (key && id.kind === 'person' && !asHooks) fleet.peers.note(out.sessionId, key, id.person.name, r);
       }
@@ -291,12 +314,13 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
         return;
       }
       if (id.kind === 'person') opts.people?.touch(id.person.id, machineOf(req), fleet.now());
-      noteReporter(
+      const hookKey = noteReporter(
         opts,
         logger,
         { kind: 'hooks', machineId: null, machineName: null, source: machineOf(req), owner: ownerOf(id), credential: credentialOf(id), version: 'hooks', engineVersion: null, sessionId: out.sessionId },
         fleet.now(),
       );
+      if (hookKey) opts.transport?.note(hookKey, !refusableOverHttp(req), fleet.now());
       res.json({ ok: true, sessionId: out.sessionId });
     } catch (err) {
       if (err instanceof OwnerConflict) {

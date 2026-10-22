@@ -146,6 +146,9 @@ Find what you see, then follow the fix. [GOTCHAS.md](GOTCHAS.md) has more.
 | A session I closed is still on the wall | It moved to the background. `claude agents` lists it and `claude stop <id>` ends it. See [Closing a background session](#closing-a-background-session) |
 | A card turned stale | The session stopped reporting (closed, crashed or lost the connection). It goes away by itself, or press Remove |
 | I changed the config and nothing happened | Run `podiumctl restart` |
+| The status line names a certificate, the config file or `node` | Your server uses built-in TLS. See [what each message means](REPORTER.md#over-tls) |
+| The browser cannot open the `https://…:4318` address | That port is for reporters only and needs a reporter certificate. Open the console at `http://<host>:4317`. See [Built-in TLS](SERVER.md#built-in-tls) |
+| `/podium` says `offline, retrying` with `Last error: HTTP 502` and a `TLS:` line | The reporter's connection helper answered, not the server. The `TLS:` line gives the reason, such as an expired certificate. See [what each message means](REPORTER.md#over-tls) |
 | A card shows `reporter 0.1.0 · update`, the top bar says reporters need an update, or the status line ends in `· update mod` | The mod in that session is older than the server supports. It keeps reporting meanwhile. See [Updating the mod](#updating-the-mod) |
 | The status line ends in `· update available` | Your mod works, but the server supports a newer one. See [Updating the mod](#updating-the-mod) |
 | A card or the status line shows `· upgrade server` | The mod is newer than the server supports. Upgrade the server (see [Updating the mod](#updating-the-mod)) |
@@ -166,7 +169,8 @@ The dashboard has a top bar, a left rail and a right panel.
 - **Logo.** The Podium logo at the top left is a link home. From History or Admin it takes you back to the fleet page.
 - **Top bar.** A pill names the page ("Fleet" on the wall, "Orchestrator" on a session's page, "History", "Admin"),
   then the connection (`N reporters live`, or a red "disconnected, retrying"). Admin's top bar shows the same
-  connection indicator beside its "Admin" pill.
+  connection indicator beside its "Admin" pill. With built-in TLS on, a certificate pill can follow the connection:
+  see [Certificates](#certificates).
 - **Row under the top bar.** It has the theme picker.
 - **Left rail.** It lists your sessions. When there are more than fit, it shows a page at a time. See
   [Paging the list](#paging-the-list).
@@ -848,12 +852,12 @@ Administrators, or the name **Admin** and the admin secret, which `podiumctl tok
 
 ### Getting around
 
-Admin has fourteen pages, listed in a menu down the left side:
+Admin has sixteen pages, listed in a menu down the left side:
 
 | Menu group | Pages |
 |---|---|
 | People and access | [People](#people-page), [Groups](#groups), [Reporters](#reporters) |
-| Server | [Settings](#settings), [Model prices](#model-prices), [Security](#security), [Data](#data), [Stored activity](#stored-activity) |
+| Server | [Settings](#settings), [Model prices](#model-prices), [Security](#security), [Certificates](#certificates), [Data](#data), [Stored activity](#stored-activity) |
 | Reporting | [Usage](#usage), [Spend](#spend), [People and groups](#people-and-groups), [Sessions](#reporting-sessions), [Failures](#failures), [Admin activity](#admin-activity) |
 | Activity | [Admin log](#admin-log) |
 
@@ -869,12 +873,27 @@ Under **Create user**, type a name and choose Create user.
 
 - Podium shows the token once, above the page (it stays there when you switch pages), with the settings to paste into
   that person's reporter: `userName`, `token` and `serverUrl`. Copy them before you choose "I have saved it", because
-  Podium keeps only a hash and cannot show the token again.
-- The list shows the token's key id as `pdm_` and twelve characters, the same way Reporters shows it, when each person
-  last reported and from which machines.
-- **Rotate** gives a person a new token and stops the old one.
-- **Revoke** refuses their reports from the next one on, and their sessions go stale and drop as usual. A revoked
-  person's row offers **Issue new token** instead.
+  Podium keeps only a hash and cannot show the token again. With TLS on, the same box also gives the person's reporter
+  config, one file named `reporter-config-<name>-<epoch>.pem`: choose **Download reporter config**, save it in
+  `~/.podium/` on the machine where Claude Code runs, and start a new Claude Code session. A session that is already
+  running does not pick it up, and podium-reporter needs Node.js on the machine's PATH. Podium keeps only the
+  certificate, so the file is shown once.
+- The list has a **Reporter certificate** cell and a **Console token** cell, each with its own badge. Hover a badge (or
+  tab to it) for the note: the certificate's date and what happens next, or the token's `pdm_` key id. The Group select
+  is under the name, and "created" is under Last report. With TLS off the certificate cell says so. The certificate badge
+  reads *valid*, *renewal due* (30 days or fewer left; the reporter renews it itself), *lapses soon* (10 days or fewer
+  and not renewed, so reissue the config in time), *expired* (the reporter is refused and cannot renew: reissue the
+  config), *revoked* or *none*.
+- Each row has one **Actions** menu, grouped Console token, Reporter certificate and Person. Arrow keys, Home and End
+  move in it and Escape closes it; an action that does not apply is greyed out.
+- **Rotate token** gives a person a new token and stops the old one, and shows it once. Their reporter keeps working.
+- **Revoke token** refuses their console sign-in from the next request, and with TLS on their certificate too, so a
+  person who is cut off cannot go on with the other credential. A revoked person's row offers **Issue new token**, which
+  brings back the console sign-in only: with TLS on, their reporter stays refused until you choose **Reissue config**.
+- **Revoke certificate** stops the reporter that uses the certificate and leaves the console sign-in; their token still works until it is revoked. **Revoke token** or **Revoke all** cuts the person off.
+  **Reissue config** makes a new certificate and key, stops the old certificate, and shows the new file once. Each asks
+  first, in a row under the person that says what will happen.
+- **Download certificate** gives the public certificate and the CA, never a key, so it cannot replace the file.
 - **Delete** removes a person, and a dialog asks first. Their reporter is refused at once, they leave their group, and
   an Administrator's open Admin session locks. Their past sessions, spend and Admin log entries keep their name, and the
   name can be used again later. To delete several people, tick their rows (the box in the header ticks the page), then
@@ -1063,6 +1082,36 @@ and cache write for 1 hour. They start as the prices on Anthropic's pricing shee
 One switch, **Allow reporters to use the admin secret**. When it is off, a reporter that still sends the secret is
 refused. Sessions that report with the secret show under the owner **Admin**.
 
+### Certificates
+
+With built-in TLS on (`podiumctl start --tls`), this page shows Podium's own certificate authority (CA) and the
+serving certificate it signs. Reporters connect on their own port, which accepts only a valid reporter certificate; the
+console stays on plain HTTP, so a browser needs nothing from this page. With TLS off it says so and has nothing else.
+
+- **Status.** The CA and the serving certificate, each with its expiry date, how the certificate renews and a status
+  that is a shape, a word and a color. A band at the top is blue at 30 days or fewer, orange at 10 and red at 5, and red
+  again once the first of them has expired. If the last renewal failed, its reason shows in red under the table. The CA's
+  fingerprint has a copy control, to compare with the CA in a reporter config. "localhost and 3 more" opens the list of names the
+  running serving certificate carries.
+- **Renewal and lifetimes.** The serving certificate's lifetime (30 to 825 days) and how many days before it expires it
+  renews (7 to 90), and a person's certificate lifetime (30 to 365). A certificate that has expired is not renewed, so there is no grace. A number
+  saves when you leave the field; a value the server refuses stays in the box with the reason under it. Each change is
+  written to the Admin log. The last switch turns the header countdown on or off.
+- **Reporters over HTTP.** One switch, **Allow reporters to connect over HTTP**. While it is on, a reporter that has
+  only its name and token (no reporter config) still reports over plain HTTP, and a warning line says that is not
+  encrypted. It is on for a server that already had reporters when TLS was first turned on, and off for a fresh one.
+  Turning it on takes effect at once. Turning it off asks first and names how many reporters are connected over HTTP
+  now, since they are refused at once; a reporter with a reporter config keeps working on the reporter port, and so
+  does the console, so an Admin can always sign in. Each change is written to the Admin log.
+- **Rotate by hand.** **Renew now** issues a new serving certificate from the same CA and keeps the old one as a backup.
+  **Rotate CA…** asks first, then makes a new CA that reporters pick up when they renew, while the old one keeps working through an overlap (120 days). A blue band counts the reporters still on the old CA, and **Retire old CA…** ends the overlap when none are left. **Rotate CA and end the overlap now** is for a CA key that may have leaked: every reporter then needs a reissued config, and open connections are closed.
+- **Previous certificates.** The last three serving certificates Podium replaced, kept in `/data/tls/previous`.
+
+**The header pill.** Whichever of the CA and the serving certificate expires first shows as a pill after the
+connection: blue with a clock at 30 days or fewer, orange with a triangle at 10, red with a triangle at 5, and "Certificate
+expired" with a ring and a cross. It links to this page, has no close button, and never tracks a person's certificate.
+The switch hides only the countdown: a failed renewal and an expired certificate always show.
+
 ### Data
 
 What Podium stores, for how long, and what you can remove. It has three sections.
@@ -1216,6 +1265,8 @@ repeats it held back. The other events below (sessions, reporters, sweeps, Admin
 | `server.start`, `server.stop` | info | The server started or stopped. In the JSON format and in VictoriaLogs, `server.start` also carries the port, database, whether auth is on, and the log and lifecycle settings |
 | `report.rejected`, `hook.rejected` | warn | A report or hook payload failed validation; `reason` and `path` say why |
 | `auth.failed` | warn | A request had no token, a wrong or revoked one, or a token that does not belong to the report's name |
+| `auth.throttled` | warn | One address made more failed `/api` requests in a minute than `PODIUM_FAILURE_LIMIT` allows; logged once per address and minute |
+| `tls.*` | info, warn, error | Built-in TLS. Warnings and errors (`tls.failed`, `tls.renew_failed`, `tls.handshake_failed`, `tls.http_refused`, `tls.client_refused`) print folded like `auth.failed`. Info lines (`tls.listening`, `tls.ca_created`, renewals, rotations) print in text only at `debug` |
 | `report.conflict` | warn | A report for a session that belongs to someone else |
 | `reporter.connected` | info | A reporter (owner, machine, mod or settings hooks) was heard for the first time, or again after a silence |
 | `reporter.silent` | warn | A session stopped reporting and turned stale |

@@ -31,6 +31,7 @@ with the default view at `#/`. An earlier usage dashboard lived here until it wa
   - [Responding](#responding)
   - [File diff](#file-diff)
   - [Orchestrator messaging](#orchestrator-messaging)
+  - [Built-in TLS](#built-in-tls-577)
   - [People view](#people-view)
   - [Logging](#logging)
   - [Shared contract](#shared-contract)
@@ -140,8 +141,12 @@ DECISIONS 20 and 30.
   (#172), or `Admin` with the admin secret, checked by `fleet/nameToken.ts` as the sign-in to respond is.
 - Sessions have an idle expiry, a per-address lockout, and a required `X-Podium-Admin` header on changes.
 - A restart ends every Admin session, which is also how rotating the admin secret ends them.
-- The Admin page (`frontend/src/fleet/admin/`, route `#/admin`) holds a new token in component state only until
-  the owner says it is saved.
+- The Admin page (`frontend/src/fleet/admin/`, route `#/admin`) holds a new token, and a person's reporter config
+  file, in component state only until the owner says it is saved (`OnceBox.tsx`). Neither is written to browser storage,
+  and the file cannot be fetched again: the server keeps the certificate and never the key.
+- Admin > People (`PeopleTab.tsx`, #587) reads `GET /api/admin/people`, which adds `tls` and each row's
+  `certificate` (`notAfter`, `revoked`) while TLS is on. `peopleCert.ts` turns that into the Reporter certificate badge
+  and its note; `RowMenu.tsx` is the per-row Actions menu (a details disclosure placed from its button).
 
 **Opening Admin from the console sign-in** (#215, #272)
 
@@ -667,6 +672,113 @@ with real Claude Code sessions: `up` starts a throwaway server from the checkout
 sessions in tmux that load the mod with `--plugin-dir`; `down` stops them. Its test covers only the help, the argument
 checks and `--dry-run`, since a real run costs model usage ([MESSAGING.md](MESSAGING.md#testing-it-end-to-end)).
 
+### Built-in TLS (#577)
+
+Built (#578 to #590, then #665, #667 and #668). #591, a CA option on `$.http.fetch` that would retire the helper, is
+blocked on the engine. This records the structure so the sub-issues agree. The rules are in
+`SPEC.md` 5.9, 6, 7.1 and 7.7, and the reasoning is in DECISIONS 42.
+
+**Listeners.** `server/src/index.ts` has one `app.listen`. With `PODIUM_TLS=on`, `tlsServer.ts` (`startTls`) also
+starts `https.createServer` on the reporter port (`4318`, `PODIUM_TLS_PORT`) with the same Express app behind
+`reporterPortOnly`, next to the HTTP listener (`4317`), after `tlsCa.ts` (`ensureTls`) has made or read the CA and serving certificate. Any failure there
+(openssl missing, a half-present CA, a bad or busy port) logs `tls.failed` and leaves HTTP running. The Host check
+(`hostCheck.ts`) runs on both (33). The reporter server requires a client certificate (`requestCert: true`,
+`rejectUnauthorized: true`, `ca` set to the Podium CA or CAs), so Node drops a connection without a valid one in the
+handshake (the `tlsClientError` log line is `tls.handshake_failed`). `reporterPortOnly` lets through only the paths
+`isReporterRoute` names and `POST /api/reporter/renew` (`isRenewRoute`), and answers any other path with a `404`, so the
+console and Admin are not reachable on it. Nothing sets `rejectUnauthorized: false`, which is what CodeQL's
+`js/disabling-certificate-validation` flagged before #665. Whether the HTTP listener serves reporter routes is the `tls.allowReportersOverHttp` setting (#589). `tlsHttp.ts`
+has `reporterHttpGate`, mounted in `index.ts` ahead of the routers. It acts only when the HTTPS listener is running, the
+socket is not encrypted (the socket, never a forwarded header), the route is one the mod calls (`isReporterRoute`: report,
+hook, and the peers, asks, deliveries, diffs and recording routes under a session), the setting is off and `req.ip` is not
+loopback (`req.ip` follows `X-Forwarded-For` only from a hop named in `PODIUM_TRUST_PROXY`). It answers `403`, logs
+`tls.http_refused` and adds the source to the Reporters page's refused list. The console is never gated. A missing
+setting row reads as on; `index.ts` writes it once when TLS first runs, on if any reporter has ever reported
+(`ReporterStore.hasAny`). `ReporterTransport` is a memory-only map from reporter key to the transport of its last report
+(set by `/report` and `/hook`), and gives the Admin the count of reporters heard from in the last 2 minutes over HTTP.
+
+**Serving certificate renewal (#582).** `tlsRenew.ts` has `ServingRenewer`, made by `startTls` for the listener it
+starts. It checks at start, before the first connection, and then every day on an unref'd timer; the check renews when
+fewer than `tls.serving.renewBeforeDays` remain. A certificate made less than a day ago is left alone, so a renew-before
+longer than the lifetime renews once a day and not at every check. `renewServing` (`tlsCa.ts`) makes the new pair in a
+`.new-*` folder, copies the old pair to `previous/` (certificate and key, keys 0600, the last 3 kept), then renames the
+new one in; `setSecureContext` puts it on the running server. Only one renewal runs at a time. A failure is logged as
+`tls.renew_failed`, kept as `lastFailure` and retried by the next daily check. The two settings are `settings` rows
+named by their SPEC keys (`TlsSettingsStore`). `adminRouter.ts` serves `GET` and `PUT /api/admin/certificates` and
+`POST /api/admin/certificates/renew`, which answer 404 while TLS is off.
+
+**CA rotation (#588).** `tlsRotation.ts` has `TrustStore`, the one list of trusted CAs: `ca.crt`, and during an overlap
+`previous-ca.crt`, `cross.crt` and `rotation.json`. The listener's `ca`, the renewer's `setSecureContext`, `trustedIssuers`
+(the certificate check on each request and the renewal check) and the CA in a config file all read it, so a certificate
+cannot pass TLS and then be refused for its issuer. It ignores a cross certificate that is not the current CA's key signed
+by the previous CA, which is what a rotation that stopped part-way leaves. `rotateCa` builds the new CA, the cross
+certificate and the serving certificate in a `.new-*` folder and moves them in, the overlap files first and `ca.key` after.
+`ServingRenewer.exclusive` runs a rotation and a serving renewal one at a time. `startTls` keeps the open TLS sockets, since
+narrowing the client `ca` list does not drop one that is already authorized: a hard cutover destroys every socket that held
+a client certificate, and retiring destroys the ones whose certificate the old CA signed. `PersonCertStore.reportersByIssuer`
+counts people for the Admin page's "N of M reporters still use the old CA".
+
+**The CA and `/data/tls`.** The server makes and renews certificates by calling `openssl` with `execFile`.
+`ensureTls` works in a `.new-*` folder inside the directory and renames the finished files in, so a failure leaves no
+half-made CA; a CA that exists is read and checked (key matches certificate, serving certificate signed by it), never
+rewritten. A serving certificate that exists is kept until `ServingRenewer` renews it (below). Dates and fingerprints are
+read from the certificates (`describeCert`) and logged as `tls.listening`, not stored twice.
+`/data/tls` holds `ca.crt`, `ca.key`, `serving.crt`, `serving.key` and `previous/`, keys at mode 0600. In container
+mode `podiumctl` keeps this folder on durable storage, and its remove path leaves it unless asked. Person
+certificates are rows in `podium.sqlite`, found by SHA-256 fingerprint. A serving renewal calls `setSecureContext`
+on the live HTTPS server, so nothing restarts. `setSecureContext` replaces the whole context, so the renewer passes
+`ca` again with every new serving certificate; without it a renewed server would verify client certificates against
+the public roots and refuse every reporter.
+
+**Person certificates (#583).** `tlsPeople.ts` makes a person's key and `clientAuth` certificate with `openssl`
+(`issuePersonCert`) in a `.new-*` work folder that is deleted afterwards, so the key exists on disk only for those
+seconds and Podium never stores it. It builds the config file (`buildReporterConfig`) from the key, the certificate
+and the CA. `PersonCertStore` (`tlsClientAuth.ts`) is the `person_certificates` table (migration 23): fingerprint
+(primary key), serial, issuer fingerprint, person, the certificate PEM, dates and revocation. A reissue stores the
+new row and revokes the earlier live ones in one transaction. The rows go with the person (`ON DELETE CASCADE`).
+
+**Who is calling.** `requireToken` in `routes.ts` turns a request into an identity before it reads a body. With TLS
+the socket's client certificate is checked first, on every request, by `certAuth` (`tlsClientAuth.ts`): the
+connection must be `socket.authorized` (so Node verified it against the Podium CA), the fingerprint must be a stored
+one, not revoked, not past its dates and issued by a CA the server currently trusts. A certificate that was presented
+and fails is a 401 with `client certificate refused` and never falls back to a token; no certificate at all goes on
+to the token check as before. The same `userName` match applies. Revoking only the certificate leaves the token
+(and the console sign-in) working; revoking the token also revokes the certificate. Because the row is read on every request,
+a revoke reaches a keep-alive connection that is still open and no socket has to be destroyed.
+
+**Renewing a person's certificate (#585).** `tlsReporterRenew.ts` serves `POST /api/reporter/renew`, mounted at
+`/api/reporter` in `index.ts` ahead of the token check, because it is answered to a certificate only. `authorizeRenewal`
+takes the certificate's bytes from the socket (`getPeerCertificate().raw`), recomputes the fingerprint from them and looks
+it up. The certificate must be `socket.authorized`, which on the reporter port is always true by the time a route runs.
+Anything else, an expired certificate included, is refused as `NOT_TRUSTED`; there is no grace and no expired-certificate
+branch (#665), so there is nothing to forge. The body is the new public key (EC P-256 only);
+`issueForPublicKey` signs it with `openssl x509 -new -force_pubkey` through `signClientCert` (`tlsPeople.ts`), the one function that makes the work folder, writes the `clientAuth` extension file, picks the serial, signs and reads the dates back for both it and `issuePersonCert`, which differ only in how the public key reaches `openssl x509`, and `PersonCertStore.add` stores it without revoking
+the old row, so both work until the old one expires (`replace`, used by an Admin reissue, still revokes). The helper
+(`helper.mjs`) renews at start, before a request, and on a 10 minute timer, one renewal at a time per process and one at a
+time per file through a numbered lock, `<file>.lock.<n>`: an O_EXCL file naming its owner, held by the highest number and free when there is none or it is older than a minute; a waiter takes it by creating the next number, which only one of several can do, so no stale file is ever removed from under a waiter, and a number is never used twice (a holder lets go by aging its file, not removing it, and only the newest file is kept); a holder refreshes its file's time every 20 s while it runs. While it holds the numbered lock it also takes the plain `<file>.lock` that the first version of the code used (lock scheme 1), and refreshes and releases that too, so a session on the older helper is excluded; only the numbered lock's holder ever removes a stale plain lock. `<file>.lock.scheme` records the scheme (2); a helper that reads a higher number refuses to renew (`LOCK_SCHEME`) instead of ignoring a lock it does not understand. Under the lock it re-reads the file first and takes a
+newer certificate another session wrote instead of renewing again, checks the answer is for its own key and signed by a CA
+the file already holds, and replaces the file with `writeAtomic` (a temporary file in the same folder, fsync, rename, mode
+0600). A refusal is remembered until the file changes; a failure that may pass is retried after a minute. Before it
+connects, the helper compares the certificate's `notAfter` with its clock. An expired certificate is never renewed and
+nothing goes upstream: every request gets `X-Podium-Helper-Error: CERT_EXPIRED` with the date in its message, which
+`tlsLink.ts` words in the status line and in `/podium`, from the config's `expires` line at start too. `authenticate` also limits renewal to once an hour per person (`MIN_RENEW_INTERVAL_MS`): while the newest live certificate was issued less than an hour ago it answers 429 with `Retry-After` and `TOO_SOON` before any signing, with no exception. The helper sets its next try from `Retry-After` (`retryDelayMs`). The one setting, the lifetime, is `TlsSettingsStore.getReporter()`.
+
+**The helper.** `mod/podium-reporter/hooks/helper.mjs` is a Node script that `register.ts` starts with
+`$.process.spawn` once per session. It reads the reporter config file, makes the HTTPS connection, and listens on a
+Unix socket. The seam in the mod is the one `FetchLike` at `register.ts` (`const fetch: FetchLike = ...`): with a
+config file it sends through the helper with `$.http.fetch(url, { ...init, socketPath })`, so `Transport` and its
+callers do not change. The held answer request keeps the engine's 30 second limit, now on the leg to the helper.
+The helper forwards only the calls in `REPORTER_ROUTES`, a copy of `REPORTER_ROUTE_TEMPLATES` in `tlsHttp.ts` that
+`reporterHelper.test.ts` compares. It builds the upstream request from the matched route, and anything else gets `403` with
+`X-Podium-Helper-Error: ROUTE_NOT_ALLOWED` (#668).
+
+**Admin.** New routes under `/api/admin/certificates` and on `people/:id/certificate/...` live in `adminRouter.ts`.
+`POST /people` returns the config file with the token, once; if the certificate cannot be made the person and the
+token are still returned, with a `configError`, since the token is shown once too. Revoking a token, alone or with
+Revoke all, is refused for the last active Administrator (`PeopleStore.assertNotLastAdministrator`); revoking only the
+certificate needs no guard, because the console sign-in does not use it.
+The Certificates page and the header pill, and the reworked People page, are in `frontend/src/fleet/admin/`.
+
 ### People view
 
 Files: `frontend/src/fleet/people.ts`, `components/People.tsx`, `usePeoplePrefs.ts`, `admin/SpendTab.tsx`. Issues
@@ -749,7 +861,7 @@ mod's logs stay on its machine.
 
 | `PODIUM_LOG_FORMAT` | Output |
 |---|---|
-| `text` (default) | The message alone, which is what the server always printed. The events added in #140 (`quietInText`: `session.*`, `reporter.*`, `admin.*`, `sweep.removed`, `report.conflict`, `report.accepted`, `http.request`, `http.aborted`) print only at debug, so the default text output is unchanged. `auth.failed` and the `tls.*` events are the exception (#602): they print at their own level (warn) so an Admin sees why a reporter is refused. `foldedInText` folds them: the first line for one event, route, source and reason prints, repeats inside 60 seconds do not, and the next line after the window carries `(N more in the last minute not printed)`. The memory is 1000 kinds, oldest dropped first. Folding is for the text output only; `json` and the shipper get every line. |
+| `text` (default) | The message alone, which is what the server always printed. The events added in #140 (`quietInText`: `session.*`, `reporter.*`, `admin.*`, `sweep.removed`, `report.conflict`, `report.accepted`, `http.request`, `http.aborted`) print only at debug, so the default text output is unchanged. `auth.failed`, and `tls.*` events at warn or error, are the exception (#602): they print at their own level so an Admin sees why a reporter is refused. The info-level `tls.*` lines (`tls.listening`, `tls.ca_created`) stay quiet in text, so the default output has no line for the reporter port. `foldedInText` folds them: the first line for one event, route, source and reason prints, repeats inside 60 seconds do not, and the next line after the window carries `(N more in the last minute not printed)`. The memory is 1000 kinds, oldest dropped first. Folding is for the text output only; `json` and the shipper get every line. |
 | `json` | The whole record as one line, every event at its own level. The shipper always gets this JSON record. |
 
 **Redaction** (`redact.ts`)
@@ -831,12 +943,16 @@ server's file. `docs/fixtures/report.sample.json` is the shared fixture.
   and the report reply; the mod finds its own with `hooks/build.ts` and sends it as `reporter.build` (SPEC 6.8, Builds).
 - **The stream.** `sse.ts` sends `snapshot` (on every connect), `session`, `activity`, `removed`, `tick` (every
   2 s) and `wall`, and accepts at most 100 clients.
-- **Admin pages.** `AdminView` lists fifteen pages in four groups: People, Groups and Reporters (People and
-  access); Settings, Model prices, Security, Data and Stored activity (Server); Usage, Spend, People and groups,
+- **Admin pages.** `AdminView` lists sixteen pages in four groups: People, Groups and Reporters (People and
+  access); Settings, Model prices, Security, Certificates, Data and Stored activity (Server); Usage, Spend, People and groups,
   Sessions, Failures and Admin activity (Reporting); Admin log (Activity). Most have a `*Tab.tsx` file under
   `frontend/src/fleet/admin/`, the Reporting pages share `ReportPages.tsx`, and Data and Stored activity are
-  `DataPage.tsx` and `StoredActivityTab.tsx` (#432).
-- **Mounts.** The server mounts `/api/fleet` and `/api/admin`, then `/api/health` and a 404 for any other `/api`
+  `DataPage.tsx` and `StoredActivityTab.tsx` (#432). Certificates (`CertificatesTab.tsx`, #586) reads
+  `GET /api/admin/certificates`; the header's certificate pill (`CertPill.tsx`) reads the open `GET /api/tls/status` every
+  five minutes (not while the tab is hidden) and links to `#/admin/certificates`. The route answers from memory
+  (`ServingRenewer.statusView()`) and reuses its answer for 30 seconds, never past the moment a certificate ends;
+  its stage is `expired` only once the certificate has ended, and the last day reads critical.
+- **Mounts.** Ahead of the routers, `failureLimiter` covers all of `/api` (#667). The server mounts `/api/fleet`, `/api/reporter` (renewal), `/api/admin` and `/api/tls` (the pill's status), then `/api/health` and a 404 for any other `/api`
   path, then serves the built frontend with `*` falling back to `index.html`.
 
 ## Spec questions
@@ -1212,7 +1328,7 @@ Validating hooks: mod/podium-reporter/hooks/hooks.json
 
 ## Dependencies added
 
-None at run time. `@types/node` in `server/` went from 20 to 24 so `node:sqlite` is declared.
+`express-rate-limit` at run time, for the failure limiter (#667). `@types/node` in `server/` went from 20 to 24 so `node:sqlite` is declared.
 
 ## Phase log
 
@@ -1459,7 +1575,13 @@ two modes, chosen with `--mode` and saved in `~/.podium/config.env`. The reasoni
   the named volume `podium-data`, and a `--health-cmd` (the `HEALTHCHECK` instruction is dropped by Podman's
   default OCI image format).
 - It also passes the host's time zone as `TZ`, so the day for "Est. cost today" is the host's.
-- Inside, the server binds `0.0.0.0:4317`. The host-side bind is where access is limited.
+- Inside, the server binds `0.0.0.0:4317`. The host-side bind is where access is limited. With built-in TLS on it
+  also binds `0.0.0.0:4318` for reporters (mutual TLS only), published the same way, and the image carries the `openssl` package (#580). `podiumctl`
+  publishes `4318` and mounts the host folder `~/.podium/tls` at `/data/tls` (`:U` under Podman, so the `node` user owns
+  it) only when TLS is on, so the CA outlives the container and the volume. After `run` it reads the container's mounts
+  and warns when `/data/tls` is missing; the server checks `/proc/self/mountinfo` and logs `tls.storage_not_persistent`
+  when `/data/tls` is not on a named volume or bind mount (the anonymous volume the image's `VOLUME /data` makes does not
+  count, since removing the container removes it). `rm` keeps the folder unless `--purge-tls --yes`.
 - Container mode relies on `podman run` or `docker run` failing when the port is taken.
 - A standalone `start` refuses while a `podium` container runs under either engine, not only the saved one.
 

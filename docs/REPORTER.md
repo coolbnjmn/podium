@@ -111,6 +111,58 @@ The levels of `respond`:
 | `questions-and-plans` | The above, plus approving or rejecting a plan |
 | `everything` | The above, plus allowing or denying a tool (allow once only), and `/clear` and `/compact` |
 
+## Over TLS
+
+When the Admin gives you a reporter config file (`reporter-config-<name>-<epoch>.pem`), save it in `~/.podium/` and
+run `chmod 600` on it: it holds your private key, and the reporter refuses a file others can read. The reporter then
+connects to the address in the file, the server's reporter port, over HTTPS with your certificate, and the certificate is what proves who you are. That port accepts only a valid certificate. A token you have set is still sent, inside the TLS connection, and the server ignores it when your certificate is present. Nothing is installed on your machine.
+A session with no `userName` option and no `PODIUM_USER` reports as the name in the file's `# user:` line. If either is
+set to another name, the status line says "wrong config for this name" and names which one: empty it, or set it to the
+file's name. Set `PODIUM_REPORTER_CONFIG` to use a file somewhere else. With no file, nothing changes.
+
+- **It needs `node`.** The reporter starts a small helper (`hooks/helper.mjs`) that makes the connection. It looks for
+  `node` at `PODIUM_NODE`, on the PATH Claude Code started with, then in Homebrew, `/usr/local`, nvm and Volta. A
+  Claude Code started from a desktop launcher often has none of these on its PATH, so set `PODIUM_NODE` to the full path.
+- **It renews its own certificate.** Your certificate lasts 90 days by default. With 30 days left, or half its lifetime if that is shorter, the helper asks the server
+  for a new one and saves it in the same file, in one step, so no session sees half a file. Nothing for you to do, and
+  several sessions at once are fine. A certificate that has expired is not renewed: the reporter checks its date before it
+  connects, and the status line and `/podium` say the certificate expired on that date and that an Admin must generate a new
+  reporter config. The session keeps its reports and tries again every few seconds without sending anything: `/podium` shows `offline, retrying` and `Last error: HTTP 502`, and its `TLS:` line gives the reason. If an Admin revoked it, the same applies. You save the new file in `~/.podium/`.
+- **It says what is wrong.** The status line and `/podium` name the problem: no `node`, a file others can read, a file for
+  another name than this session's, an expired or revoked certificate, or a server certificate that is expired, for
+  another name or from another CA. It never falls back to HTTP.
+- **What the status line is telling you.** The server's side of this (turning TLS on and the reporter port) is in
+  [SERVER.md](SERVER.md#built-in-tls).
+
+  | Status line says | What it means and what to do |
+  |---|---|
+  | `config too open` | Others can read the file. Run `chmod 600` on it |
+  | `connecting` | The session has not heard from the server yet. It goes once the first report is answered |
+  | `no node` | The helper could not find `node`. Install Node.js, put it on the PATH Claude Code starts with, or set `PODIUM_NODE` to its full path |
+  | `config unreadable` | The file is missing or is not a Podium reporter config. When `PODIUM_REPORTER_CONFIG` names a file that cannot be used, the message gives its path and the session sends nothing, not even over HTTP. Fix the path or ask the Admin for a new file |
+  | `wrong config for this name` | The file is for another person than the name this session already has, from the `userName` option or `PODIUM_USER` (the message says which). Use that person's file, or empty that setting so the session takes the file's name |
+  | `certificate expired` | Your certificate expired on the date the message gives, and an expired certificate is not renewed. Ask an Admin to generate a new reporter config |
+  | `certificate refused` | The server turned your certificate away, on a report or on a renewal: an Admin revoked it (Revoke certificate or Revoke all), it has expired, or it is not one this server issued. Ask an Admin to reissue your config. `token refused` is only for a session with no config file |
+  | `server closed connection` | The server restarted, or it refused the certificate. If it goes on, ask for a reissue |
+  | `server not trusted` | The server's certificate is not from the CA in your file. The CA may have been rotated: ask for a new file |
+  | `server certificate expired` | The server's own certificate has expired. It is not your file: tell whoever runs the Podium server |
+  | `check the clock` | The server's certificate looks expired or not yet valid from here, and either this machine's clock disagrees with the server's by more than 5 minutes (the message gives both times), or the connection failed before the server could say what time it is (the message gives this machine's date and says a wrong clock is the likely cause). Check the system date and time. If they are right, tell whoever runs the Podium server |
+  | `server certificate refused` | Your machine refused the server's certificate for a reason not listed here (the message gives the code). Tell whoever runs the Podium server |
+  | `wrong server name` | The address in the file is not a name the server's certificate carries |
+  | `helper cannot start`, `helper not ready` | The helper could not start. Check that `node` runs, then start a new session |
+  | `helper stopped` | The helper exited and the message says why. It restarts on the next session |
+
+  A skewed clock on either machine can make a good certificate look expired or not yet valid. When the server's certificate looks
+  that way, the status line says `check the clock` and shows this machine's date, and the server's too once it has answered once.
+  It never says the clock is certainly wrong, because the certificate could be expired. Your own certificate is judged by the
+  server's clock, so a server with a wrong clock can refuse a good one: that shows as `certificate refused`.
+- **When the file is read.** The session picks its file when it starts, so a new file saved beside the old one (a
+  reissued config has a new name) is used from the next session. The file the session uses is read again before a
+  request whenever it changes on disk, if it is still for the same person. That is how a renewal made by another
+  session reaches this one, and how a reissued config saved over the old file is used within seconds. The server
+  address stays the one read at start. `/clear` keeps the helper running.
+- Command line only for now: the desktop app and VS Code are untested, and Windows is not supported.
+
 ## Messaging your other orchestrators
 
 This section is the mod's side. To set messaging up across your machines, with the server's flag, rights, limits and

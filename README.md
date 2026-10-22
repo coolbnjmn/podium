@@ -83,7 +83,7 @@ To serve the built UI and the API without a container, `npm run build` and then 
 | Read | To |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | Set Podium up, read the dashboard and use Admin |
-| [Running the server](docs/SERVER.md) | Run it with `podiumctl`, let a team report to one server, put it [behind a reverse proxy](docs/SERVER.md#behind-a-reverse-proxy), and change its settings |
+| [Running the server](docs/SERVER.md) | Run it with `podiumctl`, let a team report to one server, put it [behind a reverse proxy](docs/SERVER.md#behind-a-reverse-proxy) or turn on [built-in TLS](docs/SERVER.md#built-in-tls), and change its settings |
 | [The reporter mod](docs/REPORTER.md) | Install `podium-reporter`, set its options and see what leaves a session |
 | [Orchestrator messaging](docs/MESSAGING.md) | Let your own orchestrators on different machines message each other through Podium: setup, rights, limits, Traffic, troubleshooting and an end-to-end test |
 | [Session recording and replay](docs/REPLAY.md) | Record a session whole and play it back: the three yes answers, what is and is not captured, the notice, retention, limits and who can read it |

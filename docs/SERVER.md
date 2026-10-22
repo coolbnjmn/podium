@@ -10,11 +10,13 @@ Contents:
   - [Auth token](#auth-token)
   - [Admin and per-person tokens](#admin-and-per-person-tokens)
   - [Several people on one Podium](#several-people-on-one-podium)
+  - [Built-in TLS](#built-in-tls)
   - [Orchestrator messaging](#orchestrator-messaging)
   - [Session recording](#session-recording)
   - [The release check](#the-release-check)
   - [A page on another site](#a-page-on-another-site)
   - [Behind a reverse proxy](#behind-a-reverse-proxy)
+    - [Failed requests are limited](#failed-requests-are-limited)
   - [More settings](#more-settings)
   - [Start on boot](#start-on-boot)
 - [Server settings](#server-settings)
@@ -76,7 +78,7 @@ stored hashed, so Podium cannot show one again. They travel in a header, so a se
 needs a trusted network or a TLS proxy.
 
 Admin locks after 10 idle minutes, and five wrong names or tokens lock it for 15 minutes. Admin's pages (people,
-groups, reporters, settings, model prices, the admin log) are in the "Admin" section of
+groups, reporters, settings, model prices, certificates, the admin log) are in the "Admin" section of
 [USER_GUIDE.md](USER_GUIDE.md).
 
 ### Several people on one Podium
@@ -89,7 +91,8 @@ report to it:
 2. Allow the port (4317 by default) in the firewall for the people who need it and no one else.
 3. The server refuses a request whose `Host` is a name it does not expect (see
    [A page on another site](#a-page-on-another-site)). With `0.0.0.0` an address typed in the bar
-   (`http://192.168.1.5:4317`) works as is. To reach it by a name, list the name, then restart:
+   (`http://192.168.1.5:4317`) works as is. With [built-in TLS](#built-in-tls) on, a wildcard bind adds nothing to the
+   serving certificate, so list the address people type here too. To reach it by a name, list the name, then restart:
 
    ```sh
    podiumctl config set PODIUM_ALLOWED_HOSTS=box.lan
@@ -105,12 +108,83 @@ report to it:
 names, machines, paths, branches, plan steps, commands from failed calls and the excerpts listed under
 [What leaves the session](REPORTER.md#what-leaves-the-session).
 
-- Tokens and reports cross the network in plain HTTP, so use a network you trust or put a TLS proxy in front.
+- Tokens and reports cross the network in plain HTTP, so use a network you trust, turn on [built-in TLS](#built-in-tls)
+  or put a TLS proxy in front.
 - Anyone with a valid token can delete any session.
 - The name shown on a session comes from the token that sent it. With the shared admin secret every session
   shows as Admin, and with the server's auth turned off every session is Unassigned, because then anyone
   could claim any name.
 - Per-person read permissions are not part of Podium.
+
+### Built-in TLS
+
+Podium can open a second port for reporters, with its own certificate authority (CA), so reports and answers are
+encrypted on the network and each reporter proves who it is with a certificate. The console and Admin stay on plain HTTP:
+Podium does not serve HTTPS to browsers, and a person who wants it puts a proxy in front. It is off until you turn it on. The design is in [SPEC.md](SPEC.md#77-hardening) (*Built-in TLS*) and
+DECISIONS 42. This section is the walk-through, in the order you do it.
+
+**1. Turn it on.**
+
+```sh
+podiumctl start --tls          # or: podiumctl config set PODIUM_TLS=on, then podiumctl restart
+podiumctl status               # the "tls:" line shows the reporter port
+```
+
+The first start makes a CA and a serving certificate. HTTP stays on `4317` for the console, Admin and any reporter that uses
+a token. The reporter port is `4318` (change it with `PODIUM_TLS_PORT`): HTTPS that accepts only a valid reporter
+certificate, and serves only what a reporter calls. If people reach the server by a name, set `PODIUM_ALLOWED_HOSTS=box.lan` before the first start, since
+the serving certificate carries `localhost`, `127.0.0.1` and those names, plus the bind address in standalone mode. In container mode the server binds `0.0.0.0` inside, so `--bind` adds nothing: list every name or address people type. Adding a name later needs **Renew now**
+on Admin > Server > Certificates. The CA lives in `~/.podium/tls` (container mode) or `data/tls` beside the database
+(standalone). It holds the CA key, so back it up and keep it private. `podiumctl rm` keeps it; `podiumctl rm --purge-tls
+--yes` deletes it, and then every reporter config must be reissued.
+
+**2. Nothing to trust in a browser.** The console is plain HTTP on `4317`, so a browser needs no CA and shows no
+warning. The reporter never needs one installed either: it reads the CA from its own config file and installs nothing on
+your machine. To check which CA a config carries, open Admin > Server > Certificates, copy the CA's SHA-256 fingerprint and
+compare it with the one in the config.
+
+**3. Give each person a reporter config.** In Admin > People, **Create user** (or **Reissue config** on an existing
+person) shows a `reporter-config-<name>-<epoch>.pem` file once. Podium keeps no copy of the key, so save it then. The
+person puts it in `~/.podium/`, runs `chmod 600` on it, and starts Claude Code on a machine that has `node`. A session with no name of its own takes the file's name, so
+nothing else needs setting. A name the session already has (the `userName` option or `PODIUM_USER`) must be the file's
+name, or the status line says "wrong config for this name" and names where the other name came from. The server address in the file is the one your
+browser used when you created the person, plus the reporter port, so create people from the address they will reach. The
+steps and the errors the status line can show are in [REPORTER.md](REPORTER.md#over-tls).
+
+**4. Decide about plain HTTP.** Admin > Server > Certificates has **Allow reporters to connect over HTTP**. It is on for
+a server that already had reporters when you turned TLS on, so nothing stops, and a warning line stays until you turn
+it off. A fresh server starts with it off. Turn it off once every reporter has its config: the HTTP port then refuses
+reporter traffic from anywhere but the server's own loopback address, so reporters must use the reporter port. A server in a container is the exception to "this machine": a reporter on the same host reaches it through the published port and arrives from the container network, so it needs its reporter config. The console on loopback stays on HTTP either way, so an Admin can
+always sign in.
+
+**Revoking.** **Revoke certificate** stops the reporter that uses the certificate. The person's token still works until you
+revoke it: a reporter that falls back to its token over HTTP (from loopback, or while HTTP is allowed) is let in by it, and
+the person can still sign in to the console. **Revoke token** (which revokes the certificate too) or **Revoke all** cuts the person off.
+
+**When a certificate expires.**
+
+- **A person's certificate** renews itself at 30 days left (half its lifetime for a certificate that lasts under 60 days).
+  There is no grace after it expires: the reporter cannot connect to the reporter port, and its status line says the
+  certificate expired on a date and that an Admin must generate a new one. Admin > People warns before that happens, with
+  a *lapses soon* badge. After an expiry or a revoke, choose **Reissue config** for the person and send them the new file.
+- **The serving certificate** renews itself when 30 days are left (Admin > Server > Certificates changes that), checking at every start and once a day. A failed renewal shows in
+  red on the Certificates page and in the header pill. **Renew now** tries again.
+- **The CA** lasts 10 years. Rotate it before then with **Rotate CA…**, which keeps old reporters working through an
+  overlap. If the CA expired or its key leaked, use **Rotate CA and end the overlap now**, then reissue every config.
+- **You cannot sign in because the certificate expired.** That cannot happen: the console is plain HTTP and never
+  uses a certificate, so you can always sign in at `http://<host>:4317` with your name and token, or `Admin` and the
+  admin secret.
+
+**What TLS stops, and what it does not.** It stops snooping on tokens, reports and answers, a person in the middle, a
+host that pretends to be the server, replayed traffic, a stolen database giving up usable reporter credentials, and an
+expired or revoked certificate being used. It does not protect the console, which is plain HTTP, so put a proxy in front
+of it if people reach it over a network you do not trust. It does not stop a stolen config file (the key is in it, so revoke the
+certificate), a stolen console token, anything running as the same user on a reporter's machine, plain HTTP while
+reporters are allowed over it, or a stolen `/data/tls`, which holds the CA key and means an emergency rotation and a
+reissue for everyone. [.github/SECURITY.md](../.github/SECURITY.md#built-in-tls) has the full list.
+
+**A real name.** A server with a public name can already sit behind a TLS proxy ([Behind a reverse proxy](#behind-a-reverse-proxy)).
+Uploading your own certificate to Podium, and ACME, are not supported.
 
 ### Orchestrator messaging
 
@@ -194,6 +268,21 @@ podiumctl restart
 - In container mode the proxy reaches Podium through the published port, so its address inside the container may
   be the network's gateway rather than the proxy's own; check the `source` in Admin's log after turning it on.
 
+#### Failed requests are limited
+
+Alongside the lockouts for wrong secrets, one address may make 300 failed requests a minute (a response of 400 or
+more) to `/api`. The next one gets `429` with `Retry-After` until the minute is over, and the first refusal in a
+window is logged as `auth.throttled`. Successful requests are never counted, so a busy reporter or an open console
+does not trip it. Any response of 400 or more counts, a `404` or `409` included.
+
+- Past the limit, that address's valid requests are refused too until the minute is over.
+- The address is the one Express sees, so behind a proxy the limit follows `PODIUM_TRUST_PROXY` above. Without it,
+  every client behind the proxy (and every local client on `127.0.0.1`) shares one address, and one scanner can
+  use up the limit for all of them.
+- To change the limit, set `PODIUM_FAILURE_LIMIT` to a whole number of failed requests a minute
+  (`podiumctl config set PODIUM_FAILURE_LIMIT=1200`, then `podiumctl restart`). A value that is not a whole number
+  of at least 1 stops the server at start.
+
 ### More settings
 
 Other settings (`STALE_AFTER_MS`, `RETAIN_*`, the `PODIUM_LOG_*` logging settings, and so on, see
@@ -227,7 +316,11 @@ These are environment variables (see `.env.example`). Under `podiumctl` you set 
 | `PODIUM_DB` | `data/podium.sqlite` | SQLite database file (`podiumctl` uses `/data/podium.sqlite` in the container and `~/.podium/data/podium.sqlite` standalone). A second file, `activity.sqlite`, is created beside it when the Admin keeps Activity history or turns on Session recording |
 | `PODIUM_HOST_HOME` | the server's own home | Home directory to show as `~` in session paths. `podiumctl` sets it to your home in the container, where the server's own home is `/home/node`. Ignored unless it is an absolute path |
 | `PODIUM_TOKEN` | empty | The admin secret. When set, `POST /api/fleet/report`, `POST /api/fleet/hook` and `DELETE` require `X-Podium-Token` (this or a person's token), and it opens Admin |
+| `PODIUM_TLS` | `off` | `on` makes the server create a CA and open a second port for reporters (HTTPS, client certificate required) beside the HTTP console. `podiumctl start --tls` sets it. Container mode keeps the CA in `~/.podium/tls` on your machine (standalone: `data/tls` beside the database): back that folder up and keep it private, because it holds the CA key. `podiumctl rm` keeps it unless you add `--purge-tls --yes`. Under rootless Podman on Linux the folder belongs to the container's user, so read or delete it with `podman unshare` |
+| `PODIUM_TLS_PORT` | `4318` | The reporter port on your machine (`podiumctl` maps it to 4318 inside the container and tells the server the port on your machine, so a reporter config names that one) |
+| `PODIUM_TLS_PUBLIC_PORT` | the listening reporter port | The reporter port people reach the server on, which goes into each reporter config. `podiumctl` sets it in container mode to your `PODIUM_TLS_PORT`. Set it yourself only when something else maps the port (a forwarder or a container you run by hand) |
 | `PODIUM_ALLOWED_HOSTS` | empty | Extra `Host` names the server accepts, comma-separated (see [A page on another site](#a-page-on-another-site)) |
+| `PODIUM_FAILURE_LIMIT` | `300` | Failed requests (a response of 400 or more) one address may make to `/api` in a minute before its requests get `429` (see [Failed requests are limited](#failed-requests-are-limited)). A value that is not a whole number of at least 1 stops the server at start |
 | `PODIUM_TRUST_PROXY` | off | The reverse-proxy hops whose `X-Forwarded-For` and `X-Forwarded-Proto` the server believes (see [Behind a reverse proxy](#behind-a-reverse-proxy)) |
 | `TZ` | the server's own zone | Timezone whose midnight starts "today" for "Est. cost today". `podiumctl` gives the container your host's zone; set it with `podiumctl config set TZ=Europe/Berlin` to override |
 | `STALE_AFTER_MS` | `15000` | A session not heard from this long shows as stale |

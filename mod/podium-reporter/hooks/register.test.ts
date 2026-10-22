@@ -28,7 +28,7 @@ interface World {
   clock: ReturnType<typeof mock.clock>
   lastToolUseId: () => string
   sessionId: { value: string }
-  fetchMode: { mode: 'ok' | 'down' | 'hang' }
+  fetchMode: { mode: 'ok' | 'down' | 'hang' | 'denied' }
   /** The clients attached to the session, as `$.session.surfaces()` answers. */
   surfaces: { value: ('terminal' | 'desktop' | 'vscode' | 'mobile')[]; fail: boolean }
   /** Every command the plugin ran, as its argument vector. */
@@ -53,6 +53,10 @@ interface World {
   statuses: (string | undefined)[]
   /** What the server's reply says about itself: its build (#400). */
   serverBuild: { value: string | null }
+  /** Where each request went: the URL, and the socket when it was sent through the TLS helper (#584). */
+  fetched: { url: string; socketPath?: string }[]
+  /** Every toast the plugin showed. */
+  toasts: string[]
 }
 
 const GIT: Record<string, string> = {
@@ -89,6 +93,8 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   const devBuild: World['devBuild'] = { value: null }
   const statuses: World['statuses'] = []
   const serverBuild: World['serverBuild'] = { value: null }
+  const fetched: World['fetched'] = []
+  const toasts: string[] = []
   const watch: World['watch'] = { value: [] }
   const watchOutput: World['watchOutput'] = { value: null }
   const bash: World['bash'] = { results: {} }
@@ -116,7 +122,10 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
     statuses.push(e.text)
     return { value: undefined }
   })
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.log', () => ({ value: undefined }))
   on('process.run', (_$, e) => {
     ran.push([...e.argv])
@@ -137,6 +146,8 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   })
   on('http.fetch', (_$, e) => {
     if (fetchMode.mode === 'down') throw new Error('ECONNREFUSED')
+    fetched.push({ url: e.url, socketPath: e.init?.socketPath })
+    if (fetchMode.mode === 'denied') return { value: { status: 401, ok: false, headers: {}, text: '{"ok":false,"error":"client certificate refused"}' } }
     const body = JSON.parse(e.init?.body ?? '{}') as Report
     if (fetchMode.mode === 'hang') return new Promise(() => {})
     posts.push(body)
@@ -178,7 +189,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('classic.Notification', () => ({}))
   on('classic.SessionStart', () => ({}))
   on('classic.UserPromptSubmit', () => ({}))
-  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, place, gitAt, devBuild, statuses, serverBuild }
+  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, place, gitAt, devBuild, statuses, serverBuild, fetched, toasts }
 }
 
 type StepArgs = Parameters<Engine['turn']['step']>[0]
@@ -1132,5 +1143,136 @@ describe('podium-reporter end to end', () => {
       expect(seen).toEqual(chunks)
       expect(r.value).toMatchObject({ answer: 'ab', stopReason: 'end_turn' })
     })
+  })
+})
+
+// ---- the TLS helper (#584) --------------------------------------------------------------------------
+
+const CONFIG_PATH = '/Users/dev/.podium/reporter-config-Dana-1767225600.pem'
+const configText = (user: string, expires = '2099-01-01T00:00:00.000Z') =>
+  `# podium-reporter-config v1\n# user: ${user}\n# server: https://podium.lan:4318\n# issued-at: 2026-01-01T00:00:00.000Z 1767225600\n# expires: ${expires}\n# fingerprint: AA\n-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n`
+
+/** The environment and the helper process beneath the plugin: `node` is at NODE, the helper prints what `helperSays` holds. */
+function helperWorld(on: On, o: { files: Record<string, string>; node: string | null; helperSays?: string[]; env?: Record<string, string> }) {
+  const spawned: { argv: readonly string[]; env?: Record<string, string> }[] = []
+  on('env.get', (_$, e) => ({ value: { HOME: '/Users/dev', PODIUM_NODE: o.node ?? undefined, ...o.env }[e.name] }))
+  on('fs.list', (_$, e) => {
+    const names = Object.keys(o.files).filter((f) => f.startsWith(`${e.path}/`)).map((f) => ({ name: f.slice(e.path.length + 1), kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false }))
+    if (!names.length) throw new Error('ENOENT')
+    return { value: names }
+  })
+  on('fs.exists', (_$, e) => ({ value: e.path === o.node }))
+  on('process.spawn', async function* (_$, e) {
+    spawned.push({ argv: e.argv, env: e.env })
+    for (const text of o.helperSays ?? ['ready\n']) yield { stream: 'stdout' as const, text }
+    await new Promise(() => {})
+  })
+  const w = world(on, {}, o.files)
+  return { w, spawned }
+}
+
+describe('podium-reporter over the TLS helper (#584)', () => {
+  test('with a config file, reports go through the helper on its socket, to the address in the file, and say so in /podium', async ($, on) => {
+    const { w, spawned } = helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node' })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(spawned[0]?.argv[0]).toBe('/usr/local/bin/node')
+    expect(spawned[0]?.argv[2]).toBe(CONFIG_PATH)
+    expect(w.fetched[0]?.url).toBe('http://podium/api/fleet/report')
+    expect(w.fetched[0]?.socketPath).toBe(spawned[0]?.argv[3])
+    expect(w.fetched.every((f) => f.socketPath)).toBe(true)
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('Podium fleet console: https://podium.lan:4318/#/')
+    expect(info.text).toContain('TLS: connected over HTTPS')
+    // the session had no name of its own, so it reports as the person the file was issued to
+    expect(w.posts[0]?.userName).toBe('Dana')
+  })
+
+  test('with no config file nothing is spawned and reports go out as before', async ($, on) => {
+    const { w, spawned } = helperWorld(on, { files: {}, node: '/usr/local/bin/node' })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(spawned).toEqual([])
+    expect(w.fetched[0]?.url).toBe('http://127.0.0.1:4317/api/fleet/report')
+    expect(w.fetched[0]?.socketPath).toBeUndefined()
+  })
+
+  test('with a config file and no node, the status line and /podium say so, and nothing is sent', async ($, on) => {
+    const { w, spawned } = helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: null })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(spawned).toEqual([])
+    expect(w.fetched).toEqual([])
+    expect(w.statuses.at(-1)).toContain('no node')
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('TLS: Podium needs node')
+  })
+
+  test('a config file for another name than the session’s is refused, and the status line says so', { options: { userName: 'Ed', token: 't' } }, async ($, on) => {
+    const { w, spawned } = helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node' })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(spawned).toEqual([])
+    expect(w.fetched).toEqual([])
+    expect(w.statuses.at(-1)).toContain('wrong config for this name')
+  })
+
+  test('a name from the userName option that the file is not for is named as the cause, with what to change (#647)', { options: { userName: 'Ed', token: 't' } }, async ($, on) => {
+    helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node' })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('"Ed" comes from the userName option')
+    expect(info.text).toContain('empty')
+  })
+
+  test('a name from PODIUM_USER that the file is not for is named as the cause (#647)', async ($, on) => {
+    helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node', env: { PODIUM_USER: 'Ed' } })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('"Ed" comes from PODIUM_USER')
+  })
+
+  test('a name the session already holds is named as the cause, and is not called something to empty (#647)', async ($, on) => {
+    on('state.get', () => ({ value: { value: { userName: 'Ed', token: 't' }, version: 1 } }))
+    helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node' })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('"Ed" comes from the identity this session already holds')
+    expect(info.text).toContain('or change the name')
+    expect(info.text).not.toContain('leave that empty')
+  })
+
+  test('a PODIUM_REPORTER_CONFIG naming a missing file says config unreadable and sends nothing over http (#645)', async ($, on) => {
+    const { w, spawned } = helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node', env: { PODIUM_REPORTER_CONFIG: '/nowhere/mine.pem' } })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(spawned).toEqual([])
+    expect(w.fetched).toEqual([])
+    expect(w.statuses.at(-1)).toContain('config unreadable')
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('/nowhere/mine.pem')
+  })
+
+  test('a 401 over the helper says certificate refused in the status line, /podium and the toast, never the token (#646)', async ($, on) => {
+    const { w } = helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node' })
+    w.fetchMode.mode = 'denied'
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(w.statuses.at(-1)).toContain('certificate refused')
+    const info = await $.command.run(podium(''))
+    expect(info.text).toContain('TLS: The server did not accept your certificate')
+    expect(w.toasts.some((t) => t.includes('did not accept your certificate'))).toBe(true)
+    expect(w.toasts.some((t) => t.includes('token'))).toBe(false)
+  })
+
+  test('a /clear (session.end with reason clear, then session.start) keeps the helper that is running', async ($, on) => {
+    const { w, spawned } = helperWorld(on, { files: { [CONFIG_PATH]: configText('Dana') }, node: '/usr/local/bin/node' })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.session.end({ reason: 'clear', sessionId: SID, resume: { id: 'sess-after-clear' } })
+    w.sessionId.value = 'sess-after-clear'
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(spawned.length).toBe(1)
+    expect(w.fetched.at(-1)?.socketPath).toBe(spawned[0]?.argv[3])
   })
 })

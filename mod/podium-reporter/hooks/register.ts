@@ -55,6 +55,7 @@ import {
 } from './state.ts';
 import { nextCronAt } from './cron.ts';
 import { isDelivery, Transport, type FetchLike } from './transport.ts';
+import { findConfig, startLink, unusableLink, type Link } from './tlsLink.ts';
 import { activityCall, activityText, explainPrompt } from './failures.ts';
 import { activityEntry, finishedCall, type BashResult } from './activityDetail.ts';
 import { nameArg, pickIdentity, worthHolding, type Identity } from './identity.ts';
@@ -218,6 +219,14 @@ let opts: Options = readOptions({});
 let who: Identity = { userName: '', token: '' };
 const IDENTITY = { plugin: 'podium-reporter', key: 'identity' } as const;
 let rt: Runtime | null = null;
+/** Where the name in `who` came from, for the wrong-config message (#647); empty when `who` has none. */
+let nameSource = '';
+/** True when that name is a setting the person can empty (the option or PODIUM_USER), false for the held identity. */
+let nameIsSetting = false;
+/** The helper that makes the TLS connection, when a reporter config file exists (#584); null sends reports as before, through `$.http.fetch`. */
+let link: Link | null = null;
+/** The start of `link` that is under way, so two overlapping session.start events share it. */
+let linking: Promise<void> | null = null;
 /** Bumped by each register (a reload, or a new test): a wait for an answer started under an older one stops. */
 let generation = 0;
 let errors: { at: number; where: string; message: string }[] = [];
@@ -424,7 +433,7 @@ function devNote(version: string, build: string | null | undefined): string {
 
 function showStatus($: Engine, r: Runtime): void {
   if (!opts.showStatus) return;
-  const text = r.transport.statusText();
+  const text = r.transport.statusText(link?.problem()?.status);
   if (text === r.lastStatus) return;
   r.lastStatus = text;
   try {
@@ -438,10 +447,10 @@ function toastOnce($: Engine, r: Runtime, ok: boolean): void {
   try {
     if (ok && !r.toastedOk) {
       r.toastedOk = true;
-      $.ui.toast(`Podium: reporting to ${opts.serverUrl}`);
+      $.ui.toast(`Podium: reporting to ${serverBase()}`);
     } else if (!ok && !r.toastedFail) {
       r.toastedFail = true;
-      $.ui.toast(`Podium: cannot reach ${opts.serverUrl}; will keep retrying`);
+      $.ui.toast(`Podium: cannot reach ${serverBase()}; will keep retrying`);
     }
   } catch {
     // no toasts on this host
@@ -449,7 +458,9 @@ function toastOnce($: Engine, r: Runtime, ok: boolean): void {
 }
 
 function toastRefusalOnce($: Engine, r: Runtime): void {
-  const notice = r.transport.refusalNotice() ?? r.transport.ownerNotice();
+  // With a config file there is no token to blame: the link's certificate message stands in for the token one (#646).
+  const refusal = r.transport.refused && link?.problem() ? link.problem()?.text : r.transport.refusalNotice();
+  const notice = refusal ?? r.transport.ownerNotice();
   if (!notice || notice === r.toastedRefusal) return;
   r.toastedRefusal = notice;
   try {
@@ -822,7 +833,7 @@ async function attempt<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 // ---- responding: talking to the server (#206) -------------------------------------------------
 
 function serverBase(): string {
-  return trimTrailingSlashes(opts.serverUrl);
+  return trimTrailingSlashes(link?.serverUrl ?? opts.serverUrl);
 }
 
 function sessionPath(sessionId: string): string {
@@ -834,7 +845,8 @@ async function podiumCall($: Engine, method: string, path: string, body?: unknow
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (who.token) headers['X-Podium-Token'] = who.token;
   try {
-    const res = await $.http.fetch(serverBase() + path, body === undefined ? { method, headers } : { method, headers, body: JSON.stringify(body) });
+    const init = body === undefined ? { method, headers } : { method, headers, body: JSON.stringify(body) };
+    const res = await (link ? link.fetch(serverBase() + path, init) : $.http.fetch(serverBase() + path, init));
     return { status: res.status, text: res.text };
   } catch {
     return null;
@@ -1576,6 +1588,8 @@ async function answerRequest($: Engine, answer: 'allow' | 'decline' | 'deliver',
  * else the shared options. Held for the rest of the session once it has a token.
  */
 async function takeIdentity($: Engine): Promise<Identity> {
+  nameSource = '';
+  nameIsSetting = false;
   let held: Identity | undefined;
   let readable = true;
   try {
@@ -1586,6 +1600,13 @@ async function takeIdentity($: Engine): Promise<Identity> {
   }
   const env = { user: await attempt(() => $.env.get('PODIUM_USER'), undefined), token: await attempt(() => $.env.get('PODIUM_TOKEN'), undefined) };
   const picked = pickIdentity({ held, env, options: { userName: opts.userName, token: opts.token } });
+  if (picked.userName.trim()) {
+    if (held && worthHolding(held)) nameSource = 'the identity this session already holds';
+    else {
+      nameSource = (env.user ?? '').trim() || (env.token ?? '').trim() ? 'PODIUM_USER' : 'the userName option';
+      nameIsSetting = true;
+    }
+  }
   // When the held identity could not be read, do not overwrite what may be there.
   if (readable && worthHolding(picked) && (!held || held.userName !== picked.userName || held.token !== picked.token)) {
     await attempt(() => $.state.set(IDENTITY, picked), undefined);
@@ -1612,12 +1633,32 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
   if (usage) state = measure(state, { context: usage.context, cost: usage.cost ?? null, rateLimits: usage.rateLimits, startedAt: usage.startedAt });
   if (!same) state = addEvent(state, 'start', null, `session.start · ${shortName(model)}`, now, { surface: e.surface });
   if (recorder.sessionId !== id) recorder.begin(id);
-  const fetch: FetchLike = (url, init) => $.http.fetch(url, init);
+  // A /clear starts the session again under a new id; the helper goes on (#584). A file saved since this one was read is not taken up.
+  // A name the identity now holds that the file is not for ends that link, so the check runs again below.
+  // A stand-in for an unusable file (no headers) is dropped on every start so a file fixed since is found.
+  if (link && (!link.headers || (who.userName.trim() && who.userName.trim() !== link.user))) {
+    link.stop();
+    link = null;
+  }
+  if (!link) {
+    // Two overlapping starts wait for one helper, not one each.
+    linking ??= (async () => {
+      const found = await findConfig($ as never).catch(() => null);
+      if (found?.problem) record($, 'tls', new Error(found.problem.text));
+      if (found?.problem) link = unusableLink(found.env.config ?? '', opts.serverUrl, found.problem);
+      else if (found?.found) link = await startLink($ as never, found.found, found.env, { sessionName: who.userName.trim(), nameSource, nameIsSetting, now: nowMs, log: (line) => void remember('tls', line) });
+    })().finally(() => {
+      linking = null;
+    });
+    await linking;
+  }
+  if (link?.headers && !who.userName.trim() && link.problem()?.code !== 'NAME_MISMATCH') who = { ...who, userName: link.user };
+  const fetch: FetchLike = (url, init) => (link ? link.fetch(url, init) : $.http.fetch(url, init));
   // Looked up once per load: the folder does not move, and a reload starts over.
   const build = rt ? rt.build : await findBuild($);
   const transport =
     rt?.transport ??
-    new Transport(fetch, { serverUrl: opts.serverUrl, token: who.token, heartbeatMs: opts.heartbeatMs, version: VERSION, build }, (line) => remember('transport', line));
+    new Transport(fetch, { serverUrl: link?.serverUrl ?? opts.serverUrl, token: who.token, heartbeatMs: opts.heartbeatMs, version: VERSION, build }, (line) => remember('transport', line));
   rt = {
     state,
     transport,
@@ -1707,6 +1748,8 @@ async function end($: Engine, e: { reason: string; sessionId: string; resume?: {
   }
   // After /clear the process goes on under a new id (the flusher picks it up); otherwise it is ending.
   if (e.reason !== 'clear') {
+    link?.stop();
+    link = null;
     for (const t of r.timers) t.cancel();
     r.timers = [];
     r.kick?.cancel();
@@ -1737,7 +1780,8 @@ async function podiumCommand($: Engine, args: string): Promise<string> {
     .map(([k, s]) => `${k} ${(s.totalMs / s.calls).toFixed(2)} ms avg, ${s.maxMs.toFixed(2)} max`)
     .slice(0, 8);
   return [
-    `Podium fleet console: ${trimTrailingSlashes(opts.serverUrl)}/#/`,
+    `Podium fleet console: ${serverBase()}/#/`,
+    link ? `TLS: ${link.problem()?.text ?? `connected over HTTPS with the certificate in ${link.configPath}`}` : '',
     `Connection: ${t.online === null ? 'not tried yet' : t.online ? 'online' : 'offline, retrying'}${t.liveSessions !== null ? ` (${t.liveSessions} live sessions)` : ''}`,
     `Versions: reporter ${devNote(VERSION, r.build)}${t.serverVersion ? `, server ${devNote(t.serverVersion, t.serverBuild)}` : ''}`,
     t.ownerNotice() ?? t.versionNotice() ?? t.updateNotice() ?? '',
@@ -1847,6 +1891,9 @@ async function sendRecording($: Engine, now: number): Promise<void> {
 export const register: Register = (on, rawOptions) => {
   opts = readOptions(rawOptions as Record<string, unknown>);
   who = { userName: '', token: '' };
+  link?.stop();
+  link = null;
+  linking = null;
   rt = null;
   generation++;
   errors = [];
