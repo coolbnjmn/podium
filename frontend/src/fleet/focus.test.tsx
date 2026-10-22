@@ -7,7 +7,7 @@ import { FocusHeader } from "./components/FocusHeader";
 import { ContextBar } from "./components/Chips";
 import { fleetReducer } from "./store";
 import { makeAgent, makeSession } from "./fixtures";
-import { stateFrom } from "./testState";
+import { atWall, stateFrom } from "./testState";
 
 afterEach(() => {
   cleanup();
@@ -22,6 +22,7 @@ const agents = [
 
 function openFocus(sessionOver = {}) {
   const st = stateFrom({ sessions: [makeSession({ agents, ...sessionOver })] });
+  atWall();
   const utils = render(<FleetView state={st} />);
   fireEvent.click(utils.container.querySelector(".wall .card")!);
   return { ...utils, st };
@@ -82,11 +83,11 @@ describe("orchestrator page", () => {
     expect(onPage[0]).toHaveTextContent("Square color is the model:");
   });
 
-  it("has the facts grid with Fork as the last cell", () => {
+  it("has the facts grid with Recording as the last cell", () => {
     const { container } = openFocus();
     const cells = [...container.querySelectorAll(".facts > .fact")];
     expect(cells.map((c) => c.querySelector(".k")?.textContent ?? c.textContent)).toEqual([
-      "Agents", "Est. cost", "Tokens", "Running for", "Agent time", "Blowouts", "Reporter", "Session", "Resume", "Fork",
+      "Agents", "Est. cost", "Tokens", "Running for", "Agent time", "Blowouts", "Machine", "Reporter", "Session", "Resume", "Fork", "Recording",
     ]);
     expect(container.querySelector(".facts .blow.l2")?.textContent).toContain("1 failed");
   });
@@ -662,6 +663,7 @@ describe("delegating (#98)", () => {
     const waiting = openFocus({ status: "waiting", waitReason: "permission", agents: nested });
     expect(chip(waiting.container, ".trow.root").textContent).toBe("waiting on you");
     cleanup();
+    atWall();
     const st = stateFrom({ sessions: [makeSession({ agents: nested })] });
     const { container } = render(<FleetView state={st} />);
     const card = container.querySelector(".wall .card")!;

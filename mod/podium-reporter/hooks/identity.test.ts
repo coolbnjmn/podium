@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'claude-code/testing'
-import { pickIdentity, worthHolding } from './identity.ts'
+import { nameArg, pickIdentity, worthHolding } from './identity.ts'
 
 const admin = { userName: '', token: 'admin-secret' }
 const ed = { userName: 'Ed', token: 'ed-token' }
@@ -30,5 +30,20 @@ describe('which Podium identity a session reports as (#226)', () => {
 
   test('a stray newline or space around the terminal token is dropped', () => {
     expect(pickIdentity({ held: undefined, env: { user: ' Ed ', token: 'ed-token\n' }, options: admin })).toEqual(ed)
+  })
+
+  test('/podium name takes the text after name, trimmed and cut to 80, in linear time (#515)', () => {
+    expect(nameArg('name  x')).toBe('x')
+    expect(nameArg('NAME Silverbolt ')).toBe('Silverbolt')
+    expect(nameArg('name two words')).toBe('two words')
+    expect(nameArg('name ' + 'y'.repeat(100))).toBe('y'.repeat(80))
+    expect(nameArg('name')).toBeNull()
+    expect(nameArg('names x')).toBeNull()
+    expect(nameArg('rename x')).toBeNull()
+    expect(nameArg('name' + ' '.repeat(100_000))).toBeNull()
+    const long = 'name' + ' '.repeat(100_000) + 'x' + ' '.repeat(100_000)
+    const start = Date.now()
+    expect(nameArg(long)).toBe('x')
+    expect(Date.now() - start).toBeLessThan(1000)
   })
 })

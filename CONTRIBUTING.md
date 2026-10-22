@@ -52,7 +52,13 @@ scripts/gpu-sample.sh --help    # sample the Mac's GPU load while a tab is open 
 scripts/agent-context-audit.sh --help  # compare each agent's Tokens with its own transcript
 scripts/agent-tokens-sample.sh --help  # log a running agent's Tokens over time
 scripts/podium-peers-e2e.sh --help     # orchestrator messaging with real Claude Code sessions in tmux (costs model usage)
+node scripts/page-shot.mjs --help      # load a page at a set width (400 px) in headless Chrome, save a PNG, optionally run JavaScript in it
+node scripts/podium-peers-seed.mjs --help  # seed a throwaway server with a person, reporters and messages to look at
 ```
+
+`page-shot.mjs` is how to see a UI change at a narrow width in the built app. Start a throwaway server on its own port and database
+(`PORT=4391 PODIUM_DB=/tmp/x.sqlite PODIUM_TOKEN=secret node server/dist/index.js` after `npm run build`), seed it, and run
+`node scripts/page-shot.mjs --url 'http://127.0.0.1:4391/#/me/reporters' --width 400`. It needs Chrome or Chromium and Node 22 or later.
 
 CI runs `npm test` and `npm run build` on every PR into `development` or `main`, on the project's self-hosted runners (`runs-on: [self-hosted, Linux, X64]`; a PR from a fork uses GitHub's `ubuntu-latest`); a job waits in the queue when none is free. It cannot run the two mod checks, because the runners
 have no Claude Code, so run those yourself when you touch the mod.
@@ -65,6 +71,19 @@ SonarCloud cannot see the mod's own tests, because they run only inside Claude C
 `mod/podium-reporter/hooks/register.ts` counts as uncovered. Put new mod logic in a plain module beside it that imports
 nothing from the engine (see `place.ts`, which takes what it needs from `$` as an argument), test it from `scripts/` with vitest,
 and keep `register.ts` to a few lines of glue. `server/vitest.config.ts` measures `mod/podium-reporter/hooks/*.ts` for this.
+
+### The nightly
+
+`.github/workflows/nightly.yml` publishes a snapshot of `development` every day at 06:00 UTC (and on demand, from the Actions
+tab, with Run workflow). It checks out `development`, runs `npm test` and `npm run build`, and only if both pass creates the tag
+`nightly-YYYY-MM-DD` and a GitHub **prerelease** with a source tarball of that commit. Then it deletes every earlier `nightly-*`
+release and tag, so one nightly exists at a time. A day with no new commit on `development`, or a red `development`, publishes
+and deletes nothing. A nightly is unreleased and may be broken. It is never marked latest, so `releases/latest` and the in-app
+update notice still point at the newest `vX.Y.Z` release.
+
+To try it, download the tarball from the [Releases page](https://github.com/eengelking/podium/releases) (the one marked
+Pre-release), unpack it, and run `npm ci --ignore-scripts && npm run build`, or `podiumctl build` for the container. The
+`schedule:` trigger only runs from the default branch, so the workflow starts running when it reaches `main` with a release.
 
 When you fix a bug in code, add a test that fails for the right reason first, then fix it.
 
@@ -86,10 +105,12 @@ own conversation. Other docs should link to the spec section instead of restatin
 | `docs/REPORTER.md` | The reporter mod: install, options, what leaves a session |
 | `docs/USER_GUIDE.md` | Using the dashboard, day-to-day |
 | `docs/MESSAGING.md` | Orchestrator messaging from start to finish: how the parts fit, setup, rights, limits, troubleshooting, the end-to-end test |
+| `docs/REPLAY.md` | Session recording and replay from start to finish: consent, what is captured, the notice, storage, limits, access, the replay, the measurement |
 | `docs/SPEC.md` | Intended behavior and requirements |
 | `docs/ARCHITECTURE.md` | How it was built, departures from the spec, verification, known issues |
 | `docs/DECISIONS.md` | Why a significant choice was made |
 | `docs/GOTCHAS.md` | Sharp edges that are easy to hit |
+| `docs/COMMUNITY.md` | The Discord server: how to join it, and how the maintainer sets it up and keeps it safe |
 | `docs/standards/` | How the UI looks and is built: tokens, components, patterns, voice, accessibility. Generated from the app, never edited by hand |
 | `docs/DEMO.md` | A script for showing Podium to other people |
 | `CHANGELOG.md` | One entry per release |

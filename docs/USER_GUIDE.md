@@ -6,7 +6,8 @@ Podium shows every Claude Code session on your machine in one browser tab. It wa
 session, stops an agent or changes anything, unless you turn on [answering from Podium](#answering-a-session-from-podium).
 
 Related docs: [REPORTER.md](REPORTER.md) for the mod's options, [SERVER.md](SERVER.md) for the server's settings,
-[MESSAGING.md](MESSAGING.md) for setting up orchestrator messaging and [GOTCHAS.md](GOTCHAS.md) for sharp edges.
+[MESSAGING.md](MESSAGING.md) for setting up orchestrator messaging, [REPLAY.md](REPLAY.md) for recording a session and
+replaying it, and [GOTCHAS.md](GOTCHAS.md) for sharp edges.
 
 ## Contents
 
@@ -27,6 +28,7 @@ Related docs: [REPORTER.md](REPORTER.md) for the mod's options, [SERVER.md](SERV
 - [One session](#one-session)
 - [Activity](#activity)
 - [Answering a session from Podium](#answering-a-session-from-podium)
+- [Session recording](#session-recording)
 - [My reporters](#my-reporters)
 - [Traffic](#traffic)
 - [History](#history)
@@ -46,8 +48,9 @@ Related docs: [REPORTER.md](REPORTER.md) for the mod's options, [SERVER.md](SERV
 
 - Claude Code, to run the sessions you want to watch.
 - Node 24 and npm, to get the server and `podiumctl`.
-- Podman, if you want the server in a container (recommended). Without it, `podiumctl` runs the server as a plain Node
-  process.
+- Podman or Docker, if you want the server in a container (recommended). `podiumctl` uses Podman when both are installed;
+  `--engine docker` picks Docker instead, and the choice is saved. Without either, `podiumctl` runs the server as a plain
+  Node process.
 
 ## Set it up
 
@@ -143,6 +146,9 @@ Find what you see, then follow the fix. [GOTCHAS.md](GOTCHAS.md) has more.
 | A session I closed is still on the wall | It moved to the background. `claude agents` lists it and `claude stop <id>` ends it. See [Closing a background session](#closing-a-background-session) |
 | A card turned stale | The session stopped reporting (closed, crashed or lost the connection). It goes away by itself, or press Remove |
 | I changed the config and nothing happened | Run `podiumctl restart` |
+| The status line names a certificate, the config file or `node` | Your server uses built-in TLS. See [what each message means](REPORTER.md#over-tls) |
+| The browser cannot open the `https://…:4318` address | That port is for reporters only and needs a reporter certificate. Open the console at `http://<host>:4317`. See [Built-in TLS](SERVER.md#built-in-tls) |
+| `/podium` says `offline, retrying` with `Last error: HTTP 502` and a `TLS:` line | The reporter's connection helper answered, not the server. The `TLS:` line gives the reason, such as an expired certificate. See [what each message means](REPORTER.md#over-tls) |
 | A card shows `reporter 0.1.0 · update`, the top bar says reporters need an update, or the status line ends in `· update mod` | The mod in that session is older than the server supports. It keeps reporting meanwhile. See [Updating the mod](#updating-the-mod) |
 | The status line ends in `· update available` | Your mod works, but the server supports a newer one. See [Updating the mod](#updating-the-mod) |
 | A card or the status line shows `· upgrade server` | The mod is newer than the server supports. Upgrade the server (see [Updating the mod](#updating-the-mod)) |
@@ -163,7 +169,8 @@ The dashboard has a top bar, a left rail and a right panel.
 - **Logo.** The Podium logo at the top left is a link home. From History or Admin it takes you back to the fleet page.
 - **Top bar.** A pill names the page ("Fleet" on the wall, "Orchestrator" on a session's page, "History", "Admin"),
   then the connection (`N reporters live`, or a red "disconnected, retrying"). Admin's top bar shows the same
-  connection indicator beside its "Admin" pill.
+  connection indicator beside its "Admin" pill. With built-in TLS on, a certificate pill can follow the connection:
+  see [Certificates](#certificates).
 - **Row under the top bar.** It has the theme picker.
 - **Left rail.** It lists your sessions. When there are more than fit, it shows a page at a time. See
   [Paging the list](#paging-the-list).
@@ -194,7 +201,7 @@ For a wall display, collapse what you do not need.
 | Top bar | The chevron tab at the middle of the bar's bottom edge, labelled "Hide top bar" | `\` |
 | All three (**Wall mode**) | The button in the top right | `w` |
 
-- A collapsed pane leaves a slim tab to open it again, and the pane returns to the width you had. Your choice is
+- A collapsed pane leaves a slim strip with the same small tab to open it again, and the pane returns to the width you had. Your choice is
   remembered.
 - A hidden top bar leaves a thin strip along the top of the screen with a chevron tab at its middle, labelled "Show top
   bar". It stays visible; click it, or press `\`, to bring the bar back.
@@ -421,6 +428,8 @@ Click a card or a rail item. The page has a summary, a plan, an agent tree and a
 | Tokens | The context held now |
 | Running time | How long the session has run |
 | Agent time | The orchestrator's time plus every agent's. It is longer than running time when agents run at once |
+| Machine | The machine the session runs on, as its reporter named it. "Not reported" when the session has no user name, so no machine. Hover or tab to the cell for why |
+| System | The machine's operating system and version, such as `macOS 15.4`, with the same icon as My reporters. "Not reported" when the reporter did not send it: update podium-reporter, or set `userName` when the Machine is also not reported |
 | Reporter | The version of the podium-reporter mod the session runs, or "Settings hooks" when it has no mod. The version shows in amber with "update" or "upgrade server" when the server says it is outside the supported range |
 
 #### The plan and Files
@@ -508,13 +517,29 @@ orchestrator's Activity section works the same way, for its own calls and text.
   that (10, 20, 30 or 60 seconds), and your browser remembers the choice.
 - Scroll up to read earlier entries and the list stops following. **Jump to latest** brings it back.
 - **Expand** opens the same list in a larger window, which closes like the Report one.
-- Nothing is fetched while the panel is closed or the tab is hidden. Podium keeps only the last 20 entries, only while
-  someone is watching. Close the panel and it is gone, and opening it again starts empty.
+- Nothing is fetched while the panel is closed or the tab is hidden. By default Podium keeps only the last 20 entries,
+  only while someone is watching. Close the panel and it is gone, and opening it again starts empty. The Admin can
+  choose to keep more: see [Stored history](#stored-history) below.
 
 It needs podium-reporter 0.13.0 or later with the mod's `activityFeed` option on, and the server's **Agent activity
 feed** flag on in Admin > Settings > Feature flags. Everyone who can open the console can watch, which is why the option
 is off by default. The option is per machine, like the rest of the mod's options, so each person who wants the feed for
 their own sessions turns it on for themselves.
+
+##### Stored history
+
+The Admin can have Podium keep the feed for longer (Admin > Server > Data, [Data](#data)). It is off by default, so
+nothing changes unless they turn it on. When it is on, Podium stores what every running agent and the orchestrator does,
+whether or not anyone is watching, until the Admin's period ends.
+
+- The window then shows the newest stored entries with your live ones after them, and **Show older** pages back. The
+  footer says how many entries are stored and since when, and the line under it says how long they stay.
+- It also works for a session that has ended, until its entries are purged.
+- Only the session's owner and the Admin can read stored history. Anyone else sees a line saying so, and no entries. You
+  need to be signed in (the same sign-in as responding and file diffs).
+- It is a record of what the reporter sent, not a complete one: the mod keeps 20 entries per loop between reports, so a
+  busy session can miss some. Secrets are removed on your machine before anything is sent, and the Admin can delete
+  stored history at any time ([Stored activity](#stored-activity)).
 
 ##### Turn on the feed
 
@@ -526,7 +551,7 @@ their own sessions turns it on for themselves.
 3. A changed setting reloads the mod, so a session that is already running should pick it up. If the panel still says the
    option is off, run `/reload-plugins` in that session.
 4. Open the agent's panel. The feed starts empty and fills from that moment, because nothing is sent for an agent nobody
-   is watching.
+   is watching (unless the Admin keeps stored history, which also stores what happened before you opened the panel).
 5. If the section says "The activity feed is turned off by the Admin.", the person who runs the server has switched it
    off for everyone in Admin > Settings > Feature flags. It is on by default. An open panel keeps checking and starts
    the feed again, empty, once the flag is back on. You do not need to reload.
@@ -614,6 +639,39 @@ An answer counts once the session confirms it, usually within 2 seconds. Until t
   names who answered from Podium and when.
 - A tool request answered in the terminal still looks open in Podium until the command finishes, since Claude Code says
   nothing sooner.
+
+### Session recording
+
+Podium can record one session whole and let you replay it, to see what happened and why. It is off by default and needs
+three yes answers: the Admin's **Session recording** switch, your choice of the session, and the `sessionRecording`
+option on the machine the session runs on. [REPLAY.md](REPLAY.md) explains all of it.
+
+To record and replay:
+
+1. Open the orchestrator's page. If the Admin has turned the feature on and you own the session (or are an Admin), the
+   last cell of the facts panel reads **Record**.
+2. Press it, tick the orchestrator and the agents you want, and press **Start recording**. If the machine's owner has not
+   allowed recording, the dialog says so and nothing is recorded.
+3. A red band on the card and a layer on the page say that it is being recorded, by whom, and when it is deleted. They
+   have no X and cannot be hidden, for anyone, while the session is recorded. The owner's terminal says it too.
+4. **Stop recording** ends it and keeps what was recorded. **Open replay** plays it back, oldest first: filter by agent,
+   drag the slider, **Jump to next failure**, and **Show older** for a long run. **Delete recording** removes it. Each of
+   these asks first.
+5. A session that has ended is reached from History, whose row says "recording kept until <time>", or from Admin >
+   Settings > Recordings.
+
+What to know:
+
+- Only the session's owner and an Admin can stop, delete or replay it. Everyone sees that it is recorded and never what
+  is in it.
+- It keeps whole prompts, file contents, command output and tool results. Anything that looks like a secret is replaced
+  with `[redacted]` on the machine, but that is not a guarantee, so do not record a session you would not want an Admin
+  to read.
+- It is kept for 6 hours unless the Admin sets longer (7 days at most), and it stops by itself at 512 MB for one session
+  or when all recordings reach 4 GB.
+- The model's thinking text is not available. The replay marks where it thought and says the text is not there.
+- An answer or approval sent from Podium shows in the replay as a row with who sent it. A question you answered in the
+  terminal, or a permission prompt you answered there, leaves no row of its own; the tool's result still shows what ran.
 
 ### My reporters
 
@@ -794,13 +852,14 @@ Administrators, or the name **Admin** and the admin secret, which `podiumctl tok
 
 ### Getting around
 
-Admin has eight pages, listed in a menu down the left side:
+Admin has sixteen pages, listed in a menu down the left side:
 
 | Menu group | Pages |
 |---|---|
 | People and access | [People](#people-page), [Groups](#groups), [Reporters](#reporters) |
-| Server | [Settings](#settings), [Model prices](#model-prices), [Reporting and security](#reporting-and-security) |
-| Activity | [Spend](#spend), [Admin log](#admin-log) |
+| Server | [Settings](#settings), [Model prices](#model-prices), [Security](#security), [Certificates](#certificates), [Data](#data), [Stored activity](#stored-activity) |
+| Reporting | [Usage](#usage), [Spend](#spend), [People and groups](#people-and-groups), [Sessions](#reporting-sessions), [Failures](#failures), [Admin activity](#admin-activity) |
+| Activity | [Admin log](#admin-log) |
 
 - **Lock Admin** is at the bottom of the menu. After you use it, reloading the page asks for your name and token again,
   even while you are still signed in to respond. The 10-minute idle lock, by contrast, lets a signed-in Administrator
@@ -814,12 +873,27 @@ Under **Create user**, type a name and choose Create user.
 
 - Podium shows the token once, above the page (it stays there when you switch pages), with the settings to paste into
   that person's reporter: `userName`, `token` and `serverUrl`. Copy them before you choose "I have saved it", because
-  Podium keeps only a hash and cannot show the token again.
-- The list shows the token's key id as `pdm_` and twelve characters, the same way Reporters shows it, when each person
-  last reported and from which machines.
-- **Rotate** gives a person a new token and stops the old one.
-- **Revoke** refuses their reports from the next one on, and their sessions go stale and drop as usual. A revoked
-  person's row offers **Issue new token** instead.
+  Podium keeps only a hash and cannot show the token again. With TLS on, the same box also gives the person's reporter
+  config, one file named `reporter-config-<name>-<epoch>.pem`: choose **Download reporter config**, save it in
+  `~/.podium/` on the machine where Claude Code runs, and start a new Claude Code session. A session that is already
+  running does not pick it up, and podium-reporter needs Node.js on the machine's PATH. Podium keeps only the
+  certificate, so the file is shown once.
+- The list has a **Reporter certificate** cell and a **Console token** cell, each with its own badge. Hover a badge (or
+  tab to it) for the note: the certificate's date and what happens next, or the token's `pdm_` key id. The Group select
+  is under the name, and "created" is under Last report. With TLS off the certificate cell says so. The certificate badge
+  reads *valid*, *renewal due* (30 days or fewer left; the reporter renews it itself), *lapses soon* (10 days or fewer
+  and not renewed, so reissue the config in time), *expired* (the reporter is refused and cannot renew: reissue the
+  config), *revoked* or *none*.
+- Each row has one **Actions** menu, grouped Console token, Reporter certificate and Person. Arrow keys, Home and End
+  move in it and Escape closes it; an action that does not apply is greyed out.
+- **Rotate token** gives a person a new token and stops the old one, and shows it once. Their reporter keeps working.
+- **Revoke token** refuses their console sign-in from the next request, and with TLS on their certificate too, so a
+  person who is cut off cannot go on with the other credential. A revoked person's row offers **Issue new token**, which
+  brings back the console sign-in only: with TLS on, their reporter stays refused until you choose **Reissue config**.
+- **Revoke certificate** stops the reporter that uses the certificate and leaves the console sign-in; their token still works until it is revoked. **Revoke token** or **Revoke all** cuts the person off.
+  **Reissue config** makes a new certificate and key, stops the old certificate, and shows the new file once. Each asks
+  first, in a row under the person that says what will happen.
+- **Download certificate** gives the public certificate and the CA, never a key, so it cannot replace the file.
 - **Delete** removes a person, and a dialog asks first. Their reporter is refused at once, they leave their group, and
   an Administrator's open Admin session locks. Their past sessions, spend and Admin log entries keep their name, and the
   name can be used again later. To delete several people, tick their rows (the box in the header ticks the page), then
@@ -923,18 +997,40 @@ These settings apply to every browser and stay after a restart.
     Podium cannot tell whether Claude Code read it.
 - **Agent activity feed** (`activity-feed`) is on by default. Turned off, every agent and orchestrator panel says the
   Admin turned the feed off, the server asks no mod for activity and forgets what it held, whatever each machine's
-  `activityFeed` option says. Turned back on, open panels start the feed again, empty, without a reload.
+  `activityFeed` option says. Turned back on, open panels start the feed again, empty, without a reload. Turned off, nothing
+  new is stored either, even if the Admin keeps stored history.
 - **File diff** (`file-diff`) is off by default. On, only the owner of a session, signed in, can click a file in
-  the Files list to read its diff in a window. The diff is source code: the mod reads it from the machine only when
+  the Files list to read its diff in a window, and step to the next or previous file with the buttons at the window's lower left. The diff is source code: the mod reads it from the machine only when
   someone opens the file, and only if that machine's `fileDiff` option is on. The server passes it to the one browser
   that asked and keeps no copy. The mod hides what looks like a secret (tokens, passwords, keys, credentials in URLs) as `[redacted]` before
   the diff leaves the machine, and never sends `.env` files, keys or credentials files at all. Hiding is best
   effort, not a guarantee. Off, the Files rows show their counts and no link.
+- **Release check** (`update-check`) is on by default. About once a day the server asks GitHub for the latest Podium
+  release, and when it is newer than the one running, the wall shows a notice with both versions and a link to the
+  release notes. To update, pull the new release and run `podiumctl build`. Turned off, the server makes no request to
+  GitHub at all, which is the setting for an install that must not make outbound calls. A check that fails (offline,
+  rate limited) shows nothing and tries again the next day.
 - **Orchestrator messaging** (`peer-messaging`) is off by default. It lets a person's orchestrators message each
   other, only between that person's own machines, once each machine's podium-reporter has its `peers` option on and the
   owner has given the pair a right on [My reporters](#my-reporters). It needs authentication on. Turned on, it adds an
   **Orchestrator messaging** section here, a Messaging section on each reporter, [My reporters](#my-reporters) and
   [Traffic](#traffic).
+
+- **Session recording** (`session-recording`) is off by default. It lets the owner of a session, or an Admin, record the
+  session whole and replay it (see [Session recording](#session-recording)). It needs authentication on, and the switch is
+  unavailable without a token. Turned on, it adds a **Session recording** section and a **Recordings** table here. Turned
+  off, every recording stops and what is stored stays until it expires.
+
+**Session recording**, shown while that flag is on, sets how long recordings are kept and how big they may get. The
+**Recordings** table below it lists every recording with its owner, who started it, state, size and when it goes, with
+**Stop**, **Open replay** and **Delete**. Stop and Delete ask first. [REPLAY.md](REPLAY.md#limits) has the ranges and what
+happens at each limit.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Keep a recording for | 6 hours | Counted per part from when it was recorded, at most 7 days. A shorter time removes recordings already older |
+| Disk budget | 4 GB | All recordings together. Reaching it stops every recording |
+| Limit for one session | 512 MB | A recording stops when its session reaches it |
 
 **Orchestrator messaging**, shown while that flag is on, sets the limits on every link. An owner can make them stricter
 on their own links in My reporters, never looser. [MESSAGING.md](MESSAGING.md#limits) says what happens at each one.
@@ -950,7 +1046,9 @@ A value is saved when you leave its box or press Enter. One out of range is refu
 was saved and which value still applies.
 
 **Wall notices.** The notes Podium shows at the bottom of the wall each have a switch here, and the X on a note turns its
-switch off for everyone. After you close one, Podium says so and links to this page.
+switch off for everyone. After you close one, Podium says so and links to this page. The update notice is the exception:
+its X hides the release it names for everyone and the notice comes back when a newer release is published, so its switch
+is **Release check** under Feature flags.
 
 **Background sessions.** **Show background sessions on the wall** keeps sessions nobody is attached to in view. It is off
 by default.
@@ -979,22 +1077,150 @@ and cache write for 1 hour. They start as the prices on Anthropic's pricing shee
   in the five prices and save. Until then its cost reads "n/a".
 - Cache writes use the 5-minute price unless Claude Code reports which writes were 1-hour ones.
 
-### Reporting and security
+### Security
 
 One switch, **Allow reporters to use the admin secret**. When it is off, a reporter that still sends the secret is
 refused. Sessions that report with the secret show under the owner **Admin**.
 
-### Spend
+### Certificates
 
-What each person, or each group, has spent since midnight today on the server, live or ended sessions, as bars or as a
-table.
+With built-in TLS on (`podiumctl start --tls`), this page shows Podium's own certificate authority (CA) and the
+serving certificate it signs. Reporters connect on their own port, which accepts only a valid reporter certificate; the
+console stays on plain HTTP, so a browser needs nothing from this page. With TLS off it says so and has nothing else.
 
-- Choose **People** or **Groups** and **Chart** or **Table**.
-- The total spent and the number of live sessions are at the top right. The list is largest first, 25 rows at a time.
-- The total and the table's Total row always count everyone, not just the page you are on, and the total equals the "Est.
-  cost today" tile.
-- These are estimates from tokens, not a bill.
-- Someone whose sessions have all ended still has a row, but no band on the wall.
+- **Status.** The CA and the serving certificate, each with its expiry date, how the certificate renews and a status
+  that is a shape, a word and a color. A band at the top is blue at 30 days or fewer, orange at 10 and red at 5, and red
+  again once the first of them has expired. If the last renewal failed, its reason shows in red under the table. The CA's
+  fingerprint has a copy control, to compare with the CA in a reporter config. "localhost and 3 more" opens the list of names the
+  running serving certificate carries.
+- **Renewal and lifetimes.** The serving certificate's lifetime (30 to 825 days) and how many days before it expires it
+  renews (7 to 90), and a person's certificate lifetime (30 to 365). A certificate that has expired is not renewed, so there is no grace. A number
+  saves when you leave the field; a value the server refuses stays in the box with the reason under it. Each change is
+  written to the Admin log. The last switch turns the header countdown on or off.
+- **Reporters over HTTP.** One switch, **Allow reporters to connect over HTTP**. While it is on, a reporter that has
+  only its name and token (no reporter config) still reports over plain HTTP, and a warning line says that is not
+  encrypted. It is on for a server that already had reporters when TLS was first turned on, and off for a fresh one.
+  Turning it on takes effect at once. Turning it off asks first and names how many reporters are connected over HTTP
+  now, since they are refused at once; a reporter with a reporter config keeps working on the reporter port, and so
+  does the console, so an Admin can always sign in. Each change is written to the Admin log.
+- **Rotate by hand.** **Renew now** issues a new serving certificate from the same CA and keeps the old one as a backup.
+  **Rotate CA…** asks first, then makes a new CA that reporters pick up when they renew, while the old one keeps working through an overlap (120 days). A blue band counts the reporters still on the old CA, and **Retire old CA…** ends the overlap when none are left. **Rotate CA and end the overlap now** is for a CA key that may have leaked: every reporter then needs a reissued config, and open connections are closed.
+- **Previous certificates.** The last three serving certificates Podium replaced, kept in `/data/tls/previous`.
+
+**The header pill.** Whichever of the CA and the serving certificate expires first shows as a pill after the
+connection: blue with a clock at 30 days or fewer, orange with a triangle at 10, red with a triangle at 5, and "Certificate
+expired" with a ring and a cross. It links to this page, has no close button, and never tracks a person's certificate.
+The switch hides only the countdown: a failed renewal and an expired certificate always show.
+
+### Data
+
+What Podium stores, for how long, and what you can remove. It has three sections.
+
+**Daily rollups.** The daily summaries (usage, sessions, failures and the fleet) are kept for 395 days (set
+`RETAIN_ROLLUP_MS` to change that). They hold counts, tokens, cost and names, never prompts, answers, tool input or paths.
+
+**Detail rows.** How long the detailed rows last: samples 24 hours, events and ended sessions 30 days, the Admin log 90
+days. These are set with environment variables on the server (`RETAIN_SAMPLES_MS`, `RETAIN_EVENTS_MS`,
+`RETAIN_SESSIONS_MS`, `RETAIN_ADMIN_LOG_MS`) and cannot be changed on this page.
+
+**Activity history.** How long the agent activity feed is kept after a viewer leaves. The default is **Not stored**,
+which is how Podium has always worked. Pick a policy from the list:
+
+- **Purge after a set time**: hours, days, weeks or months. Entries older than that are removed.
+- **Purge when the session ends**: history is kept while the session runs and removed when it ends.
+- **Keep everything**: nothing is removed automatically. Use [Stored activity](#stored-activity) to delete.
+- An optional **size cap** in gigabytes removes the oldest entries first.
+
+Choosing a keep policy makes every reporter send more, and makes the server store more, so a warning says so before
+you save. It needs a token on the server: without one, nobody could be told apart as the person who may read it, so
+the keep choices are turned off. Podium checks each save: a choice that would remove entries that are already stored,
+or stop keeping history, asks first and says how many entries and how much space will go. When you stop keeping
+history you can delete what is stored or leave it for later. A purge runs every few minutes, and each run that
+removes something is written to the Admin log once. Under the line, the page shows the last purge and how much is
+stored.
+
+Stored text can hold anything an agent read or ran. Reporters remove secrets before they send it, but that is not a
+guarantee, so deleting has to be quick and complete (below).
+
+### Stored activity
+
+The Activity history Podium holds, by session. Set **Source** to Recordings to list session recordings instead
+([Session recording](#session-recording)). At the top are the totals (entries, size on disk and sessions). Filter
+by session, loop, project, owner, age, or a range of dates (**Entries from** and **to**), tick sessions and delete:
+
+- **Delete N…** removes the ticked sessions' history.
+- **Delete all N that match…** removes everything the filter matches (it needs a filter).
+- **Delete everything…** empties it.
+
+Each asks first and says how many entries and how much space will go. A running session keeps being captured while the
+policy keeps history. After a delete, the file is compacted so the space comes back, and a line says how much was
+freed. Each delete is written to the Admin log with who did it and how much went, and never the text. A delete changes
+the database only; copies of the database you made earlier are not changed. To remove something private that leaked,
+delete the session's history, or use the date range to remove just the minutes concerned across sessions.
+
+### Reporting
+
+The Reporting pages answer "who used this, what did it cost, and what went wrong" for a period you pick, and let you
+take the answer into a document or ticket. They read daily summaries Podium keeps, so a report can reach back further
+than the 30 days of sessions and events that Podium holds. Only an Administrator opens them.
+
+Every Reporting page works the same way:
+
+- **Period and filters.** Choose a period (the last 7, 30 or 90 days, this month, last month, or custom dates), whether to
+  count by day, week or month, and, where the page has them, a person, group or model. The page opens on the last 30
+  days by day. Your choice is remembered in this browser.
+- **What it is based on.** A line under the filters gives the time zone (days are the server's calendar days; weeks start
+  on Monday), what the figures are built from and how far back the data goes. If you ask for a period that starts before
+  that, the page says "Podium has no history before ..." and shows only what it has. It never fills the gap with zeros.
+- **Export.** **CSV** and **JSON** download exactly the table you are looking at, for the same period and filters.
+  **Print** prints the page without the menu.
+- Costs are estimates from tokens, not a bill. A model without a price shows a dash and is left out of the totals.
+
+#### Usage
+
+Active people, active reporters, sessions started and the most sessions live at once, for each day, week or month.
+
+#### Spend
+
+Three sections.
+
+- **Spend today** is what each person, or each group, has spent since midnight on the server, live or ended sessions, as
+  bars or as a table.
+  - Choose **People** or **Groups** and **Chart** or **Table**.
+  - The total spent and the number of live sessions are at the top right. The list is largest first, 25 rows at a time.
+  - The total and the table's Total row always count everyone, not just the page you are on, and the total equals the
+    "Est. cost today" tile.
+  - Someone whose sessions have all ended still has a row, but no band on the wall.
+  - **Click a person** to see what their number is made of: by session (each with a link to it in History), by model,
+    and the orchestrator against the agents it launched. Each cut adds up to the row. Sessions on a model without a price
+    show a dash and are counted in a line under the breakdown, so the priced parts still add up to the row. Click a
+    **group** to see its people first.
+- **Projection** estimates spend to the end of the month, or for the next 30 days, from a straight run rate over the last
+  7, 14 or 30 complete days. It shows the window, the run rate per day and the assumptions beside the number. It does
+  not allow for weekdays, a trend or a price change, and it is not a budget. With fewer than 7 days of history, or for
+  someone who was active on fewer than 3 of the days in the window, it says "Not enough history" instead of a number.
+- **Spend over time** gives total spend by day, week or month, and can break it down by person, group, model or project.
+  A session counts on the day it was last seen, so one that runs past midnight is not split.
+
+#### People and groups
+
+How many people, groups and reporters there are, who reported in the period, who has gone quiet or never reported, and
+which reporter and engine versions are in use.
+
+#### Reporting sessions
+
+Counts by outcome, model, effort or plan, with average and longest duration, agents launched per session, and how many
+sessions hit a context blowout.
+
+#### Failures
+
+Counts of failures by class, tool or person over time, to help find a root cause. For sessions Podium still holds (30
+days), a row links to one in History; older failures show counts only.
+
+#### Admin activity
+
+The Admin log, filtered by kind and period: token rotations, revocations, settings changes and so on. Entries go back 90
+days.
 
 ### Admin log
 
@@ -1004,7 +1230,9 @@ Who made each change (a person, or the admin secret), with the address each came
 - new people, rotations and revocations,
 - group changes,
 - reporters removed,
-- changes to the feature flags, the wall settings and model prices.
+- changes to the feature flags, the wall settings and model prices,
+- changes to the Activity history policy, history the Admin deleted, and each purge that removed something (counts and
+  sizes only).
 
 It never holds a token or the secret. Entries are kept for 90 days (set `RETAIN_ADMIN_LOG_MS` to change that), and the
 newest 100 are kept however old they are. The page says how long entries are kept.
@@ -1028,7 +1256,8 @@ newest 100 are kept however old they are. The page says how long entries are kep
 `podiumctl logs` shows what the server did. Each line is an event with a fixed name, so you or an agent can search for it.
 
 In the default text format you see what Podium always printed: its start, reports it rejected, errors and its shutdown.
-The other events below (sessions, reporters, sweeps, Admin changes, refused tokens) print in text only with
+A refused token or certificate prints too, once a minute for the same route, source and reason, with a count of the
+repeats it held back. The other events below (sessions, reporters, sweeps, Admin changes) print in text only with
 `PODIUM_LOG_LEVEL=debug`. The JSON format and the copy sent to VictoriaLogs carry every event at the level in the table.
 
 | Event | Level | When |
@@ -1036,6 +1265,8 @@ The other events below (sessions, reporters, sweeps, Admin changes, refused toke
 | `server.start`, `server.stop` | info | The server started or stopped. In the JSON format and in VictoriaLogs, `server.start` also carries the port, database, whether auth is on, and the log and lifecycle settings |
 | `report.rejected`, `hook.rejected` | warn | A report or hook payload failed validation; `reason` and `path` say why |
 | `auth.failed` | warn | A request had no token, a wrong or revoked one, or a token that does not belong to the report's name |
+| `auth.throttled` | warn | One address made more failed `/api` requests in a minute than `PODIUM_FAILURE_LIMIT` allows; logged once per address and minute |
+| `tls.*` | info, warn, error | Built-in TLS. Warnings and errors (`tls.failed`, `tls.renew_failed`, `tls.handshake_failed`, `tls.http_refused`, `tls.client_refused`) print folded like `auth.failed`. Info lines (`tls.listening`, `tls.ca_created`, renewals, rotations) print in text only at `debug` |
 | `report.conflict` | warn | A report for a session that belongs to someone else |
 | `reporter.connected` | info | A reporter (owner, machine, mod or settings hooks) was heard for the first time, or again after a silence |
 | `reporter.silent` | warn | A session stopped reporting and turned stale |
@@ -1084,9 +1315,9 @@ podiumctl restart
 
 If the server cannot reach the address, its log says `log shipping to ... failed` once, with the reason.
 
-- **The address.** In container mode the server runs inside Podman, so `127.0.0.1` is the container itself. Use
-  `host.containers.internal` for a VictoriaLogs on the same machine, or its address on your network. In standalone mode
-  `http://127.0.0.1:9428` works.
+- **The address.** In container mode the server runs inside a container, so `127.0.0.1` is the container itself. Use
+  `host.containers.internal` (Podman) or `host.docker.internal` (Docker) for a VictoriaLogs on the same machine, or its
+  address on your network. In standalone mode `http://127.0.0.1:9428` works.
 - **The path.** Podium adds `/insert/jsonline` and the arguments that map its fields (`_time_field=timestamp`,
   `_msg_field=message`, `_stream_fields=service,host`). Give a full URL to change them.
 - **Authentication or a tenant.** Set headers:
@@ -1174,7 +1405,7 @@ It updates the plugin on disk some minutes after you send a first message, and t
 A build of any other commit, such as one from the `development` branch, adds a row above the version that reads
 `Dev: a1b2c3d4`, the commit it was built from, with `-dirty` after it when the tree had local edits. The row comes
 from `podiumctl build`, which records the commit, so a server built another way (`npm run build`, or an image built
-with plain `podman build`) shows the version alone. The reporter mod does the same when you run it from a checkout of
+with plain `podman build` or `docker build`) shows the version alone. The reporter mod does the same when you run it from a checkout of
 this repository: its status line reads `podium v1.1.0 | dev: a1b2c3d4 ● 2 live`, and the Reporter cell on a session's
 page reads `1.1.0 · Dev: a1b2c3d4`. A mod installed from the marketplace is always a release.
 
@@ -1187,9 +1418,10 @@ secret is replaced with `[redacted]` before it is sent. Podium never reads trans
 | What | When it leaves the session |
 |---|---|
 | An agent's whole task prompt and final answer | Only if you turn on the mod's `fullPrompts` option (off by default) |
-| What an agent is doing (recent tool calls and the text it writes, each cut to 300 characters) | Only if you turn on the mod's `activityFeed` option (off by default), and even then only while someone has that agent's panel open in the console |
+| What an agent is doing (recent tool calls and the text it writes, each cut to 300 characters) | Only if you turn on the mod's `activityFeed` option (off by default), and even then only while someone has that agent's panel open in the console, unless the server's Admin chooses to keep activity history, which stores it for every running agent until the Admin's period ends |
 | The diff of one changed file | Only if you turn on the mod's `fileDiff` option (off by default) and the Admin turns on the File diff switch, and only when the session's owner opens that file in the console. It is source code with anything that looks like a secret replaced by `[redacted]` on your machine (best effort, not a guarantee; files such as `.env` and keys are never sent), shown to that one person and not kept by the server |
 | What a session waits on you for (a question with its options, a plan, or a tool's arguments) | Only if you set the mod's `respond` option (`off` by default) and the server takes answers. Only the session's owner and an Admin can see it, and the server keeps it in memory only |
+| Everything a session does, whole: prompts, tool inputs and results | Only if you turn on the mod's `sessionRecording` option (off by default), the Admin turns on Session recording, and the session's owner or an Admin chooses to record it. Secrets are replaced on your machine (best effort). Kept 6 hours by default, readable only by the owner and an Admin, and marked as recorded for everyone while it runs. See [REPLAY.md](REPLAY.md) |
 | Your name and your machine | Only once you set the mod's `userName` option (empty by default) |
 | The model's thinking | Never |
 

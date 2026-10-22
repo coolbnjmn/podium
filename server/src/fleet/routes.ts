@@ -11,9 +11,13 @@ import { ReporterStore, type IgnoreRule, type IgnoreTarget, type ReporterSeen } 
 import { parsePersonToken, safeEqualStr, tokenMatches } from './tokens.js';
 import { createLogger, loggerFromLine, type Logger } from '../logging/logger.js';
 import { GuessThrottle, Lockout } from './lockout.js';
-import { mountRespondRoutes, replyFor } from './respondRoutes.js';
+import { mountRespondRoutes, replyFor, type RespondAccess } from './respondRoutes.js';
 import { mountPeerBrowserRoutes, mountPeerRoutes, peerReplyFor, peersEnabled, type PeerDeps } from './peerRoutes.js';
+import { mountRecordingBrowserRoutes, mountRecordingRoutes, recordingEnabled, wireRecordingLogs } from './recordingRoutes.js';
 import type { RespondBridge } from './respondBridge.js';
+import { isNewer } from './updateCheck.js';
+import { refusableOverHttp, type ReporterTransport } from '../tlsHttp.js';
+import { certAuth, type ClientSocket, type PersonCertStore } from '../tlsClientAuth.js';
 
 export interface FleetRouterOptions {
   /** The admin secret (PODIUM_TOKEN). When set, POST /report, DELETE and POST /hook need a credential in X-Podium-Token: this, or a person's token. */
@@ -34,6 +38,10 @@ export interface FleetRouterOptions {
   respondBridge?: RespondBridge;
   /** Runs ahead of the sign-in to respond, to note a plain-HTTP connection (#306). It never blocks. */
   onSignIn?: RequestHandler;
+  /** Built-in TLS (#583): the certificates people authenticate with. A client certificate on the connection decides who the sender is, ahead of any token. */
+  certs?: { store: PersonCertStore; trustedIssuers: () => string[] };
+  /** Built-in TLS (#589): told which transport each reporter last used, for the Admin's count of reporters on HTTP. */
+  transport?: ReporterTransport;
 }
 
 export const BODY_LIMIT = '512kb';
@@ -125,6 +133,8 @@ const routeName = (req: Request): string => `${req.baseUrl}${(req.route as { pat
 export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): Router {
   const logger = opts.logger ?? (opts.log ? loggerFromLine(opts.log) : createLogger({ secrets: opts.token ? [opts.token] : [] }));
   const router = Router();
+  // Set when the respond routes are mounted below; the live activity route reads the viewer through it.
+  let respondAccess: RespondAccess | undefined;
   const json = express.json({ limit: BODY_LIMIT, type: ['application/json', 'application/*+json'] });
 
   const guesses = opts.guesses ?? new GuessThrottle(fleet.now);
@@ -134,6 +144,22 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
   const requireToken = (req: Request, res: Response, next: NextFunction) => {
     const given = req.get('x-podium-token');
     const source = machineOf(req) ?? 'unknown';
+    // A client certificate is checked on every request, so a revoke reaches a connection that is still open. One that is
+    // presented but not trusted is refused outright and never falls back to a token (SPEC 6, *Authenticating by certificate*).
+    if (opts.certs && opts.people) {
+      const c = certAuth(req.socket as unknown as ClientSocket, { certs: opts.certs.store, people: opts.people, trustedIssuers: opts.certs.trustedIssuers, now: fleet.now });
+      if (c.kind === 'person') {
+        res.locals.identity = { kind: 'person', person: c.person } satisfies Identity;
+        return next();
+      }
+      if (c.kind === 'refused') {
+        const route = routeName(req);
+        logger.warn('auth.failed', `podium: refused ${req.method} ${route} from ${source}: ${c.reason}`, { route, method: req.method, status: 401, reason: c.reason, source: machineOf(req) });
+        opts.reporters?.rejected(machineOf(req), c.reason, fleet.now());
+        res.status(401).json({ ok: false, error: 'client certificate refused', path: '$' });
+        return;
+      }
+    }
     // A throttled address gets no answer for anything that could be a guess, even the right secret, or the throttle would confirm one.
     const lockedFor = opts.token && mayBeGuess(given) ? guesses.lockedFor(source) : 0;
     if (lockedFor > 0) {
@@ -234,6 +260,7 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
           },
           fleet.now(),
         );
+        if (key) opts.transport?.note(key, !refusableOverHttp(req), fleet.now());
         // Orchestrator messaging (#347) knows a session by its reporter, and only a person's own reporter takes part.
         if (key && id.kind === 'person' && !asHooks) fleet.peers.note(out.sessionId, key, id.person.name, r);
       }
@@ -246,7 +273,7 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
         status: result.report.session.status,
         reporter_version: result.report.reporter.version,
       });
-      res.json({ ok: true, serverTime: fleet.now(), ackedEvents: result.report.events.length, sessionId: out.sessionId, liveSessions: fleet.visibleCount(), serverVersion: serverVersion(), serverBuild: serverBuild(), reporterSupport: REPORTER_SUPPORT, reporterCompat: checkReporter(result.report.reporter.version), watch: fleet.activity.watched(out.sessionId), ...replyFor(fleet, opts.token ?? null, out.sessionId), ...peerReplyFor(fleet, opts.token ?? null, out.sessionId, id) });
+      res.json({ ok: true, serverTime: fleet.now(), ackedEvents: result.report.events.length, sessionId: out.sessionId, liveSessions: fleet.visibleCount(), serverVersion: serverVersion(), serverBuild: serverBuild(), reporterSupport: REPORTER_SUPPORT, reporterCompat: checkReporter(result.report.reporter.version), watch: fleet.activity.watched(out.sessionId), watchOutput: fleet.activity.watchedOutput(out.sessionId), ...replyFor(fleet, opts.token ?? null, out.sessionId), ...peerReplyFor(fleet, opts.token ?? null, out.sessionId, id), recording: fleet.recordings.grant(out.sessionId) });
     } catch (err) {
       if (err instanceof OwnerConflict) {
         logger.warn('report.conflict', `podium: refused a report for session ${result.report.session.id}: it belongs to someone else`, {
@@ -287,12 +314,13 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
         return;
       }
       if (id.kind === 'person') opts.people?.touch(id.person.id, machineOf(req), fleet.now());
-      noteReporter(
+      const hookKey = noteReporter(
         opts,
         logger,
         { kind: 'hooks', machineId: null, machineName: null, source: machineOf(req), owner: ownerOf(id), credential: credentialOf(id), version: 'hooks', engineVersion: null, sessionId: out.sessionId },
         fleet.now(),
       );
+      if (hookKey) opts.transport?.note(hookKey, !refusableOverHttp(req), fleet.now());
       res.json({ ok: true, sessionId: out.sessionId });
     } catch (err) {
       if (err instanceof OwnerConflict) {
@@ -379,6 +407,13 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
     if (!fleet.activity.on) body = { entries: [], since: null, live: fleet.isLive(id), enabled: false, serverTime: fleet.now() };
     else if (!fleet.isLive(id)) body = { entries: [], since: null, live: false, enabled: true, serverTime: fleet.now() };
     else body = { ...fleet.activity.watch(id, agentId, everyOf(req.query.every)), live: true, enabled: true, serverTime: fleet.now() };
+    // What is stored for this loop, as counts. Present only under a keep policy and when the loop has entries, so under the
+    // default policy the reply is exactly what it was. `canRead` is the viewer's own sign-in; it never refuses the request.
+    const note = fleet.activityHistory.note(id, agentId);
+    if (note) {
+      const row = fleet.db.getSession(id);
+      body.history = { ...note, canRead: !!row && (respondAccess?.canRead(req, row) ?? false), owner: row?.owner ?? null };
+    }
     res.set('Cache-Control', 'no-store').json(body);
   });
 
@@ -414,6 +449,25 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
     }
     opts.people?.log('wall_notice_changed', `Wall notice ${req.params.id} turned off from the wall`, machineOf(req) ?? '', fleet.now());
     logger.info('admin.wall_notice_changed', `podium: wall notice ${req.params.id} turned off from the wall`, { action: 'wall_notice_changed', setting: req.params.id, on: false, source: machineOf(req) });
+    res.json({ ok: true });
+  });
+
+  // Closing the update notice hides the release it names for everyone; a still newer release shows it again (#499, SPEC 8.1).
+  router.post('/update-notice/close', json, (req, res) => {
+    const v = req.body?.version;
+    if (typeof v !== 'string' || !/^\d+\.\d+\.\d+$/.test(v)) {
+      res.status(400).json({ ok: false, error: 'version must be MAJOR.MINOR.PATCH', path: '$.version' });
+      return;
+    }
+    // Only a release the server is offering can be closed; a made-up newer version would hide every later release.
+    const offered = fleet.updates.latest();
+    if (!offered || isNewer(v, offered.latest)) {
+      res.status(400).json({ ok: false, error: 'that release is not the one on offer', path: '$.version' });
+      return;
+    }
+    fleet.wall.dismissUpdate(v);
+    opts.people?.log('wall_update_dismissed', `Update notice for ${v} closed on the wall`, machineOf(req) ?? '', fleet.now());
+    logger.info('admin.wall_update_dismissed', `podium: update notice for ${v} closed on the wall`, { action: 'wall_update_dismissed', version: v, source: machineOf(req) });
     res.json({ ok: true });
   });
 
@@ -466,7 +520,8 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
     const from = start.getTime();
     const to = new Date(y, mo - 1, d + 1).getTime();
     // A page past the end is the last page, so a day that shrank under an open tab still shows rows.
-    const { rows, total, page: at } = fleet.historyPage(from, to, page ?? 1, pageSize);
+    // A row says its recording is kept only to the session's owner and an Admin (#353).
+    const { rows, total, page: at } = fleet.historyPage(from, to, page ?? 1, pageSize, (row) => respondAccess?.canRead(req, row) ?? false);
     res.json({ day, sessions: rows, total, page: at, pageSize });
   });
 
@@ -478,8 +533,12 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
   const peerDeps: PeerDeps = { fleet, token: opts.token ?? null, people: opts.people ?? null, logger, requireToken, identityOf };
   mountPeerRoutes(router, peerDeps);
 
+  // Session recording (#353): the mod's batch route here, the owner's and the Admin's on responding's browser router below.
+  wireRecordingLogs(fleet, opts.people ?? null, logger);
+  mountRecordingRoutes(router, peerDeps);
+
   // Responding from Podium (#206): the mod's ask routes and the browser's /respond routes.
-  mountRespondRoutes(router, {
+  respondAccess = mountRespondRoutes(router, {
     fleet,
     token: opts.token ?? null,
     people: opts.people ?? null,
@@ -489,8 +548,11 @@ export function createFleetRouter(fleet: Fleet, opts: FleetRouterOptions = {}): 
     onSignIn: opts.onSignIn,
     requireToken,
     identityOf,
-    alsoSignIn: () => peersEnabled(fleet, opts.token ?? null),
-    extendBrowser: (browser, h) => mountPeerBrowserRoutes(browser, peerDeps, h),
+    alsoSignIn: () => peersEnabled(fleet, opts.token ?? null) || recordingEnabled(fleet, opts.token ?? null),
+    extendBrowser: (browser, h) => {
+      mountPeerBrowserRoutes(browser, peerDeps, h);
+      mountRecordingBrowserRoutes(browser, peerDeps, h);
+    },
   });
 
   router.use((_req, res) => {

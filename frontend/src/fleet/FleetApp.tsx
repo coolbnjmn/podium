@@ -12,12 +12,13 @@ import { Rail, type Split } from "./components/Rail";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { SidePanel } from "./components/SidePanel";
 import { TopBar } from "./components/TopBar";
+import { PaneEdgeTab } from "./components/EdgeTab";
 import { TopBarTab } from "./components/TopBarTab";
 import { Legend } from "./components/Legend";
 import { Wall } from "./components/Wall";
 import { Board } from "./components/Board";
-import { NoticeClosed, type NoticeItem } from "./components/NoticeStack";
-import { closeNotice, removeSession, setShowBackgroundSessions, useFleet, type UseFleetOptions } from "./useFleet";
+import { NoticeClosed, UPDATE_NOTICE_ID, type NoticeItem } from "./components/NoticeStack";
+import { closeNotice, closeUpdateNotice, removeSession, setShowBackgroundSessions, useFleet, type UseFleetOptions } from "./useFleet";
 import { useNow } from "./useNow";
 import { useHeldState } from "./useHeldState";
 import { isUrgentChange, readUpdateEvery, writeUpdateEvery } from "./updateInterval";
@@ -30,6 +31,7 @@ import { usePageVisible } from "./usePageVisible";
 import { useHeartbeat } from "./useHeartbeat";
 import { usePanes } from "./usePanes";
 import { usePeoplePrefs } from "./usePeoplePrefs";
+import { usePins } from "./usePins";
 import { ADMIN, buildUnits, filterByPeople, machineLabels, meKey, NO_FILTER, orderUnits, peopleActive, type GroupBy, type PeopleFilter, type Unit } from "./people";
 import type { WallPeople } from "./components/Wall";
 import type { RailPeople } from "./components/Rail";
@@ -39,9 +41,12 @@ import { RespondProvider, useRespond } from "./useRespond";
 import { peersApi, type PeersApi, type RespondApi } from "./respondApi";
 import { useMyPeers } from "./useMyPeers";
 import { MyReportersPage } from "./MyReporters";
+import { fleetHash, openIn, replayIn } from "../route";
+import { ReplayPage } from "./components/ReplayPage";
 import { TrafficPage } from "./Traffic";
 import { trafficApi, type TrafficApi } from "./trafficData";
 import { RespondModal } from "./components/Respond";
+import { ActivityOutputFlag } from "./components/BashRow";
 import type { SessionView } from "./types";
 
 
@@ -128,18 +133,20 @@ interface FleetViewProps {
 export const FleetView = memo(function FleetView(props: FleetViewProps) {
   const respondFlags = props.state.features.respond === true && props.state.features["activity-feed"] !== false;
   return (
-    <RespondProvider flagsOn={respondFlags} diffOn={props.state.features["file-diff"] === true} peersOn={props.state.features["peer-messaging"] === true} api={props.respondApi}>
-      <FleetViewBody
-        state={props.state}
-        updateEvery={props.updateEvery}
-        onUpdateEvery={props.onUpdateEvery}
-        board={props.board}
-        myReporters={props.myReporters}
-        peersApi={props.peersApi}
-        traffic={props.traffic}
-        trafficApi={props.trafficApi}
-      />
-    </RespondProvider>
+    <ActivityOutputFlag.Provider value={props.state.features["activity-output"] === true}>
+      <RespondProvider flagsOn={respondFlags} diffOn={props.state.features["file-diff"] === true} historyOn={props.state.features["activity-history"] === true} recordingOn={props.state.features["session-recording"] === true} peersOn={props.state.features["peer-messaging"] === true} api={props.respondApi}>
+        <FleetViewBody
+          state={props.state}
+          updateEvery={props.updateEvery}
+          onUpdateEvery={props.onUpdateEvery}
+          board={props.board}
+          myReporters={props.myReporters}
+          peersApi={props.peersApi}
+          traffic={props.traffic}
+          trafficApi={props.trafficApi}
+        />
+      </RespondProvider>
+    </ActivityOutputFlag.Provider>
   );
 });
 
@@ -148,7 +155,11 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
   const consolePage = myReporters || traffic;
   const now = useNow(updateEvery * 1000);
   const theme = useTheme();
-  const [sel, setSel] = useState<string | null>(null);
+  // The open orchestrator is kept in the address (`#/?open=<id>`), as History's opened session is (#195).
+  const [sel, setSel] = useState<string | null>(() => openIn(window.location.hash));
+  const selRef = useRef(sel);
+  // A recording opened as a replay (`#/?open=<id>&replay`, #353): the page that stands in for the orchestrator's, even for a session that ended.
+  const [replaying, setReplaying] = useState(() => replayIn(window.location.hash) !== null);
   const [selAgent, setSelAgent] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [filter, setFilter] = useState<{ status: StatusFilter; q: string }>({ status: "all", q: "" });
@@ -171,10 +182,12 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
   const live = all.filter((s) => !state.leaving[s.id]);
   const sorted = useMemo(() => sortSessions(all, sort), [all, sort]);
   const showDetached = state.wall.showBackgroundSessions;
-  const [closed, setClosed] = useState<string | null>(null);
+  /** The notice just closed, for the confirmation; `until` is the release an update notice was closed for. */
+  const [closed, setClosed] = useState<{ name: string; until?: string } | null>(null);
   const sets = splitDetached(sorted, now, showDetached);
   // The people view (#34) switches on once any live session belongs to a named person.
   const people = usePeoplePrefs();
+  const pins = usePins();
   const [pf, setPf] = useState<PeopleFilter>(NO_FILTER);
   const active = peopleActive(live);
   // Who "me" is comes from the browser's sign-in (#245): a signed-in person, never Admin. Signed out there is no "me".
@@ -200,11 +213,19 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
   const outdated = live.filter((s) => s.compat === "outdated").length;
   const newer = live.filter((s) => s.compat === "newer").length;
   const ready = state.phase !== "loading";
+  // A pin for a session that ended or was removed is dropped, so no stale pin is left for a session that never returns (#496).
+  const { prune: prunePins } = pins;
+  useEffect(() => {
+    if (ready) prunePins(new Set(Object.keys(state.sessions)));
+  }, [ready, state.sessions, prunePins]);
   const enteringSession = useEntering(all.map((s) => s.id), ready);
   const newEvent = useEntering(state.events.map((e) => e.id), ready);
   // The board and My reporters stand in for an orchestrator's page and show none of it; both clear the selection, below.
   const showsOrchestrator = !board && !consolePage;
-  const selected = sel && showsOrchestrator ? state.sessions[sel] ?? null : null;
+  // `sel` can come from the address, so it is looked up as an own key: `#/?open=constructor` must not find Object's.
+  const selSession = sel && Object.hasOwn(state.sessions, sel) ? state.sessions[sel] : null;
+  const selGone = sel && Object.hasOwn(state.gone, sel) ? state.gone[sel] : null;
+  const selected = showsOrchestrator ? selSession : null;
 
   const { prefs } = people;
   const spendByOwner = state.kpis?.costTodayByOwner ?? [];
@@ -237,16 +258,42 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
     ? { groupBy, units, picked: pf.person ?? pf.group, onPick: pickUnit, visible: new Set(filterByPeople(sorted, peopleFilter).map((s) => s.id)) }
     : undefined;
 
-  // A selected session that leaves the live set clears the selection, with a message.
+  // A selected session that leaves the live set clears the selection, with a message, and the address goes back to the wall's.
+  // An address naming a session the fleet never had lands on the wall the same way.
   useEffect(() => {
-    if (!sel) return;
-    if (state.gone[sel] || (ready && !state.sessions[sel])) {
-      const name = state.sessions[sel]?.name ?? "That session";
-      setNotice(`${name} ${state.gone[sel] === "dropped" ? "stopped reporting" : "ended"} and left the fleet.`);
+    // A replay is reached for a session that ended too, so it is not told the session left.
+    if (!sel || replaying) return;
+    if (selGone || (ready && !selSession)) {
+      const name = selSession?.name ?? "That session";
+      setNotice(
+        selGone || selSession
+          ? `${name} ${selGone === "dropped" ? "stopped reporting" : "ended"} and left the fleet.`
+          : "That session is not in the fleet. Sessions that ended are listed in History.",
+      );
+      selRef.current = null;
       setSel(null);
       setSelAgent(null);
+      if (openIn(window.location.hash) === sel) window.history.replaceState(null, "", fleetHash(null));
     }
-  }, [sel, state.gone, state.sessions, ready]);
+  }, [sel, selGone, selSession, ready, replaying]);
+
+  // Back, Forward and a link to another address (the logo is one) open the orchestrator the address names.
+  useEffect(() => {
+    const onNav = () => {
+      const open = openIn(window.location.hash);
+      setReplaying(replayIn(window.location.hash) !== null);
+      if (open === selRef.current) return;
+      selRef.current = open;
+      setSel(open);
+      setSelAgent(null);
+    };
+    window.addEventListener("popstate", onNav);
+    window.addEventListener("hashchange", onNav);
+    return () => {
+      window.removeEventListener("popstate", onNav);
+      window.removeEventListener("hashchange", onNav);
+    };
+  }, []);
 
   useEffect(() => {
     if (!notice) return;
@@ -269,20 +316,39 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
   // Opening the board or My reporters leaves any orchestrator page behind, so a session that ends later does not raise a notice there (#446).
   useEffect(() => {
     if (!board && !myReporters) return;
+    selRef.current = null;
     setSel(null);
     setSelAgent(null);
   }, [board, myReporters]);
 
-  const selectSession = (id: string | null) => {
-    // Opening a session, or the fleet, from the board, My reporters or Traffic leaves that page; the selection is made before the route changes.
-    if (board || consolePage) window.location.hash = "#/";
+  /**
+   * Opens an orchestrator, or the wall for `null`, and writes it to the address. Opening one from the wall pushes an entry so
+   * Back returns to the wall; moving to another replaces it; closing one goes back to the wall's entry when the console
+   * pushed it, and replaces the address otherwise (a reload or a shared link).
+   */
+  const open = (id: string | null, agent: string | null = null) => {
+    const shown = openIn(window.location.hash);
+    // Opening any session, the one in the replay included, leaves the replay for the orchestrator's page.
+    const wasReplay = replayIn(window.location.hash) !== null;
+    selRef.current = id;
     setSel(id);
-    setSelAgent(null);
+    setSelAgent(agent);
     setNotice(null);
+    setReplaying(false);
+    // Opening a session, or the fleet, from the board, My reporters or Traffic leaves that page; the selection is made before the route changes.
+    if (board || consolePage) window.location.hash = fleetHash(id);
+    else if (id === shown && !wasReplay) return;
+    else if (id === null) {
+      if (window.history.state?.open) window.history.back();
+      else window.history.replaceState(null, "", fleetHash(null));
+    } else if (shown === null) window.history.pushState({ open: true }, "", fleetHash(id));
+    else window.history.replaceState(wasReplay ? null : window.history.state, "", fleetHash(id));
   };
+  const selectSession = (id: string | null) => open(id);
   const onCloseNotice = (n: NoticeItem) => {
-    closeNotice(n.id)
-      .then(() => setClosed(n.name))
+    const version = n.id === UPDATE_NOTICE_ID ? state.wall.update?.latest : undefined;
+    (version ? closeUpdateNotice(version) : closeNotice(n.id))
+      .then(() => setClosed({ name: n.name, until: version }))
       .catch((err: Error) => setNotice(`Could not close the notice: ${err.message}. Try again.`));
   };
   // The confirmation clears itself after about 9 seconds.
@@ -303,10 +369,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
     const s = state.sessions[e.sessionId];
     if (!s || state.gone[e.sessionId]) return;
     const agent = e.agentId && s.agents.some((a) => a.id === e.agentId) ? e.agentId : null;
-    if (board || consolePage) window.location.hash = "#/";
-    setSel(e.sessionId);
-    setSelAgent(agent);
-    setNotice(null);
+    open(e.sessionId, agent);
     flashRow(agent);
     const side = document.querySelector(".podium .side");
     if (side) side.scrollTop = 0;
@@ -315,7 +378,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
     setASort((cur) => (key === null ? { key: null, dir: 1 } : cur.key === key ? { key, dir: cur.dir === 1 ? -1 : 1 } : { key, dir: defaultAgentDir(key) }));
   };
 
-  // A collapsed pane keeps a slim 24 px tab; its saved width comes back when it opens again.
+  // A collapsed pane keeps a slim 24 px strip with its tab; its saved width comes back when it opens again.
   const colStyle = {
     ...(panes.collapsed.left
       ? { ["--rail-w" as string]: "24px" }
@@ -334,9 +397,9 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
       fullscreen.current = false;
     };
     fullscreen.current = true;
-    try {
+    if (typeof document.documentElement.requestFullscreen === "function") {
       document.documentElement.requestFullscreen().catch(refused);
-    } catch {
+    } else {
       refused();
     }
   };
@@ -464,9 +527,9 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
             version={state.server?.version ?? null}
             build={state.server?.build ?? null}
             collapsed={panes.collapsed.left}
-            onToggle={() => toggle("left")}
             people={railPeople}
           />
+          <PaneEdgeTab side="left" collapsed={panes.collapsed.left} onToggle={() => toggle("left")} />
           <div className="mid">
             {myReporters ? (
               <MyReportersPage me={signedIn ?? null} peersOn={peersOn} peers={peers} api={peersApiProp ?? peersApi} now={now} notice={notice} />
@@ -481,6 +544,8 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
                   <div className="none">Connecting to the Podium server…</div>
                 ) : board ? (
                   <Board sessions={peopleShown} narrowed={peopleShown.length < sorted.length} kpis={state.kpis} me={me} onOpen={selectSession} />
+                ) : replaying && sel ? (
+                  <ReplayPage key={sel} id={sel} session={selSession} now={now} />
                 ) : selected ? (
                   <FocusView
                     s={selected}
@@ -511,6 +576,7 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
                     onOpen={selectSession}
                     onRemove={onRemove}
                     machineTitle={state.wall.cardTitleMachine === true}
+                    pins={{ list: pins.pins, onToggle: pins.toggle }}
                     detached={{
                       count: sets.hidden.length,
                       costUsd: sets.hidden.reduce((n, s) => n + (s.costUsd ?? 0), 0),
@@ -520,15 +586,18 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
                     }}
                     noticeOn={(id) => state.wall.notices[id] !== false}
                     onCloseNotice={onCloseNotice}
+                    update={state.wall.update}
+                    runningVersion={state.server?.version ?? null}
                     people={wallPeople}
                   />
                 )}
-                {closed !== null && <NoticeClosed name={closed} onDismiss={() => setClosed(null)} />}
+                {closed !== null && <NoticeClosed name={closed.name} until={closed.until} onDismiss={() => setClosed(null)} />}
               </main>
             )}
             {/* My reporters shows no legend (#446). */}
             {!myReporters && <Legend />}
           </div>
+          <PaneEdgeTab side="right" collapsed={panes.collapsed.right} onToggle={() => toggle("right")} />
           <SidePanel
             events={state.events}
             sessions={state.sessions}
@@ -544,7 +613,6 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
             now={now}
             activityFeedOn={state.features["activity-feed"] !== false}
             collapsed={panes.collapsed.right}
-            onToggle={() => toggle("right")}
           />
           {!panes.collapsed.left && <ResizeHandle panel="rail" r={resize} container={container} label="Resize orchestrator list" />}
           {!panes.collapsed.right && <ResizeHandle panel="side" r={resize} container={container} label="Resize activity panel" />}

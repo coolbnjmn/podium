@@ -43,7 +43,7 @@ function store(accepts: RespondKind[] = ALL) {
   const s = new RespondStore(
     () => now,
     (sid) => changes.push(sid),
-    { add: (_sid, _loop, ref, e) => feed.push(`add ${ref} ${e.text} ${e.by}${e.note ? ` ${e.note}` : ''}`), update: (_sid, ref, note) => feed.push(`update ${ref} ${note}`), remove: (_sid, ref) => feed.push(`remove ${ref}`) },
+    { add: (_sid, _loop, ref, e, d) => feed.push(`add ${ref} ${e.text} ${e.by}${e.note ? ` ${e.note}` : ''}${d.kind === 'question' ? ' [question delivery]' : ''}`), update: (_sid, ref, note) => feed.push(`update ${ref} ${note}`), remove: (_sid, ref) => feed.push(`remove ${ref}`) },
   );
   const r = fixtureReport();
   r.sentAt = T0;
@@ -67,7 +67,7 @@ describe('RespondStore', () => {
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.delivery).toMatchObject({ askId: 'toolu_q', by: 'Alex', kind: 'question', answers: [{ options: [1] }, { options: [0, 2] }] });
-    expect(feed).toEqual([`add ${first.delivery.id} answered: Fixed 50; Page, Scroll Alex`]);
+    expect(feed).toEqual([`add ${first.delivery.id} answered: Fixed 50; Page, Scroll Alex [question delivery]`]);
     expect(s.answer(sid, 'toolu_q', 'Ed', { kind: 'question', answers: [{ options: [0] }, null] })).toEqual({ ok: false, err: { status: 409, error: 'answered', by: 'Alex', at: T0 } });
     expect(s.detail(sid, 'toolu_q', 'ed', 0)?.delivery).toMatchObject({ by: 'Alex', mine: false, result: null, handedOver: false });
     expect(s.summaries(sid)[0]!.state).toBe('pending');
@@ -894,6 +894,33 @@ describe('opening Admin from a sign-in to respond (#215)', () => {
     expect((await agent.post('/api/admin/unlock/from-respond').set(AH)).status).toBe(401);
     expect((await agent.post('/api/fleet/respond/sign-in').set(H).send({ name: 'Priya', token: priya.token })).status).toBe(200);
     expect((await agent.post('/api/admin/unlock/from-respond').set(AH)).status).toBe(200);
+  });
+
+  it('opens Admin from a sign-in made only for the Activity history: respond off, a keep policy on (#432)', async () => {
+    const { app, fleet, people } = setup({ respond: false });
+    const admins = people.allGroups().find((g) => g.name === 'Administrators')!;
+    const priya = people.createPerson('Priya', admins.id);
+    // nothing needs a sign-in yet
+    expect((await request(app).post('/api/fleet/respond/sign-in').set(H).send({ name: 'Priya', token: priya.token })).status).toBe(403);
+    expect(fleet.activityHistorySettings.set({ policy: 'all' })).toMatchObject({ ok: true });
+    const agent = await signedIn(app, 'Priya', priya.token);
+    expect((await agent.post('/api/admin/unlock/from-respond').set(AH)).status).toBe(200);
+    expect((await agent.get('/api/admin/people').set(AH)).status).toBe(200);
+    // an ordinary person is still refused
+    const eve = people.createPerson('Eve');
+    const ed = await signedIn(app, 'Eve', eve.token);
+    expect((await ed.post('/api/admin/unlock/from-respond').set(AH)).status).toBe(401);
+  });
+
+  it('refuses it when respond is off and no keep policy is on, even for a sign-in made earlier (#432)', async () => {
+    const { app, fleet, people } = setup({ respond: false });
+    const admins = people.allGroups().find((g) => g.name === 'Administrators')!;
+    const priya = people.createPerson('Priya', admins.id);
+    fleet.activityHistorySettings.set({ policy: 'all' });
+    const agent = await signedIn(app, 'Priya', priya.token);
+    fleet.activityHistorySettings.set({ policy: 'default' });
+    expect((await agent.post('/api/admin/unlock/from-respond').set(AH)).status).toBe(401);
+    expect((await agent.get('/api/fleet/respond/me')).body).toMatchObject({ enabled: false, signedIn: false });
   });
 
   it('does not hold another browser signed in as the same Administrator (#272)', async () => {

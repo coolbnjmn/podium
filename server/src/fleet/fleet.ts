@@ -1,7 +1,8 @@
 // The fleet service: owns the live set, turns ingests and timer sweeps into SSE messages, and
 // answers the read endpoints. Storage is FleetDb; rules are in ingest.ts and derive.ts. The clock is
 // injected so the lifecycle tests can move time without waiting.
-import { SAME_USAGE } from './db.js';
+import { ROLLUP_KEEP_MS, SAME_USAGE } from './db.js';
+import { costFn, writeRollups } from './rollups.js';
 import type { CostOf, FleetDb, RetentionPolicy, SessionRow } from './db.js';
 import { activityView, computeKpis, family, isUnused, repriced, sessionStatus, sessionView, shortenHome, staleAfterFor, startOfDay, type DeriveConfig } from './derive.js';
 import { serverBuild } from './build.js';
@@ -9,12 +10,19 @@ import { REPORTER_SUPPORT, serverVersion } from './compat.js';
 import { ingestReport, type IngestResult } from './ingest.js';
 import { hookToReport } from './hookIngest.js';
 import { validateReport } from './protocol.js';
-import type { ActivityView, HistoryRow, Kpis, RemovedReason, Report, ReporterSupport, SessionStatusView, SessionView, StateBody } from './protocol.js';
+import type { ActivityView, HistoryRow, Kpis, RemovedReason, Report, ReporterSupport, SessionStatusView, SessionView, StateBody, WallSettingsView } from './protocol.js';
 import { formatSse, SseHub } from './sse.js';
 import { ModelPriceStore } from './modelPrices.js';
 import { WallSettings } from './wallSettings.js';
 import { ActivityStore } from './activity.js';
-import { ACTIVITY_FEED, FeatureFlags, FILE_DIFF, PEER_MESSAGING, RESPOND } from './featureFlags.js';
+import { openActivityDb } from './activityDb.js';
+import { ActivityHistory, type SessionMeta } from './activityHistory.js';
+import { ActivityHistorySettingsStore } from './activityHistorySettings.js';
+import type { DatabaseSync } from 'node:sqlite';
+import { ACTIVITY_FEED, ACTIVITY_OUTPUT, FeatureFlags, FILE_DIFF, PEER_MESSAGING, RESPOND, SESSION_RECORDING, UPDATE_CHECK } from './featureFlags.js';
+import { RecordingSettingsStore } from './recordingSettings.js';
+import { SessionRecordings } from './recordings.js';
+import { isNewer, UpdateCheck } from './updateCheck.js';
 import { DiffBroker } from './fileDiffs.js';
 import { RespondStore } from './respond.js';
 import { PeerService } from './peers.js';
@@ -44,7 +52,7 @@ export const DEFAULT_CONFIG: Omit<FleetConfig, 'home' | 'dbPath'> = {
   dropAfterMs: 60_000,
   lingerMs: 8_000,
   detachedHideAfterMs: 60_000,
-  retention: { samplesMs: 24 * 3600_000, eventsMs: 30 * 24 * 3600_000, sessionsMs: 30 * 24 * 3600_000, adminLogMs: 90 * 24 * 3600_000 },
+  retention: { samplesMs: 24 * 3600_000, eventsMs: 30 * 24 * 3600_000, sessionsMs: 30 * 24 * 3600_000, adminLogMs: 90 * 24 * 3600_000, rollupMs: ROLLUP_KEEP_MS },
   throttleMs: 500,
 };
 
@@ -75,6 +83,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv, base: { home: string; dbPa
       eventsMs: envMs(env, 'RETAIN_EVENTS_MS', d.retention.eventsMs),
       sessionsMs: envMs(env, 'RETAIN_SESSIONS_MS', d.retention.sessionsMs),
       adminLogMs: envMs(env, 'RETAIN_ADMIN_LOG_MS', d.retention.adminLogMs),
+      rollupMs: envMs(env, 'RETAIN_ROLLUP_MS', ROLLUP_KEEP_MS),
     },
   };
 }
@@ -95,6 +104,9 @@ interface LiveEntry {
   status: SessionStatusView | null;
 }
 
+/** Whether the viewer asking may know that a session has a recording (its owner or an Admin, signed in). */
+export type RecordingKnown = (row: SessionRow) => boolean;
+
 /** When a session ended: dropped, else ended, else last seen. */
 const endedAtOf = (row: SessionRow): number => row.dropped_at ?? row.ended_at ?? row.last_seen_at;
 
@@ -106,6 +118,14 @@ export class Fleet {
   readonly prices: ModelPriceStore;
   /** The agent activity feed (#118): in memory only, and only for loops a viewer is watching. */
   readonly activity: ActivityStore;
+  /** The Admin's Activity history choice (#432): kept in the main database's settings table. */
+  readonly activityHistorySettings: ActivityHistorySettingsStore;
+  /** The Activity history (#432): the feed kept in the second SQLite file under a keep policy. Idle under the default policy. */
+  readonly activityHistory: ActivityHistory;
+  /** The Admin's session recording limits (#353): kept in the main database's settings table. */
+  readonly recordingSettings: RecordingSettingsStore;
+  /** Session recordings (#353): whole prompts, tool inputs and results of the loops someone chose, in the activity file. */
+  readonly recordings: SessionRecordings;
   /** A file's diff on demand (#319): in memory only, held just while the owner's browser waits. */
   readonly diffs = new DiffBroker();
   /** The Admin's feature flags. Turning the activity feed off drops what it held; any change reaches open browsers. */
@@ -114,6 +134,8 @@ export class Fleet {
   readonly respond: RespondStore;
   /** Orchestrator messaging (#347, #412): rights, requests and messages, in the database. */
   readonly peers: PeerService;
+  /** The daily check for a newer Podium release (#499); the wall's update notice reads its answer. */
+  readonly updates: UpdateCheck;
   private readonly live = new Map<string, LiveEntry>();
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly startedAt: number;
@@ -128,31 +150,91 @@ export class Fleet {
     readonly now: () => number = Date.now,
     /** Lifecycle events (#140): session.started/ended, reporter.connected/silent, sweep.removed. Silent by default. */
     readonly logger: Logger = silentLogger,
+    /** The activity database (a memory one when absent) and whether the server has a sign-in token; a keep policy needs one. `secret` is that token, replaced wherever a recording would store it. */
+    history: { db?: DatabaseSync; authOn?: boolean; secret?: string | null } = {},
   ) {
     this.startedAt = now();
     this.features = new FeatureFlags(db.db, (id, on) => {
       if (id === ACTIVITY_FEED && !on) this.activity.clear();
       if (id === FILE_DIFF && !on) this.diffs.clear();
+      // Output going off drops every output held on a lease (#431). The commands, the leases and the history are untouched.
+      if (id === ACTIVITY_OUTPUT && !on) this.activity.dropOutput();
       // Responding needs both flags: either going off drops every ask and answer the server holds.
       if ((id === ACTIVITY_FEED || id === RESPOND) && !on) this.respond.clear();
       // Messaging going off drops every message still waiting; the rights stay.
       if (id === PEER_MESSAGING && !on) this.peers.dropAll();
+      // Recording going off stops every recording and keeps what it holds until it expires (#353).
+      if (id === SESSION_RECORDING && !on) for (const sid of this.recordings.stopAll('Admin')) this.recordingChanged(sid);
+      // The release check going on looks straight away instead of waiting for the next daily run.
+      if (id === UPDATE_CHECK && on) void this.updates.check();
       this.hub.broadcast('snapshot', this.state());
     });
-    this.activity = new ActivityStore(now, () => this.features.featureOn(ACTIVITY_FEED));
+    const authOn = history.authOn ?? true;
+    this.activityHistorySettings = new ActivityHistorySettingsStore(db.db, authOn);
+    const activityDb = history.db ?? openActivityDb(':memory:');
+    this.activityHistory = new ActivityHistory(activityDb, {
+      now,
+      settings: () => this.activityHistorySettings.get(),
+      featureOn: () => this.features.featureOn(ACTIVITY_FEED),
+      isLive: (sid) => this.live.has(sid),
+      agentsOf: (sid) => this.db.getAgents(sid).filter((a) => a.status === 'running').map((a) => a.id),
+      authOn,
+    });
+    this.recordingSettings = new RecordingSettingsStore(db.db);
+    this.recordings = new SessionRecordings(activityDb, {
+      now,
+      settings: () => this.recordingSettings.get(),
+      flagOn: () => this.features.featureOn(SESSION_RECORDING),
+      authOn,
+      isLive: (sid) => this.live.has(sid),
+      loopsOf: (sid) => [{ loop: MAIN_LOOP, name: 'Orchestrator' }, ...this.db.getAgents(sid).map((a) => ({ loop: a.id, name: a.name ?? a.type }))],
+      secrets: () => (history.secret ? [history.secret] : []),
+      exclusive: (fn) => this.activityHistory.runExclusive(fn),
+      compact: () => this.activityHistory.compactNow(),
+    });
+    this.activity = new ActivityStore(
+      now,
+      () => this.features.featureOn(ACTIVITY_FEED),
+      (sid) => (this.activityHistory.enabled() ? this.activityHistory.loopsToWatch(sid) : []),
+      () => this.features.featureOn(ACTIVITY_OUTPUT),
+    );
     this.respond = new RespondStore(
       now,
       (sid) => {
         if (this.live.has(sid)) this.scheduleSession(sid);
       },
       {
-        add: (sid, loop, ref, e) => this.activity.addPodium(sid, loop ?? MAIN_LOOP, ref, e),
-        update: (sid, ref, note) => this.activity.updatePodium(sid, ref, note),
-        remove: (sid, ref) => this.activity.removePodium(sid, ref),
+        // The live feed is updated first and cannot fail. The history write is best effort: a full disk or a locked file is
+        // logged and never reaches the answer, ask or message that caused it.
+        add: (sid, loop, ref, e, delivery) => {
+          this.activity.addPodium(sid, loop ?? MAIN_LOOP, ref, e);
+          this.historySafely('add', sid, () => {
+            const meta = this.historyMeta(sid);
+            if (meta) this.activityHistory.addPodium(sid, loop ?? MAIN_LOOP, ref, e, meta);
+          });
+          // A message's prompt entry, when it arrives from the mod, gets the sender as its marker (#353), when its text matches exactly. An answer, an
+          // approval, a permission decision and /clear and /compact are recorded by the mod itself, where it takes them.
+          if (delivery.kind === 'message') this.historySafely('add', sid, () => this.recordings.notePodiumPrompt(sid, loop ?? MAIN_LOOP, e, ref));
+        },
+        update: (sid, ref, note) => {
+          this.activity.updatePodium(sid, ref, note);
+          this.historySafely('update', sid, () => this.activityHistory.updatePodium(sid, ref, note));
+        },
+        remove: (sid, ref) => {
+          this.activity.removePodium(sid, ref);
+          this.historySafely('remove', sid, () => this.activityHistory.removePodium(sid, ref));
+          this.historySafely('remove', sid, () => this.recordings.forgetPodiumPrompt(sid, ref));
+        },
       },
     );
     this.peers = new PeerService(db.db, new ReporterStore(db.db, this.startedAt).peerLookup(), now, () => this.features.featureOn(PEER_MESSAGING));
-    this.wall = new WallSettings(db.db, () => this.hub.broadcast('wall', this.wall.view()));
+    this.wall = new WallSettings(db.db, () => this.hub.broadcast('wall', this.wallView()));
+    this.updates = new UpdateCheck({
+      current: serverVersion(),
+      enabled: () => this.features.featureOn(UPDATE_CHECK),
+      onChange: () => this.hub.broadcast('wall', this.wallView()),
+      logger,
+    });
     // A price change moves every cost on the wall, so open browsers get a fresh snapshot.
     this.prices = new ModelPriceStore(db.db, () => {
       this.costMinuteCache = null; // the sparkline follows the prices too (#270)
@@ -200,7 +282,23 @@ export class Fleet {
     const res = ingestReport(this.db, report, this.now(), owner);
     this.clockSkew.set(res.sessionId, res.clockSkewMs);
     this.activity.ingest(report, res.clockSkewMs);
+    // The report is already saved: a failure of the second file (a full disk, say) is logged and must not refuse the report.
+    try {
+      if (this.activityHistory.enabled()) this.activityHistory.ingest(report, res.clockSkewMs, this.historyMeta(res.sessionId) ?? { name: report.session.name, project: null, owner });
+    } catch (err) {
+      this.logger.error('activity.ingest_failed', `podium: could not store the activity of session ${res.sessionId}: ${(err as Error).message}`, { session_id: res.sessionId, reason: (err as Error).message });
+    }
     if (typeof report.session.fileDiff === 'boolean') this.diffs.noteOption(res.sessionId, report.session.fileDiff);
+    // The owner's consent to be recorded, from this report (#353). After a /clear the new session inherits a running recording.
+    this.recordings.noteOption(res.sessionId, report.session.sessionRecording);
+    if (res.created && report.session.clearedFrom) {
+      const meta = this.historyMeta(res.sessionId);
+      try {
+        if (meta) this.recordings.carryOver(report.session.clearedFrom, res.sessionId, meta);
+      } catch (err) {
+        this.logger.error('recording.carry_failed', `podium: could not carry a recording over to session ${res.sessionId}: ${(err as Error).message}`, { session_id: res.sessionId, reason: (err as Error).message });
+      }
+    }
     this.respond.noteReport(report, this.respondFlagsOn());
     this.noteReporter(report, owner);
     const entry = this.live.get(res.sessionId);
@@ -235,6 +333,21 @@ export class Fleet {
     }
     if (this.live.has(res.sessionId)) this.scheduleSession(res.sessionId);
     return res;
+  }
+
+  /** What the Stored activity table shows about a session; undefined when the main database does not hold it. */
+  historyMeta(sessionId: string): SessionMeta | undefined {
+    const row = this.db.getSession(sessionId);
+    return row ? { name: row.name, project: row.repo_name ?? row.project_root, owner: row.owner } : undefined;
+  }
+
+  /** Runs a write to the Activity history; a failure is logged as `activity.podium_failed` and never thrown. */
+  private historySafely(what: 'add' | 'update' | 'remove', sessionId: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (err) {
+      this.logger.error('activity.podium_failed', `podium: could not ${what} a Podium entry in the activity history of session ${sessionId}: ${(err as Error).message}`, { session_id: sessionId, op: what, reason: (err as Error).message });
+    }
   }
 
   /** `reporter.connected` the first time a reporter is heard, and again when it comes back after going quiet. */
@@ -312,9 +425,11 @@ export class Fleet {
         ownerGroup: this.db.groupOfOwner(row.owner),
         pricing: this.prices.pricing(),
         activityFeed: this.activity.feedOn(row.id),
+        activityOutput: this.activity.outputOptionOn(row.id),
         fileDiff: this.diffs.optionOn(row.id),
         respond: this.respond.info(row.id),
         asks: this.respond.summaries(row.id),
+        recording: this.recordings.view(row.id),
       },
       now,
       this.derive,
@@ -380,18 +495,18 @@ export class Fleet {
   }
 
   /** Sessions that ended or were dropped in [from, to), as summary rows, newest first. */
-  history(from: number, to: number): HistoryRow[] {
-    return this.historyRows(from, to).map((row) => this.historyRow(row));
+  history(from: number, to: number, mayKnow?: RecordingKnown): HistoryRow[] {
+    return this.historyRows(from, to).map((row) => this.historyRow(row, mayKnow));
   }
 
   /**
    * One page of `history`, with the day's total. The filter and the sort use the session rows alone; the agents
    * query and the repricing run for the rows on the page only. A page past the end is the last page.
    */
-  historyPage(from: number, to: number, page: number, pageSize: number): { rows: HistoryRow[]; total: number; page: number } {
+  historyPage(from: number, to: number, page: number, pageSize: number, mayKnow?: RecordingKnown): { rows: HistoryRow[]; total: number; page: number } {
     const all = this.historyRows(from, to);
     const at = Math.min(page, Math.max(1, Math.ceil(all.length / pageSize)));
-    return { rows: all.slice((at - 1) * pageSize, at * pageSize).map((row) => this.historyRow(row)), total: all.length, page: at };
+    return { rows: all.slice((at - 1) * pageSize, at * pageSize).map((row) => this.historyRow(row, mayKnow)), total: all.length, page: at };
   }
 
   /** The day's sessions that did something, newest end first, with the id breaking ties so a row never moves between pages. */
@@ -402,7 +517,7 @@ export class Fleet {
       .sort((a, b) => endedAtOf(b) - endedAtOf(a) || (a.id < b.id ? -1 : 1));
   }
 
-  private historyRow(row: SessionRow): HistoryRow {
+  private historyRow(row: SessionRow, mayKnow?: RecordingKnown): HistoryRow {
     const agents = this.db.getAgents(row.id);
     const end = endedAtOf(row);
     return {
@@ -420,7 +535,24 @@ export class Fleet {
       endReason: row.dropped_at !== null ? 'heartbeat lost' : row.end_reason,
       clearedFrom: row.cleared_from ?? null,
       clearedInto: this.db.clearedInto(row.id),
+      ...this.keptMark(row, mayKnow),
     };
+  }
+
+  /** The History row's recording marker (#353): only for a viewer `mayKnow` says may know of the session's recording, and only while one is held. */
+  private keptMark(row: SessionRow, mayKnow?: RecordingKnown): Pick<HistoryRow, 'recording'> {
+    // With the Admin's flag off the replay routes answer 404, so the marker would point at nothing.
+    if (!this.recordings.enabled() || !mayKnow?.(row)) return {};
+    const keptUntil = this.recordings.keptUntilOf(row.id);
+    return keptUntil === null ? {} : { recording: { keptUntil } };
+  }
+
+  /** The wall's settings plus the update notice: a release newer than this server that nobody has closed the notice for (#499). */
+  private wallView(): WallSettingsView {
+    const found = this.updates.latest();
+    const dismissed = this.wall.updateDismissed();
+    const update = found && (dismissed === null || isNewer(found.latest, dismissed)) ? found : null;
+    return { ...this.wall.view(), update };
   }
 
   state(): StateBody {
@@ -433,9 +565,20 @@ export class Fleet {
       clearedToday: this.clearedToday(),
       events: this.events({ limit: STATE_EVENTS }),
       server: { version: serverVersion(), build: serverBuild(), reporterSupport: REPORTER_SUPPORT },
-      wall: this.wall.view(),
-      features: this.features.view(),
+      wall: this.wallView(),
+      // `activity-history` is derived, not an Admin flag: the console reads it to offer the sign-in that stored history needs.
+      features: { ...this.features.view(), 'activity-history': this.activityHistory.enabled() },
     };
+  }
+
+  /** A recording was started, stopped, deleted or changed: the session's card and page learn of it at the next broadcast. */
+  recordingChanged(sessionId: string): void {
+    if (this.live.has(sessionId)) this.scheduleSession(sessionId);
+  }
+
+  /** The Admin changed the Activity history setting: open consoles learn whether a sign-in is now offered. */
+  activityHistoryChanged(): void {
+    this.hub.broadcast('snapshot', this.state());
   }
 
   /** The first message a new SSE client gets. */
@@ -466,6 +609,11 @@ export class Fleet {
     const wasLive = this.live.delete(id);
     this.clockSkew.delete(id);
     this.activity.dropSession(id);
+    // The rows go in chunks, after this returns; a failure is logged, and the session is gone from the main database regardless.
+    this.activityHistory.deleteSession(id).catch((err: Error) => this.logger.error('activity.delete_failed', `podium: could not remove the activity history of session ${id}: ${err.message}`, { session_id: id, reason: err.message }));
+    this.recordings.forgetSession(id);
+    // Its recording goes with it, in chunks after this returns; a failure is logged.
+    this.recordings.removeSession(id).catch((err: Error) => this.logger.error('recording.delete_failed', `podium: could not remove the recording of session ${id}: ${err.message}`, { session_id: id, reason: err.message }));
     this.diffs.drop(id);
     this.respond.dropSession(id);
     this.peers.deleted([id]);
@@ -505,6 +653,8 @@ export class Fleet {
     this.live.delete(row.id);
     this.clockSkew.delete(row.id);
     this.activity.dropSession(row.id);
+    this.activityHistory.forgetSession(row.id);
+    this.recordings.forgetSession(row.id);
     this.diffs.drop(row.id);
     this.respond.endSession(row.id);
     this.respond.dropSession(row.id);
@@ -605,7 +755,22 @@ export class Fleet {
 
   /** Hourly: retention. */
   retain(): { samples: number; events: number; sessions: number; adminLog: number; peerMessages: number; peerRequests: number } {
+    // The daily rollups first (#484), so what retention is about to delete is counted before it goes.
+    // A failure here must not stop the pruning below, or every table would grow without limit.
+    try {
+      writeRollups(this.db, this.now(), costFn(this.prices.pricing()), this.cfg.retention);
+    } catch (err) {
+      this.logger.error('retention.rollups_failed', `podium: could not write the daily rollups: ${(err as Error).message}`, { reason: (err as Error).message });
+    }
     const out = this.db.retain(this.now(), this.cfg.retention);
+    // A session's retention ends its activity history too, whatever the policy: the shorter wins (#432). The rows go in
+    // chunks in the background, so the hourly retention never waits for them; a failure is logged.
+    this.activityHistory.dropMissingSessions((id) => this.db.getSession(id) !== undefined).catch((err: Error) => {
+      this.logger.error('retention.activity_failed', `podium: could not remove the activity history of expired sessions: ${err.message}`, { reason: err.message });
+    });
+    this.recordings.dropMissingSessions((id) => this.db.getSession(id) !== undefined).catch((err: Error) => {
+      this.logger.error('retention.recording_failed', `podium: could not remove the recordings of expired sessions: ${err.message}`, { reason: err.message });
+    });
     const peers = this.peers.retain();
     return { ...out, peerMessages: peers.messages, peerRequests: peers.requests };
   }

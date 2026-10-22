@@ -11,6 +11,7 @@ import { ADMIN_SCREENS } from "./screens.admin";
 import { APP_SCREENS } from "./screens.app";
 import { MESSAGING_SCREENS } from "./screens.messaging";
 import { RESPOND_SCREENS } from "./screens.respond";
+import { RECORDING_SCREENS } from "./screens.recording";
 import { STATE_SCREENS } from "./screens.states";
 
 export interface Screen {
@@ -68,7 +69,7 @@ const nested = [
 function focus(over: Partial<SessionView> = {}, agent: string | null = null): ReactElement {
   return (
     <FocusView
-      s={makeSession({ agents: nested, ...over })}
+      s={makeSession({ agents: nested, machine: { name: "studio-m2", id: "m2", os: "macOS 26.1" }, ...over })}
       now={NOW}
       config={CONFIG}
       sort={{ key: null, dir: 1 }}
@@ -97,6 +98,7 @@ export const SCREENS: Record<string, Screen> = {
   ...RESPOND_SCREENS,
   ...APP_SCREENS,
   ...STATE_SCREENS,
+  ...RECORDING_SCREENS,
 };
 
 export { fireEvent };

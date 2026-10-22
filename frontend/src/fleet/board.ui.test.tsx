@@ -65,7 +65,7 @@ describe("kanban board", () => {
   it("opens the orchestrator's page when a card is clicked", () => {
     const { rerender } = board([makeSession()]);
     fireEvent.click(screen.getByRole("link", { name: "Port invoice endpoints, active, api-refactor" }));
-    expect(window.location.hash).toBe("#/");
+    expect(window.location.hash).toBe("#/?open=s1");
     // The route change is the app's; the selection the click made has to survive it.
     rerender(<FleetView state={stateFrom({ sessions: [makeSession()] })} />);
     expect(screen.getByRole("navigation", { name: "Orchestrators" }).querySelector('.ritem[aria-current="true"]')).toHaveTextContent("api-refactor");
@@ -82,9 +82,43 @@ describe("kanban board", () => {
 
   it("remembers the board's panels apart from the fleet page's", () => {
     board([makeSession()]);
-    fireEvent.click(screen.getByRole("button", { name: "Expand left pane" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expand the left pane" }));
     expect(JSON.parse(localStorage.getItem("podium.collapsed.board")!).left).toBe(false);
     expect(localStorage.getItem("podium.collapsed")).toBeNull();
+  });
+
+  it("collapses the KPI rows to one bar and opens them again, and remembers the choice apart from the header's (#538)", () => {
+    const { unmount } = board([makeSession()]);
+    const hide = screen.getByRole("button", { name: "Hide KPI rows" });
+    expect(hide).toHaveAttribute("aria-expanded", "true");
+    expect(hide).toHaveAttribute("aria-controls", screen.getByRole("group", { name: /Orchestrators and subagents/ }).id);
+    fireEvent.click(hide);
+    expect(screen.queryByRole("group", { name: /Orchestrators and subagents/ })).toBeNull();
+    // The rows stay in the page, hidden, so the control's aria-controls still points at something.
+    expect(document.getElementById(hide.getAttribute("aria-controls")!)).toHaveAttribute("hidden");
+    const show = screen.getByRole("button", { name: "Show KPI rows" });
+    expect(show).toHaveAttribute("aria-expanded", "false");
+    expect(show).toHaveClass("edge-tab", "edge-tab-kpi");
+    expect(JSON.parse(localStorage.getItem("podium.collapsed.board.kpis")!)).toBe(true);
+    // The header's flags and the fleet page's are not touched.
+    expect(localStorage.getItem("podium.collapsed.board")).toBeNull();
+    expect(localStorage.getItem("podium.collapsed")).toBeNull();
+    unmount();
+    board([makeSession()]);
+    expect(screen.queryByRole("group", { name: /Orchestrators and subagents/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show KPI rows" }));
+    expect(screen.getByRole("group", { name: /Orchestrators and subagents/ })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("podium.collapsed.board.kpis")!)).toBe(false);
+  });
+
+  it("collapses the header and the KPI rows independently (#538)", () => {
+    board([makeSession()]);
+    fireEvent.click(screen.getByRole("button", { name: "Hide KPI rows" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide top bar" }));
+    expect(screen.getByRole("button", { name: "Show KPI rows" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show top bar" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show top bar" }));
+    expect(screen.getByRole("button", { name: "Show KPI rows" })).toBeInTheDocument();
   });
 
   it("pages a column at 25 cards with the standard pager", () => {

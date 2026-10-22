@@ -18,6 +18,7 @@ This is the short, practical list. The full list of known limitations is under "
 - [Running the server](#running-the-server)
 - [What the dashboard shows](#what-the-dashboard-shows)
 - [Orchestrator messaging](#orchestrator-messaging)
+- [Session recording](#session-recording)
 - [Developing](#developing)
 
 ## Connecting the mod
@@ -233,8 +234,8 @@ a reload and a clear is not decided.
 How `start` behaves:
 
 - In standalone mode `start` checks before it spawns anything, so nothing is left running and no pid file is written.
-- Container mode needs no check. `podman run` fails with `address already in use` and `start` exits non-zero (tested
-  with Podman 6.1.2).
+- Container mode needs no check. `podman run` or `docker run` fails with `address already in use` and `start` exits
+  non-zero (tested with Podman 6.1.2 and Docker 29.8.1).
 - If the server exits right after `start` spawns it (a bind error, a bad setting), `start` says so, prints the tail of
   `~/.podium/podium.log` and removes the pid file, instead of reporting success.
 
@@ -244,7 +245,7 @@ How `start` behaves:
 
 **Why:** `podiumctl config set` only edits `~/.podium/config.env`.
 
-**Do:** Run `podiumctl restart`. The `--mode`, `--port` and `--bind` flags are saved by `start`, `restart`, `build` and
+**Do:** Run `podiumctl restart`. The `--mode`, `--engine`, `--port` and `--bind` flags are saved by `start`, `restart`, `build` and
 `enable`.
 
 ### On macOS the first `podiumctl start` takes a while
@@ -254,7 +255,18 @@ How `start` behaves:
 **Why:** Podman runs in a VM. If it is not running, `podiumctl` starts it, and the first start also builds the image
 (about 20 seconds on a warm cache).
 
-**Do:** Wait. Later starts are quick.
+**Do:** Wait. Later starts are quick. Docker Desktop is not started for you: if it is not running, `podiumctl` says so
+and stops. Start it, then run the command again.
+
+### `podiumctl` uses Podman, but I want Docker (or the other way round)
+
+**You see:** Both are installed, and the container runs under the one you did not want.
+
+**Why:** Container mode prefers Podman when it is installed. The engine that first ran `build`, `start`, `restart` or
+`enable` is saved as `PODIUMCTL_ENGINE`, so later commands keep using it.
+
+**Do:** `podiumctl rm`, then `podiumctl start --engine docker` (or `podman`). The data volume belongs to one engine, so
+the other one starts with an empty database.
 
 ### `podiumctl disable` stopped my standalone server
 
@@ -276,12 +288,12 @@ A session whose reporter never comes back is dropped about a minute after the se
 
 ### `podman inspect podium` shows the token
 
-**You see:** `podman inspect podium` prints the token.
+**You see:** `podman inspect podium` (or `docker inspect podium`) prints the token.
 
 **Why:** `podiumctl` keeps the token out of the command line, but it is part of the container's environment, and
-`podman inspect` prints that. Anyone who can run Podman as you can read it.
+`inspect` prints that. Anyone who can run Podman or Docker as you can read it.
 
-**Do:** Treat the account that runs Podman as trusted. See `.github/SECURITY.md`.
+**Do:** Treat the account that runs the container engine as trusted. See `.github/SECURITY.md`.
 
 ### Anyone on localhost can read the dashboard
 
@@ -325,15 +337,16 @@ the unit. Standalone mode restarts a crashed server after 3 seconds.
 
 **Do:** Use `podiumctl start`. Or run `systemctl --user stop podium.service` and then `start`.
 
-### The Linux start-on-boot unit has not been through a reboot
+### The Linux start-on-boot unit was rebooted in standalone mode only
 
 **You see:** Nothing is wrong. This is a gap in our testing.
 
 **Why:** `podiumctl enable` has run on Bazzite 44 (Fedora Atomic, systemd 259, Podman 5.8.7, SELinux enforcing) in both
-modes, with Node from Homebrew (#268). Starting, `stop` and `disable` behave as described above. A reboot, with and
-without `loginctl enable-linger $USER`, has not been tried.
+modes, with Node from Homebrew (#268). Starting, `stop` and `disable` behave as described above. Standalone mode has
+also been through a reboot, with `loginctl enable-linger $USER` (the server was up at boot before anyone logged in) and
+without it (the server started at login). Container mode has not been rebooted.
 
-**Do:** If you have tried it, tell us.
+**Do:** If you have tried container mode through a reboot, tell us.
 
 ## What the dashboard shows
 
@@ -506,6 +519,43 @@ reporters to show and cannot take part.
 
 **Do:** Sign in with your own name and token, the ones your reporters use.
 
+## Session recording
+
+The feature is in [REPLAY.md](REPLAY.md).
+
+### Record says "This session's reporter does not allow recording"
+
+**You see:** you chose a session and pressed Start recording, and the dialog or the layer says the reporter does not
+allow recording. Nothing is recorded.
+
+**Why:** the third yes answer is the reporter's `sessionRecording` option on the machine the session runs on, and it is
+off by default. The browser cannot turn it on, on purpose.
+
+**Do:** on that machine, run `/plugin configure podium-reporter@eengelking-marketplace` and turn on **Allow session
+recording**, then start the recording again. Capture begins at the next reply, so allow a few seconds.
+
+### A permission prompt or question I answered in the terminal is not in the replay
+
+**You see:** the replay shows the tool call and its result, but no "Allowed a tool once" or "Answered a question" row.
+
+**Why:** the replay marks only answers and approvals sent from Podium. The mod cannot see a permission prompt that was
+answered in the terminal, and a question's result arrives as an object it cannot read as text.
+
+**Do:** read the tool's result: it shows what ran and whether it was refused. A decision row means someone answered from
+Podium.
+
+### After `/clear` the recording is on a different session
+
+**You see:** after `/clear` the old session's recording reads stopped, with no one named, and the new session shows it
+recording.
+
+**Why:** `/clear` gives the session a new id. The server carries a running recording over to the new session, with the same
+starter and start time, and stops the old one. The owner's consent is not carried: the new session's own report must state
+that `sessionRecording` is on.
+
+**Do:** replay the first part from the old session's page and the rest from the new one. If the new session says the
+reporter does not allow recording, turn the option on for that machine.
+
 ## Developing
 
 ### An Admin style does nothing, or looks like the fleet page's
@@ -518,6 +568,22 @@ picks up its rules.
 
 **Do:** Before you add a class to `admin.css`, search `fleet.css` for it. Prefix a layout class that collides (Admin
 uses `asec` and `apage` for this reason).
+
+### A mockup of the Expand modal looks nothing like the real one, or its layout breaks
+
+**You see:** A mockup of the Activity modal is rejected as unlike production, or a new piece of it lays out wrong
+as soon as it links `fleet.css`.
+
+**Why:** Expand opens two different modals. An agent's Expand opens the plain Activity modal
+(`ActivityFeed.tsx`). The orchestrator's Expand opens the Respond modal (`Respond.tsx`): the title "Activity" with
+the sub "name · orchestrator · model", the refresh select in the header, the feed, the status row, the feed's footer
+note, then the message box (`Compose`). A mockup drawn from `ActivityFeed.tsx` alone is the wrong modal for an
+orchestrator. Separately, a class name you invent can already exist in `fleet.css`. A new `.out` and `.cmd` in the
+#431 mockup collided with Respond's own `.out` and `.cmd` and broke its layout.
+
+**Do:** Copy the component the screen really opens: `Respond.tsx` for an orchestrator, `ActivityFeed.tsx` for an
+agent. Before you use a class name in a mockup, search `fleet.css` and `admin.css` for it, and pick another name if
+it is taken.
 
 ### `npm run test:mod` and `npm run typecheck:mod` fail on a clean machine
 

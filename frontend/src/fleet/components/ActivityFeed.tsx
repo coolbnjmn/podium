@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { fmtCount, fmtDay } from "../format";
 import { reporterBelow } from "../logic";
 import type { ActivityEntryView, SessionView } from "../types";
-import { EVERY_CHOICES, readEvery, useActivityFeed, writeEvery, type FeedState, type FetchActivity } from "../useActivityFeed";
+import { EVERY_CHOICES, readEvery, useActivityFeed, writeEvery, type FeedEntry, type FeedState, type FetchActivity, type FetchHistory } from "../useActivityFeed";
+import { ActivityOutputFlag, BashRow, LINE_CUT, missingOutput, Redacted, useRowAnchor, type RowAnchor } from "./BashRow";
 import { Modal } from "./Modal";
 import { useRespond } from "../useRespond";
 import { nameKey } from "../respond";
@@ -15,17 +17,17 @@ import { nameKey } from "../respond";
 export const ACTIVITY_REPORTER_MINOR = 13;
 const UPDATE = "Run claude plugin update podium-reporter@eengelking-marketplace, then /reload-plugins in that session.";
 
-const ICON_TOOL = (
+export const ICON_TOOL = (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
     <path d="m3 4 4 4-4 4M8.5 12.5H13" />
   </svg>
 );
-const ICON_TEXT = (
+export const ICON_TEXT = (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
     <path d="M3 4.5h10M3 8h10M3 11.5h6" />
   </svg>
 );
-const ICON_REASONING = (
+export const ICON_REASONING = (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
     <circle cx="8" cy="7" r="4.5" />
     <path d="M6 13.5h4" />
@@ -36,7 +38,7 @@ const ICON_EXPAND = (
     <path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" />
   </svg>
 );
-const ICON_YOU = (
+export const ICON_YOU = (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
     <circle cx="8" cy="5.5" r="2.7" />
     <path d="M2.8 13.5c.7-2.6 2.8-4 5.2-4s4.5 1.4 5.2 4" />
@@ -67,20 +69,7 @@ export function feedTime(at: number, startedAt: number): string {
   return h ? `${h}:${two(Math.floor((s % 3600) / 60))}:${two(s % 60)}` : `${two(Math.floor(s / 60))}:${two(s % 60)}`;
 }
 
-/** The text with each `[redacted]` the mod put in marked, as text nodes. */
-function Redacted(props: { text: string }) {
-  const parts = props.text.split("[redacted]");
-  return (
-    <>
-      {parts.map((p, i) => (
-        <span key={i}>
-          {p}
-          {i < parts.length - 1 && <span className="rd">[redacted]</span>}
-        </span>
-      ))}
-    </>
-  );
-}
+export { ActivityOutputFlag, Redacted };
 
 /** Who sent an answer or message from Podium, as the feed names them: "You" for the signed-in person (#206). */
 function senderOf(by: string | undefined, me: string | null): string {
@@ -88,14 +77,33 @@ function senderOf(by: string | undefined, me: string | null): string {
   return me && nameKey(by) === nameKey(me) ? "You" : by;
 }
 
-function Entry(props: { e: ActivityEntryView; startedAt: number; fresh: boolean }) {
+function Entry(props: { e: FeedEntry; startedAt: number; fresh: boolean; running: boolean; machineOutput: boolean | null | undefined; anchor: RowAnchor }) {
   const { e } = props;
+  const adminOutput = useContext(ActivityOutputFlag);
   const k = KIND[e.kind];
   const respond = useRespond();
   const me = respond?.me?.signedIn ? respond.me.name : null;
   const space = e.text.indexOf(" ");
   const name = e.kind === "tool" ? (space < 0 ? e.text : e.text.slice(0, space)) : "";
   const arg = e.kind === "tool" && space >= 0 ? e.text.slice(space + 1) : "";
+  // Only a Bash row opens: the mod sends a whole command and output for no other tool (#431).
+  if (e.kind === "tool" && name === "Bash") {
+    const stored = e.key !== undefined && e.key.startsWith("h") && e.live !== true;
+    const running = props.running && !stored && e.output === undefined && !e.done;
+    return (
+      <BashRow
+        className={`${k.cls}${props.fresh ? " new" : ""}`}
+        time={feedTime(e.at, props.startedAt)}
+        timeTitle={new Date(e.at).toLocaleTimeString()}
+        kindLabel={k.label}
+        icon={k.icon}
+        line={arg}
+        cut={e.text.length >= LINE_CUT}
+        anchor={props.anchor}
+        d={{ command: e.command, output: e.output, done: e.done, failed: e.failed, exitCode: e.exitCode, running, missing: missingOutput({ stored, adminOn: adminOutput, machineOn: props.machineOutput, running }) }}
+      />
+    );
+  }
   return (
     <li className={`${k.cls}${props.fresh ? " new" : ""}`}>
       <span className="at" title={new Date(e.at).toLocaleTimeString()}>
@@ -122,21 +130,46 @@ function Entry(props: { e: ActivityEntryView; startedAt: number; fresh: boolean 
   );
 }
 
-/** The list with its follow-the-latest behaviour: it stays at the bottom until the viewer scrolls up, and a pill brings it back. */
-export function FeedList(props: { feed: FeedState; startedAt: number; empty: string }) {
+/**
+ * The list with its follow-the-latest behaviour: it stays at the bottom until the viewer scrolls up, and a pill brings it back.
+ * `active` is whether the loop is still working (#598). Only the newest entry can read as running: a Bash call with no `done` and
+ * no output, last in the list, in a loop that is working. An older reporter sends no `done` without output, so any earlier call
+ * with none could have finished long ago; a later entry, text included, means the call returned. A call running beside another
+ * one reads as not collected until it reports, which claims nothing false.
+ */
+export function FeedList(props: { feed: FeedState; startedAt: number; empty: string; machineOutput?: boolean | null; active?: boolean }) {
   const list = useRef<HTMLOListElement>(null);
   const [following, setFollowing] = useState(true);
   const lastSeq = useRef(0);
   const entries = props.feed.entries;
-  const newestSeq = entries.length ? entries[entries.length - 1]!.seq : 0;
+  // Any entry an hour or more into the loop shows h:mm:ss, which needs a wider time column for every row.
+  const needsHours = entries.some((e) => e.at - props.startedAt >= 3_600_000);
+  const newest = entries.length ? entries[entries.length - 1]! : null;
+  // Stored entries count apart from the live ones (#432), so the newest is told by its key, not its seq alone.
+  const newestKey = newest ? (newest.key ?? String(newest.seq)) : "";
+  const newestSeq = newest && !newest.key ? newest.seq : 0;
 
+  // The newest row can grow after it arrived (the output of a call that finished): a list that follows keeps its end in view.
+  const newestGrowth = newest ? `${newest.output?.length ?? -1}|${newest.done === true}` : "";
   useLayoutEffect(() => {
     const el = list.current;
     if (el && following) el.scrollTop = el.scrollHeight;
-  }, [newestSeq, following]);
+  }, [newestKey, following, newestGrowth]);
   useEffect(() => {
     lastSeq.current = newestSeq;
   }, [newestSeq]);
+  // Older entries prepended by Show older (#432) push the viewer's place down: add the growth back to scrollTop.
+  const firstKey = entries.length ? (entries[0]!.key ?? String(entries[0]!.seq)) : "";
+  const prev = useRef<{ first: string | null; newest: string; height: number }>({ first: null, newest: "", height: 0 });
+  useLayoutEffect(() => {
+    const el = list.current;
+    if (!el) return;
+    const p = prev.current;
+    if (p.first !== null && firstKey !== p.first && newestKey === p.newest) el.scrollTop += el.scrollHeight - p.height;
+    prev.current = { first: firstKey, newest: newestKey, height: el.scrollHeight };
+  });
+
+  const anchor = useRowAnchor(list, following);
 
   const onScroll = () => {
     const el = list.current;
@@ -149,8 +182,8 @@ export function FeedList(props: { feed: FeedState; startedAt: number; empty: str
 
   return (
     <div className="feedwrap">
-      <ol className="feed" ref={list} aria-label="Recent activity, newest last" tabIndex={0} onScroll={onScroll}>
-        {entries.length ? entries.map((e) => <Entry key={e.seq} e={e} startedAt={props.startedAt} fresh={e.seq > lastSeq.current && lastSeq.current > 0} />) : <li className="empty">{props.empty}</li>}
+      <ol className={needsHours ? "feed hours" : "feed"} ref={list} aria-label="Recent activity, newest last" tabIndex={0} onScroll={onScroll} /* NOSONAR S6845: a focusable scroll region, by design */>
+        {entries.length ? entries.map((e) => <Entry key={e.key ?? e.seq} running={props.active === true && e === newest} e={e} startedAt={props.startedAt} fresh={!e.key && e.seq > lastSeq.current && lastSeq.current > 0} machineOutput={props.machineOutput} anchor={anchor} />) : <li className="empty">{props.empty}</li>}
       </ol>
       {!following && (
         <button type="button" className="jump" onClick={jump}>
@@ -188,8 +221,54 @@ export function FeedStatus(props: { count: string; when: string }) {
   );
 }
 
+/** "Show older" under the feed, while more stored entries wait (#432). Renders nothing without them. */
+export function OlderRow(props: { feed: FeedState }) {
+  const { feed } = props;
+  if (!feed.stored?.hasOlder) return null;
+  return (
+    <div className="feedfoot stat older">
+      <span className="count">Showing the newest {feed.entries.length}</span>
+      <button type="button" className="btn sm" onClick={() => void feed.loadOlder()}>
+        Show older
+      </button>
+    </div>
+  );
+}
+
+const WHO_CAN = "Only the owner and the Admin can open it. Secrets are removed before they leave the session.";
+
+/** The fixed line under the footer. With stored history it says how long the entries stay and who can read them. */
+export function feedNote(feed: FeedState): string {
+  const st = feed.stored;
+  if (!st) return "Kept only while someone is watching. Closing this clears it. Secrets are removed before they leave the session.";
+  if (!st.canRead) return "Stored activity can hold anything an agent read or ran, so it is not shown to other viewers.";
+  if (st.keptUntil !== null) return `Kept until ${fmtDay(st.keptUntil)}, then purged. ${WHO_CAN}`;
+  if (st.policy === "end") return `Kept until the session ends, then removed. ${WHO_CAN}`;
+  return `Kept until the session is removed from Podium. ${WHO_CAN}`;
+}
+
+/**
+ * The feed's empty text. Only when history is kept does it change: another viewer is told who can open it, and a viewer
+ * who is not signed in is told to sign in.
+ */
+export function feedEmpty(feed: FeedState, signedIn: boolean | null, fallback: string): string {
+  const st = feed.stored;
+  if (!st || st.canRead) return fallback;
+  // A session reported with the admin secret is owned by "Admin": naming it twice reads wrongly.
+  const adminOwned = st.owner === "Admin";
+  const owner = st.owner ?? "its owner";
+  if (signedIn === false) return adminOwned ? "History is kept for this session. Sign in as an Admin to open it." : `History is kept for this session. Sign in as ${owner} or an Admin to open it.`;
+  const plain = adminOwned ? "History is kept for this session. Only an Admin can open it." : `History is kept for this session. Only ${owner} and the Admin can open it.`;
+  // Where the page does not know whether the viewer is signed in (the History page has no sign-in state), the line offers the sign-in too.
+  if (signedIn === null) return `${plain} ${adminOwned ? "Sign in if you are one." : "Sign in if that is you."}`;
+  return plain;
+}
+
 export function footer(feed: FeedState, active: boolean, isMain: boolean, now: number): [string, string] {
-  const count = feed.seen === 0 ? "Nothing yet" : `Last ${feed.entries.length} of ${feed.seen} since you started watching`;
+  const st = feed.stored;
+  let count: string;
+  if (st) count = !st.canRead ? "Nothing to show" : `${fmtCount(st.total)} stored ${st.total === 1 ? "entry" : "entries"}${st.since === null ? "" : ` since ${fmtDay(st.since)}`}`;
+  else count = feed.seen === 0 ? "Nothing yet" : `Last ${feed.entries.length} of ${feed.seen} since you started watching`;
   let when: string;
   if (!feed.live) when = "No more updates";
   else if (!active) when = isMain ? "Session ended, no more updates" : "Agent finished, no more updates";
@@ -208,14 +287,14 @@ export function footer(feed: FeedState, active: boolean, isMain: boolean, now: n
  * is still working; `now` ticks once a second for the "Updated" line. `adminOn` is the Admin's `activity-feed` flag from
  * the console's state (left out where the state is not at hand, as in History: the route's reply says it then).
  */
-export function ActivityFeed(props: { s: SessionView; loop: string; title: string; startedAt: number; active: boolean; now: number; isMain?: boolean; adminOn?: boolean; fetchActivity?: FetchActivity }) {
+export function ActivityFeed(props: { s: SessionView; loop: string; title: string; startedAt: number; active: boolean; now: number; isMain?: boolean; adminOn?: boolean; fetchActivity?: FetchActivity; fetchHistory?: FetchHistory }) {
   const { s, active } = props;
   const old = s.reporter === "mod" && reporterBelow(s, ACTIVITY_REPORTER_MINOR);
   const enabled = s.reporter === "mod" && !old && s.activityFeed !== false;
   const [every, setEvery] = useState(readEvery);
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLButtonElement>(null);
-  const feed = useActivityFeed({ sessionId: s.id, loop: props.loop, enabled, active, every, adminOn: props.adminOn, fetchActivity: props.fetchActivity });
+  const feed = useActivityFeed({ sessionId: s.id, loop: props.loop, enabled, active, every, adminOn: props.adminOn, fetchActivity: props.fetchActivity, fetchHistory: props.fetchHistory });
   const respond = useRespond();
 
   const pick = useCallback((n: number) => {
@@ -251,11 +330,12 @@ export function ActivityFeed(props: { s: SessionView; loop: string; title: strin
     );
   }
 
-  const empty = !feed.live
+  const emptyBase = !feed.live
     ? "This session is no longer live. Activity is kept only while someone watches a running session."
     : active
       ? "Watching from now. Earlier activity is not kept, and nothing is kept after you close this."
       : `${props.isMain ? "The session has ended" : "This agent has finished"}. Activity is kept only while someone watches it run.`;
+  const empty = feedEmpty(feed, respond?.me ? respond.me.signedIn : null, emptyBase);
   // Date.now() rather than `now` for "Updated": fetchedAt is this browser's time. `now` ticking re-renders it.
   const [count, when] = footer(feed, active, !!props.isMain, Date.now());
 
@@ -287,10 +367,11 @@ export function ActivityFeed(props: { s: SessionView; loop: string; title: strin
             </span>
             {active && <EverySelect id={`every-${props.loop}`} every={every} onChange={pick} />}
           </div>
-          <FeedList feed={feed} startedAt={props.startedAt} empty={empty} />
+          <FeedList feed={feed} startedAt={props.startedAt} empty={empty} machineOutput={s.activityOutput} active={active} />
+          <OlderRow feed={feed} />
           <FeedStatus count={count} when={when} />
           <div className="feedfoot">
-            <span>Kept only while someone is watching. Closing this clears it. Secrets are removed before they leave the session.</span>
+            <span>{feedNote(feed)}</span>
           </div>
         </>
       )}
@@ -301,8 +382,14 @@ export function ActivityFeed(props: { s: SessionView; loop: string; title: strin
               <AdminOffNote />
             ) : (
               <>
-                <FeedList feed={feed} startedAt={props.startedAt} empty={empty} />
+                <FeedList feed={feed} startedAt={props.startedAt} empty={empty} machineOutput={s.activityOutput} active={active} />
+                <OlderRow feed={feed} />
                 <FeedStatus count={count} when={when} />
+                {feed.stored && (
+                  <div className="feedfoot">
+                    <span>{feedNote(feed)}</span>
+                  </div>
+                )}
               </>
             )}
           </div>

@@ -63,6 +63,10 @@ Other docs cite entries by number, so numbers never change.
 | [36](#36-a-files-diff-is-source-code-so-only-its-owner-can-open-it-319) | A file's diff is source code, so only its owner can open it (#319) |
 | [37](#37-orchestrators-can-message-each-other-but-only-one-persons-own-347) | Orchestrators can message each other, but only one person's own (#347) |
 | [38](#38-the-plan-list-ends-with-the-done-steps-in-the-order-the-server-saw-them-finish-454) | The Plan list ends with the done steps, in the order the server saw them finish (#454) |
+| [39](#39-the-admin-can-keep-the-activity-feed-in-a-second-sqlite-file-432) | The Admin can keep the activity feed, in a second SQLite file (#432) |
+| [40](#40-a-session-can-be-recorded-whole-with-three-yes-answers-353) | A session can be recorded whole, with three yes answers (#353) |
+| [41](#41-a-bash-row-opens-to-the-whole-command-and-its-output-431) | A Bash row opens to the whole command and its output (#431) |
+| [42](#42-podium-makes-its-own-ca-and-the-reporter-authenticates-with-a-certificate-577) | Podium makes its own CA, and the reporter authenticates with a certificate (#577) |
 
 ## 1. Podium only observes
 
@@ -170,12 +174,17 @@ single image is enough. It runs as a non-root user (2026-10-11, PR #3).
 **Cost.** Podman's default OCI image format drops a `HEALTHCHECK` instruction, so `podiumctl` passes
 `--health-cmd` when it runs the container.
 
+**Amended (2026-10-20).** Docker is supported as well. Podman stays the default when both are installed;
+otherwise `podiumctl` uses Docker, and `--engine` chooses. Many people have Docker and not Podman, and the two take
+the same arguments for everything `podiumctl` runs, so supporting both costs a few lines (see ARCHITECTURE,
+Container mode).
+
 ## 9. `podiumctl` has two modes and no dependencies
 
 **Decision.** `bin/podiumctl` is a plain ES module with no dependencies. It manages the server either in a
-Podman container or as a standalone Node process, and saves the mode.
+container (Podman or Docker) or as a standalone Node process, and saves the mode.
 
-**Why.** Some people will not have Podman, and developers want a plain process. A script with no
+**Why.** Some people will have neither Podman nor Docker, and developers want a plain process. A script with no
 dependencies installs with `npm link` and nothing else, and `npm link` is how an npm binary is normally
 installed (PR #3).
 
@@ -215,7 +224,9 @@ the service.
   is `Type=oneshot` with `RemainAfterExit=yes` and so still counts as active. Use `podiumctl start`, or
   `systemctl --user stop` first.
 - A container is not restarted when it dies. Only the unit's start at login or boot brings it up.
-- Not yet tested: a reboot, with and without `loginctl enable-linger`.
+- Standalone, rebooted (2026-10-20, #268): with `loginctl enable-linger` the server was listening at boot
+  before anyone logged in; without it, it started at login. Both runs were clean, with one start and no restarts.
+- Not yet tested: container mode through a reboot.
 - The unit names Homebrew's `opt/<formula>` link for `node` rather than the `Cellar/<formula>/<version>`
   directory that `brew upgrade` deletes.
 
@@ -497,6 +508,8 @@ of Anthropic's list prices with the Admin's changes laid over it.
 
 ## 24. An agent's activity is sent only while someone watches it, and never kept
 
+*Amended by 39 (#432): the Admin can now choose to keep it. The default, and everything below, is unchanged.*
+
 **Decision.** The activity feed (#118) has its own reporter option, `activityFeed`, off by default and
 separate from `fullPrompts`.
 
@@ -586,8 +599,10 @@ fields (`server/src/logging/`, #140).
 - With shipping on, the server makes network calls on its own, and lines are lost when the endpoint is down
   longer than the buffer lasts (it says so once).
 - The default text output stays what it was. The events added with the logger (sessions, reporters, sweeps,
-  Admin changes, refused tokens, conflicts) print in text only at `debug`, which the maintainer chose so
-  that turning nothing on changes nothing. They are still at their own level in `json` and in what is
+  Admin changes, conflicts) print in text only at `debug`, which the maintainer chose so
+  that turning nothing on changes nothing. A refused credential (`auth.failed`) and the `tls.*` events were
+  moved out of that list in #602, folded to one line a minute, because an Admin reading a plain log to find
+  out why a reporter is offline saw nothing. They are still at their own level in `json` and in what is
   shipped, so someone reading plain text at the default level sees less than an agent reading VictoriaLogs.
 - Field names are checked against a deny list and strings are scrubbed, but a new field still needs its
   author to think about what it carries.
@@ -1067,3 +1082,316 @@ often empty. Renaming a step therefore also starts the order over; the list fall
 accepted cost. A report with no plan no longer drops the numbers: while a report carries none, the server keeps the last
 plan in `plan_kept_json` (migration 21) and compares the next plan with it. Rejected: comparing only titles (usually
 null), and keeping a second copy of every plan (the column is filled only during a gap).
+
+## 39. The Admin can keep the activity feed, in a second SQLite file (#432)
+
+**Context.** DECISIONS 24 kept the feed in memory, only while someone watched, because the question it answers is about
+now. A person who wants to look back at what a session did, after they closed the window or after it ended, could not.
+The Admin also needs a way to clear it: to stop keeping it, to remove something private that leaked, or to save space.
+#353 (recording and replay) needs the same store, purge job and manage screen, so the choices here are shared with it.
+
+**Decision.** The Admin chooses one global policy in Admin > Server > Data: *Not stored* (the default, and today's
+behavior), *purge after* a number of hours, days, weeks or months, *purge when the session ends*, or *keep everything*,
+with an optional size cap that removes the oldest entries first (`SPEC.md` 6.4).
+
+- Entries go to a second SQLite file, `activity.sqlite`, beside `podium.sqlite`, with its own schema version, WAL and
+  incremental auto-vacuum. The policy is one JSON row in the main `settings` table.
+- Capture needs no viewer: under a keep policy the server lists every running loop of a session whose reporter has
+  `activityFeed` on in `watch`. The mod needs no change and the report format is unchanged.
+- Every entry is stored, including the answers and messages sent from Podium, each with its marker. The redaction done
+  before sending is kept as it is, with no second pass.
+- A purge runs every 5 minutes and writes one admin log row per run that removed something. The hourly retention also
+  removes the entries of sessions the main database no longer holds, so the shorter of the two retentions wins.
+- The Admin reads and deletes through Data and Stored activity. Deleting is by ticked sessions, by a filter (including a
+  range of dates) or everything, asks first, compacts the file and is written to the admin log with counts and sizes.
+  There is no per-entry delete.
+- Stored text can be read only by the session's owner and an Admin, through a signed-in browser. A keep policy needs a
+  token on the server.
+
+**Why.**
+
+- A separate file keeps a large, fast-growing table out of the main database, so its backups, vacuum and the hourly
+  retention are not slowed by it, and deleting everything can give the space back without touching sessions, History or
+  settings.
+- Deleting rows does not shrink a SQLite file. Auto-vacuum in steps plus a WAL checkpoint after each removal returns
+  the space without one long blocking `VACUUM` on the main database.
+- Listing every running loop reuses the mechanism DECISIONS 24 built, so no protocol or mod change is needed.
+- Reads are narrower than the console's open reads because stored text can hold anything an agent read or ran, and the
+  Admin, who runs the server and can delete it, can read it too.
+
+**Alternatives.**
+
+- A table in `podium.sqlite`. Rejected: one file holding months of entries grows large and slows backups, vacuum and the
+  hourly retention. A second file has the same dependency.
+- An external store. Rejected: a new dependency and another place to secure, with no benefit at this size.
+- A per-project or per-owner policy. Left out: start global; a scope can be added to the same form.
+- A second redaction pass on stored text. Left out: the text is already cut and redacted, and the read rule and the
+  warning carry the rest.
+- Per-entry delete. Left out: finding one entry needs searching inside stored text, which the issue excludes. A date range
+  reaches the minutes of a leak without it.
+
+**Cost.**
+
+- It is not a complete record. The mod keeps 20 entries per loop and one report carries 60,000 characters, so a busy
+  session can lose entries or a whole loop's feed, and nothing is replayed after an outage.
+- Reporters send more and the server stores more while a keep policy is on. The Admin is told before saving.
+- Compaction takes time on a large file; it runs in bounded steps and a delete says how much it freed.
+- A backup made before a delete still holds what was deleted.
+- The size cap counts an estimate of the entries' bytes, not the file's size, because freed pages stay in the file until
+  vacuum.
+- Choosing *purge when the session ends* with a restart: a session that has not ended stays live and keeps its history.
+- A load test found that scanning the table for the Stored activity list, the preview, a purge or a delete blocked the
+  server for 4 to 18 s on one day of the issue's example volume (14.4 million rows). The store therefore keeps per-session
+  aggregates and removes in chunks that yield to the event loop. The cost is that a very large removal takes longer in
+  total (a delete of 2.46 million rows took 33 s against 14 s all at once), that a window-filtered list and the preview
+  are estimates or slow-but-not-blocking, and that a delete request waits until its removal is done. The 30-day volume was
+  not run.
+
+## 40. A session can be recorded whole, with three yes answers (#353)
+
+**Context.** The Activity feed shows the last 20 short lines of a loop, and #432 (DECISIONS 39) can keep them. Neither
+answers "what exactly did this agent read and run, and why". A recording keeps all of it, whole, which is the most Podium
+ever holds of a conversation. The details are in [REPLAY.md](REPLAY.md).
+
+**Decision.**
+
+- **Three yes answers, the third on the machine.** The Admin's `session-recording` flag, a choice of the session by its
+  owner or an Admin, and the reporter's `sessionRecording` option, off by default. The option is the owner's consent and
+  the browser cannot overrule it. It is a separate option, not a level of `activityFeed` or `respond`.
+- **The notice is not a wall notice and cannot be hidden.** No X and no switch, on the wall or in Admin, and the owner's
+  terminal is told every time. This is an approved exception to DECISIONS 22.
+- **Expiry is per part.** Each part goes the Admin's keep time after it was recorded, and the time shown to a person is
+  when the oldest part still held goes.
+- **The mod names the sender on decisions.** An answer or approval from Podium is recorded by the mod, where it takes the
+  answer and knows Claude Code took it, with the sender, never by the server.
+- **A separate consent route.** `GET .../recording/consent` tells the picker whether the owner allowed recording and how
+  long recordings are kept, before anything is chosen.
+- **Stored apart from the main database.** In `activity.sqlite`, in their own tables, sharing DECISIONS 39's store, purge
+  and Stored activity page.
+- **The limits come from a measurement.** A 5 second batch, a 256 KB early flush, 512 MB for one session and 4 GB for
+  all recordings, from simulated traffic (SPEC 6.4, "Measured write load").
+
+**Why.**
+
+- Whole prompts and results can hold anything the session saw, so each party who could be harmed by it has a switch:
+  the Admin for the server, the owner for the machine, and the person choosing for the session.
+- Consent that anyone could dismiss is not consent. An Admin can start a recording without the owner, so the owner has
+  to see it and hear it every time.
+- Per-part expiry means a short keep time is honored within a purge run, and a long recording sheds its oldest part
+  instead of living until its last.
+- Only the mod knows what Claude Code took. A server-written decision could claim an approval that never happened.
+- The wall's `SessionView` goes to everyone, so whether the owner allowed recording cannot ride on it.
+- A separate file keeps a fast-growing table out of the main database's backups, vacuum and retention.
+- A batch every 5 seconds instead of every second cut the server's writes for 20 busy sessions by 29% and its CPU by 35%,
+  at the price of a replay that trails by up to 5 seconds. The first defaults (256 MB, 2 GB) would have stopped a busy
+  session of 8 loops after about 3.4 hours, while the trouble was still going on.
+
+**Alternatives.**
+
+- A level of `activityFeed` or `respond`. Rejected: neither implies recording, and recording implies neither.
+- A closable notice with a switch, like DECISIONS 22. Rejected for the reason above.
+- The server recording decisions as it delivers them. Rejected: it cannot tell what Claude Code took.
+- Recording thinking text. Not possible today: the chunks arrive with empty text.
+
+**Cost.**
+
+- A recording can hold a secret that redaction missed (REPLAY.md, "What redaction does not cover"). Redaction of a very
+  long line is done in pieces of 1,000 characters, so a secret across a cut can slip through.
+- It is not complete. The mod's queue is bounded, a session that dies loses up to 5 seconds, and a question or permission
+  prompt answered in the terminal leaves no decision row.
+- Thinking text is not available, and only one model at one effort was tested.
+- The limits come from simulated traffic, not real sessions, so they may change.
+- The Admin can read every recording and start one without the owner, which is why the notice cannot be hidden.
+
+## 41. A Bash row opens to the whole command and its output (#431)
+
+**Context.** The Activity feed showed a Bash call as one line cut to 300 characters, with no result. A person had to open
+the terminal to see whether a command worked. #432 and #353 changed what the feed may keep since the issue was written,
+so some of its first assumptions (output "in memory only", captured "only for a watched loop") no longer hold as written.
+
+**Decision.** Every Bash row is closed by default (only Bash: the mod sends a whole command and output for no other tool). A click on the
+row opens it to the whole command, then the output with its exit status (a bare check for exit 0, a cross and "Exit N,
+failed" otherwise); a second click or the Collapse button closes it. Command and output wrap. The same row serves the
+agent panel, the Expand modal, the Respond modal and the session-recording replay. The replay shows the result its
+recording already holds (#353); it adds no second copy.
+
+- **Two switches.** The whole command rides the existing `activityFeed` option and `activity-feed` flag. Output has its own
+  reporter option and its own Admin feature flag, both off by default.
+- **Output is never stored.** It is not in `podium.sqlite`, `activity.sqlite`, the state, the stream or the logs. The server
+  holds it in memory only, on the feed's lease. A test checks that a secret in output is found in none of them.
+- **Output is captured only while a viewer has the feed open.** A keep policy under #432 lists a loop as watched with no
+  viewer; that listing never asks the mod for output; only a live viewer lease does. The reply carries a second list,
+  `watchOutput`, a subset of `watch` made only of loops under a live lease while the `activity-output` flag is on. The
+  mod captures output for a loop only when it is in `watchOutput` and its `activityOutput` option is on. Extending
+  `watch` was rejected: it mixes lease loops with history loops, so the mod could not tell a viewer from a keep
+  policy. A reply field is the smallest change: an older server sends none, which the mod reads as "no output".
+- **The entry fields.** `id` (the tool call's id, so output that arrives after the entry first went out is matched to
+  its entry, and the console can key an open row), `command`, `commandCut`, `output`, `outputCut`, `done`, `exitCode`
+  and `failed`, all optional. Stdout and stderr go in one `output` (stdout first). Claude Code's Bash result type has
+  `stdout`, `stderr` and `interrupted` but no exit code; the mod reads `isError`, and an `exitCode` only if the result
+  text gives one, so `failed` may be true with no `exitCode`. The Admin flag is `activity-output`, "Bash output in the
+  activity feed"; the reporter option is `activityOutput`, "Send a Bash command's output" (mockup
+  `mockup/podium-feed-expand-admin.html`, approved).
+- **The command is kept.** The Activity history (#432) stores the whole command, redacted and cut at 20,000 characters with
+  a visible `[cut off at 20000 characters]` marker.
+- **Limits.** Command 20,000 characters and output 20,000 characters per entry, each with the marker, the same size as the
+  full prompt cap (`fullText`). The report-wide 60,000-character cap (`activityChars`) stays as it is for the 300-character
+  summaries; commands and output count against a separate per-loop budget, because 20 entries of 40,000 characters each
+  would be 800,000 characters and the old cap would drop nearly all of them. The budget is 200,000 characters of commands
+  and output per report (`LIMITS.activityDetailChars`), shared over the orchestrator and the agents, the orchestrator
+  first, each from its newest entry back. An entry that does not fit loses its output, then its command, and keeps its
+  summary. Why 200,000: it holds ten whole entries (a 20,000-character command and output), enough for a window of
+  recent work, and with the 60,000 of summaries and the 120,000 of full text it stays near 380,000 characters, under
+  the 512 KB body limit (`BODY_LIMIT`) for ordinary text. JSON escaping and non-ASCII text can push it past that, so
+  the mod must also check the serialized size of a report, as the recording does at 480,000 bytes, and drop output
+  first when over.
+- **Claude Code's own cut.** A Bash result of about 90 KB or more arrives as a short `<persisted-output>` stub. The row
+  shows what the mod received, so for that case it shows the stub.
+- **Redaction.** `redactBounded` in `mod/podium-reporter/hooks/recording.ts`, as the recording uses. No third approach.
+
+**Why.**
+
+- Output holds more than a command does (file contents, environment dumps, tokens the redactor does not know), so it
+  gets its own consent and its own default, apart from the command.
+- Capturing only for a live viewer keeps a keep policy from turning every running loop into a standing copy of its output.
+- Not storing output means the Admin's retention and size cap never have to account for it.
+
+**Alternatives.**
+
+- Output on the `activityFeed` option. Rejected: it would grant output to everyone who allowed the command line.
+- Storing output under the keep policy, as #353 does for recordings. Rejected: a recording has its own three yes answers;
+  the feed does not.
+
+**Cost.**
+
+- Redaction in 1,000-character pieces can miss a secret across a cut (see `docs/REPLAY.md`), and it hides some harmless
+  long lines as `[redacted]`.
+- A person who opens a row after the command finished may find no output, because it was not captured before the feed
+  was open.
+- A result over about 90 KB shows a stub, not the output.
+
+**Amended (#598): a finished call says so, with or without output.** Under #431 a Bash entry got `done` only together with
+output, so a call still running and one that finished before the panel opened looked alike, and the row said "Output was
+not collected." for both.
+
+- **What the mod sends.** While `activityFeed` is on, the mod sends `done`, `failed` and `exitCode` on a Bash entry
+  whenever the call finishes, with or without output. Output itself is unchanged: it still needs the `activityOutput`
+  option, the `activity-output` flag and the loop in `watchOutput`.
+- **What the server does.** It keeps the three fields with the entry in memory, as it keeps the rest of the entry. The
+  Activity history stores none of them; it stores only the whole command, as before.
+- **What the row says.** No `done` and the loop active: "Running." and the word running on the line. `done` with no
+  output: "Output was not collected." and the status mark (a bare check for exit 0, a cross and "Exit N, failed" or
+  "Failed"), on the line and beside Output. No `done` and the loop not active: "Output was not collected." with no mark,
+  a stale call whose end was never reported.
+- **An older mod.** It sends no `done` without output, so its rows keep today's wording: running while the loop is
+  active, otherwise "Output was not collected." with no mark. An older server drops `done`, `failed` and `exitCode`
+  from a session that does not report `activityOutput: true`, so it ignores the new use and its rows stay as they
+  were; with the option on it keeps them, which only helps. Neither case is an error, since the fields are optional on
+  the entry.
+- **A call that throws.** It returns no result, so the mod marks nothing: `done` stays unknown, and the row reads as
+  it does for a stale call. A denied call is `done` and `failed` as before, and its reason is output, so it is sent
+  only with the output switches on.
+- **Running or stale (console).** Only the newest entry of the feed can read as running: a Bash call with no `done`
+  and no output, last in the list, in a loop that is working. An older mod never sends `done` without output, so any
+  earlier call with none may have finished long ago; a later entry, text included, means the call returned. A call
+  that runs beside another reads as not collected until it reports, which claims nothing false. The flag and option
+  wording stay ahead of "Running.", since output will not come; the line still says running. The replay is unchanged:
+  it knows from the recording whether a call has a result and never says running.
+- **Why.** The mod knows when a call ends; the server cannot tell a finished call from a running one without being told.
+  The mockup is `mockup/podium-feed-expand.html`, "Rows without output".
+
+## 42. Podium makes its own CA, and the reporter authenticates with a certificate (#577)
+
+**Context.** Podium's traffic is plain HTTP. A reporter sends its token, its reports and the answers it holds
+over HTTP, and the browser signs in with a name and a token over HTTP, so anyone on the path can read and
+change them. The only advice was a TLS proxy (20, 28, 31). #323 designed the fix over 17 comments and #577
+builds it. This entry records why it has this shape. It is built (#577 and its sub-issues).
+
+**Decision.** With TLS turned on (`PODIUM_TLS=on`, `podiumctl start --tls`), the server makes its own CA and
+serving certificate in `/data/tls` and opens a second port for reporters, HTTPS with mutual TLS (see the update
+below). Each person gets a client certificate in
+one generated config file, `reporter-config-<name>-<epoch>.pem`, holding the server address, the CA, the name
+and the certificate with its private key, the way `kubeadm` and `kubectl` do. `SPEC.md` 5.9, 6, 6.8, 7.1 and
+7.7 have the rules.
+
+- A reporter with the file is identified by its certificate, not a token. A token the person has set is still sent
+  inside the TLS connection and the server ignores it. The server authenticates the reporter from the certificate in the TLS
+  handshake, mapped to a person by SHA-256 fingerprint, and the report's `userName` must still equal that person,
+  as 20 requires. The console keeps its name and token, on plain HTTP (30, and the update below).
+- The reporter makes its TLS connection through a small Node helper, started per session, because the mod's
+  `$.http.fetch` accepts no CA or certificate. The mod sends its requests to the helper over a Unix socket.
+- Revoking the certificate, the token, or both are separate actions. The server checks revocation on every
+  request. Plain HTTP stays on loopback so an Admin can always sign in (33 still applies to both ports).
+- Serving certificates renew themselves, person certificates renew from the reporter, and the CA rotates only
+  by hand, with a cross-signed overlap when planned.
+- Reporters over HTTP are an Admin switch, on for an existing install and off for a fresh one that enables TLS.
+- macOS and Linux are in scope. Windows is unsupported.
+
+**Why.**
+
+- Tokens in a header over plain HTTP were the accepted cost in 20, 28 and 31. Responding (28) made it worse,
+  since the browser's sign-in and held answers now cross the network too.
+- The maintainer's model is `kubectl`: the CA arrives inside the credential file and is used for that one
+  connection. A person's machine installs nothing and trusts nothing new. A certificate also cannot be lifted
+  out of a header and replayed the way a token can, because the private key signs the handshake and is never
+  sent.
+- A person is still bound to their name (20). The certificate is public and the key proves identity, so a
+  stolen database yields no usable reporter credential.
+- Revocation had to be easy and separate: "it just blocks the reporter from working, but the user can still log
+  in".
+- The helper is the one route that was measured to work (Claude Code 2.1.305, 20 of 20 requests at about 2 ms,
+  the server saw the certificate on every handshake). `$.http.fetch` ignores `ca`, `cert` and `key`.
+  `NODE_EXTRA_CA_CERTS` needs a restart, cannot be set later by a mod, and trusts the CA for the whole process.
+  `curl` per request fails on macOS with a combined PEM file. The long-term fix is an engine option on
+  `$.http.fetch` (#591), and then the helper goes and the file stays.
+- `openssl` and Node's own TLS do the work, with no pure-JS certificate library. The CA lives on durable
+  storage so a restart or rebuild never loses it. Reporter identity is read once per session (29), so the
+  helper follows the same rule.
+
+**Alternatives.**
+
+- Signed requests over verified HTTPS with `crypto.subtle`. Superseded: the helper gives real mutual TLS.
+- A `ca.pem`, a `.pdm` file and a `NODE_EXTRA_CA_CERTS` line with a restart. Superseded by the one file, and kept
+  as the documented fallback if the helper is not accepted.
+- The reporter setting its own trust at runtime. Does not work.
+- A pinned CA hash like `kubeadm join`. Needs the engine option.
+- A TLS proxy only (the earlier advice). It still works, and a server with a real name can use one (35).
+
+**Cost.**
+
+- The reporter needs `node`. It looks at `PODIUM_NODE`, then the `PATH` Claude Code started with, then Homebrew, `/usr/local`, nvm and Volta, and says so in the status line when it finds none.
+- `$.process` is CLI only per the engine types, so the desktop app and VS Code are untested.
+- A stolen `/data/tls` holds the CA key, which is everything the CA signed. It needs an emergency rotation and a
+  reissue, and the folder must be backed up and permissioned like a secret.
+- A stolen config file holds a person's private key until it is revoked.
+- A laptop asleep past both the cross certificate and its own certificate's end needs a reissue.
+- Podium now holds a CA, a renewal schedule and a rotation procedure, which is more to run and more to explain.
+
+**Update (#665): reporters get their own mutual-TLS port, the console gets no HTTPS, and there is no grace.** The review
+of #663 raised CodeQL `js/disabling-certificate-validation` on the one HTTPS listener, which asked for a client
+certificate but did not require one (`rejectUnauthorized: false`) so that a browser could use it too. Every place that
+trusts a certificate checked `socket.authorized`, so it was safe as built, but the safety lived in application code.
+The maintainer decided to split the traffic by port.
+
+- Port 4317 stays plain HTTP. It serves the console, Admin and any reporter that uses a token. Podium does not serve
+  HTTPS to browsers; a person who wants it puts a proxy in front (35).
+- Port 4318 (`PODIUM_TLS_PORT`) is HTTPS with `requestCert: true` and `rejectUnauthorized: true`, and serves only the
+  routes a reporter calls and `POST /api/reporter/renew`. A connection without a valid certificate is dropped in the
+  handshake, and any other path is a `404`. Nothing in Podium sets `rejectUnauthorized: false`.
+- A certificate that has expired is not renewed. A reporter renews while the certificate is valid, 30 days before it
+  ends. If it lapses, the reporter cannot reach 4318 and an Admin generates a new config for the person. The 30-day
+  grace and `tls.reporter.graceDays` are gone.
+- The reporter says in the status line and in `/podium` that the certificate expired on a named date and that an
+  Admin must generate a new one. Admin > People warns before it lapses.
+- Admin > Server > Certificates keeps the CA and the serving certificate. It no longer offers Download CA or any
+  text about trusting the CA in a browser, since no browser uses this TLS.
+
+*Why.* The grace was the one flow that needed an unverified client: a renewal with an expired certificate
+(`CERT_HAS_EXPIRED`). Dropping it lets the listener verify every client, and it removes the gap where an expired
+certificate skipped the hourly renewal limit and the in-flight guard and could renew repeatedly. A renewal answer, a
+new CA during a rotation included, now only travels over a connection both sides verified.
+
+*Cost.* A laptop that sleeps past its certificate's end, or a reporter that does not run at any time in its certificate's last 30 days
+(it can lapse after a little over a month away, and always does after 90), needs an Admin to reissue its config. Revocation is checked on every request and not in
+the handshake, since the handshake cannot know it. The planned-rotation overlap stays at 120 days, which now leaves a
+margin over a default 90-day certificate and does not cover a certificate set to the 365-day maximum.

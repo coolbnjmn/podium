@@ -39,8 +39,11 @@ import {
   type SentTexts,
   setIdentity,
   addActivity,
+  finishActivity,
   isWatched,
+  isWatchedOutput,
   setWatched,
+  setWatchedOutput,
   skillLoaded,
   step,
   toolResult,
@@ -52,10 +55,14 @@ import {
 } from './state.ts';
 import { nextCronAt } from './cron.ts';
 import { isDelivery, Transport, type FetchLike } from './transport.ts';
+import { findConfig, startLink, unusableLink, type Link } from './tlsLink.ts';
 import { activityCall, activityText, explainPrompt } from './failures.ts';
-import { pickIdentity, worthHolding, type Identity } from './identity.ts';
-import { hostOf, isMachineId, MACHINE_ID_KEY, machineIdPath, machineInfo, newMachineId, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile, trimTrailingSlashes } from './machine.ts';
-import type { Ask, Delivery, DeliveryResult, MachineInfo, PeerDelivery, PeerRequest, PeerResult, RespondInfo, RespondKind, RespondLevel } from './protocol.ts';
+import { activityEntry, finishedCall, type BashResult } from './activityDetail.ts';
+import { nameArg, pickIdentity, worthHolding, type Identity } from './identity.ts';
+import { hostOf, isMachineId, MACHINE_ID_KEY, machineIdPath, machineInfo, newMachineId, platformRandom, type RandomSource, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile, trimTrailingSlashes } from './machine.ts';
+import { MAIN_LOOP, RECORDING_LIMITS, type Ask, type Delivery, type DeliveryResult, type MachineInfo, type PeerDelivery, type PeerRequest, type PeerResult, type RecordingGrant, type RespondInfo, type RespondKind, type RespondLevel } from './protocol.ts';
+import { isRecordingGrant } from './transport.ts';
+import { limitLine, Recorder, refusedLine, startLine, stoppedLine, unframeSent } from './recording.ts';
 import { redactText } from './diffRedact.ts';
 import {
   accessAnswer,
@@ -86,6 +93,7 @@ import {
 import {
   answeredLine,
   answersMap,
+  decisionRecord,
   LINE_MESSAGES_ON,
   LINE_OPEN,
   planApproval,
@@ -101,7 +109,7 @@ import {
   toolDenied,
 } from './respond.ts';
 
-export const VERSION = '1.2.2';
+export const VERSION = '1.3.0';
 const GIT_POLL_MS = 10_000;
 /** session.end has one ~1.5 s bound for every hook and core together; stay well inside it. */
 const END_FLUSH_MS = 1000;
@@ -122,12 +130,16 @@ interface Options {
   explainFailures: boolean;
   fullPrompts: boolean;
   activityFeed: boolean;
+  /** A Bash call's output may go out with its entry, for a loop a viewer has the feed open on (#431). Needs `activityFeed`. */
+  activityOutput: boolean;
   /** Answer requests for one file's diff (#319). */
   fileDiff: boolean;
   /** What this session accepts from Podium (#206). */
   respond: RespondLevel;
   /** Message the owner's other orchestrators through Podium (#347, #414). */
   peers: boolean;
+  /** The owner's consent to a recording of this machine's sessions (#353): off by default, enforced here and never by the server. */
+  sessionRecording: boolean;
 }
 
 interface HookStat {
@@ -192,9 +204,11 @@ export function readOptions(o: Record<string, unknown>): Options {
     explainFailures: o.explainFailures === true,
     fullPrompts: o.fullPrompts === true,
     activityFeed: o.activityFeed === true,
+    activityOutput: o.activityOutput === true,
     fileDiff: o.fileDiff === true,
     respond: respondLevel(o.respond),
     peers: o.peers === true,
+    sessionRecording: o.sessionRecording === true,
   };
 }
 
@@ -205,6 +219,14 @@ let opts: Options = readOptions({});
 let who: Identity = { userName: '', token: '' };
 const IDENTITY = { plugin: 'podium-reporter', key: 'identity' } as const;
 let rt: Runtime | null = null;
+/** Where the name in `who` came from, for the wrong-config message (#647); empty when `who` has none. */
+let nameSource = '';
+/** True when that name is a setting the person can empty (the option or PODIUM_USER), false for the held identity. */
+let nameIsSetting = false;
+/** The helper that makes the TLS connection, when a reporter config file exists (#584); null sends reports as before, through `$.http.fetch`. */
+let link: Link | null = null;
+/** The start of `link` that is under way, so two overlapping session.start events share it. */
+let linking: Promise<void> | null = null;
 /** Bumped by each register (a reload, or a new test): a wait for an answer started under an older one stops. */
 let generation = 0;
 let errors: { at: number; where: string; message: string }[] = [];
@@ -230,6 +252,8 @@ interface OpenAsk {
   notTaken: boolean;
   /** A tool: the answer the PermissionRequest hook returned. */
   answered: Delivery | null;
+  /** When the PermissionRequest hook returned that answer (the recording keeps the moment it was decided). */
+  answeredAt: number;
   /**
    * Something still waits on the server for this ask's answer. Once the wait gives up (responding turned off, the ask
    * closed there) the ask stops riding in reports, so the server never learns it again and takes an answer nobody collects.
@@ -264,6 +288,10 @@ let lastPermissionAt = 0;
 let checks = new Map<string, { cancel: () => void }>();
 /** Each loop's latest tool call, so a PermissionRequest (which has no tool_use_id) can be paired with it. */
 let lastCalls = new Map<string, { tool: string; input: string; id: string }>();
+/** The `seq` a recorded tool call got, by its tool_use_id, so an answer or approval from Podium points at its call (#353). Dropped when the call ends. */
+let callSeqs = new Map<string, number>();
+/** A /clear or /compact sent from Podium and running now: the first mark of that kind is Podium's, and only while the command runs (#353). */
+let ranFromPodium: { command: 'clear' | 'compact'; by: string } | null = null;
 let messagesLineShown = false;
 const EXPLAIN_MODEL = 'haiku';
 
@@ -388,7 +416,9 @@ function metaOf(r: Runtime, now: number) {
     machine: r.machine,
     fullText: opts.fullPrompts,
     activity: opts.activityFeed,
+    activityOutput: opts.activityOutput,
     fileDiff: opts.fileDiff,
+    sessionRecording: opts.sessionRecording,
     respond: respondNow(r),
     asks: r.transport.respond && opts.respond !== 'off' ? openAsks(r) : null,
     clearedFrom: r.clearedFrom,
@@ -403,7 +433,7 @@ function devNote(version: string, build: string | null | undefined): string {
 
 function showStatus($: Engine, r: Runtime): void {
   if (!opts.showStatus) return;
-  const text = r.transport.statusText();
+  const text = r.transport.statusText(link?.problem()?.status);
   if (text === r.lastStatus) return;
   r.lastStatus = text;
   try {
@@ -417,10 +447,10 @@ function toastOnce($: Engine, r: Runtime, ok: boolean): void {
   try {
     if (ok && !r.toastedOk) {
       r.toastedOk = true;
-      $.ui.toast(`Podium: reporting to ${opts.serverUrl}`);
+      $.ui.toast(`Podium: reporting to ${serverBase()}`);
     } else if (!ok && !r.toastedFail) {
       r.toastedFail = true;
-      $.ui.toast(`Podium: cannot reach ${opts.serverUrl}; will keep retrying`);
+      $.ui.toast(`Podium: cannot reach ${serverBase()}; will keep retrying`);
     }
   } catch {
     // no toasts on this host
@@ -428,7 +458,9 @@ function toastOnce($: Engine, r: Runtime, ok: boolean): void {
 }
 
 function toastRefusalOnce($: Engine, r: Runtime): void {
-  const notice = r.transport.refusalNotice() ?? r.transport.ownerNotice();
+  // With a config file there is no token to blame: the link's certificate message stands in for the token one (#646).
+  const refusal = r.transport.refused && link?.problem() ? link.problem()?.text : r.transport.refusalNotice();
+  const notice = refusal ?? r.transport.ownerNotice();
   if (!notice || notice === r.toastedRefusal) return;
   r.toastedRefusal = notice;
   try {
@@ -490,12 +522,15 @@ async function flushOnce($: Engine, r: Runtime, now: number, force: boolean): Pr
     if (opts.fullPrompts) r.state = markTextSent(r.state, sentTexts);
     // The reply names the loops someone is watching; with the option off nothing is ever watched (#118).
     r.state = setWatched(r.state, opts.activityFeed ? r.transport.watch : []);
+    // A loop a viewer has the feed open on gets its Bash output read, with both options on (#431). Never a loop that is only in the history's list.
+    r.state = setWatchedOutput(r.state, opts.activityFeed && opts.activityOutput ? r.transport.watchOutput.filter((id) => r.state.watched.includes(id)) : []);
     r.toastedRefusal = null; // accepted again: a later refusal is news again
     toastOnce($, r, true);
     handleDeliveries($, r);
     handleDiffs($, r);
     handlePeers($, r);
     messagesLine($, r);
+    takeRecording($, r.transport.recording);
   }
   else if (outcome === 'busy') r.state = { ...r.state, dirty: true };
   toastVersionOnce($, r);
@@ -601,10 +636,15 @@ async function switchSession($: Engine, r: Runtime, newId: string, now: number):
   const cleared = !r.state.ended || r.state.endReason === 'clear';
   for (const a of asks.values()) if (a.sessionId === oldId) a.done = true;
   if (!r.state.ended) {
+    recorder.clear(MAIN_LOOP, nowMs(), takePodiumCommand('clear'));
     r.state = sessionEnd(r.state, 'clear', r.state.id, now);
     await r.transport.idle();
     await flushOnce($, r, now, true);
   }
+  // What the old id recorded goes under the old id, then the new one starts over: it is recorded only if its own replies say so.
+  recorder.close();
+  await sendRecording($, now);
+  recorder.begin(newId);
   r.transport.queue = [];
   let startedAt = now;
   try {
@@ -649,6 +689,7 @@ async function flush($: Engine, peersOnly = false): Promise<void> {
     await readAgents($, r, now);
     if (opts.explainFailures) requestExplanations($, r);
     await flushOnce($, r, now, false);
+    await sendRecording($, now);
   } catch (err) {
     record($, 'flush', err);
   } finally {
@@ -711,9 +752,7 @@ async function explain($: Engine, sessionId: string, agentId: string, prompt: st
 
 /** A random number in [0, 1): the platform's generator where the sandbox has one. */
 function random(): number {
-  const c = (globalThis as { crypto?: { getRandomValues?: (a: Uint32Array) => Uint32Array } }).crypto;
-  if (c?.getRandomValues) return c.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
-  return Math.random();
+  return platformRandom((globalThis as { crypto?: RandomSource }).crypto);
 }
 
 /**
@@ -794,7 +833,7 @@ async function attempt<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 // ---- responding: talking to the server (#206) -------------------------------------------------
 
 function serverBase(): string {
-  return trimTrailingSlashes(opts.serverUrl);
+  return trimTrailingSlashes(link?.serverUrl ?? opts.serverUrl);
 }
 
 function sessionPath(sessionId: string): string {
@@ -806,7 +845,8 @@ async function podiumCall($: Engine, method: string, path: string, body?: unknow
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (who.token) headers['X-Podium-Token'] = who.token;
   try {
-    const res = await $.http.fetch(serverBase() + path, body === undefined ? { method, headers } : { method, headers, body: JSON.stringify(body) });
+    const init = body === undefined ? { method, headers } : { method, headers, body: JSON.stringify(body) };
+    const res = await (link ? link.fetch(serverBase() + path, init) : $.http.fetch(serverBase() + path, init));
     return { status: res.status, text: res.text };
   } catch {
     return null;
@@ -874,7 +914,7 @@ async function announce($: Engine, a: OpenAsk): Promise<number> {
 }
 
 function openAsk(r: Runtime, ask: Ask, questions?: OpenAsk['questions']): OpenAsk {
-  const a: OpenAsk = { ask, sessionId: r.state.id, questions, done: false, announced: false, approval: null, approvalWaiters: [], notTaken: false, answered: null, listening: true };
+  const a: OpenAsk = { ask, sessionId: r.state.id, questions, done: false, announced: false, approval: null, approvalWaiters: [], notTaken: false, answered: null, answeredAt: 0, listening: true };
   asks.set(ask.id, a);
   r.state = { ...r.state, dirty: true };
   return a;
@@ -992,6 +1032,7 @@ async function questionRace($: Engine, r: Runtime, e: { tool_use_id: string; age
     finish(a);
     queueResult(a.sessionId, d.id, 'took');
     transcriptLine($, answeredLine(d, nowMs()));
+    recordDecision(e.agentId, e.tool_use_id, d, 'question', a.questions);
     const questions = e.questions;
     return d.kind === 'reply' ? { result: { questions, answers: {}, response: d.text ?? '' } } : { result: { questions, answers: answersMap(a.questions ?? [], d.answers ?? []) } };
   }
@@ -1017,6 +1058,7 @@ async function planRace($: Engine, r: Runtime, e: { tool_use_id: string; agentId
     finish(a);
     queueResult(a.sessionId, first.d.id, 'took');
     transcriptLine($, answeredLine(first.d, nowMs()));
+    recordDecision(e.agentId, e.tool_use_id, first.d, 'plan');
     return planFeedback(first.d);
   }
   const res = first.res as ToolResult;
@@ -1027,6 +1069,7 @@ async function planRace($: Engine, r: Runtime, e: { tool_use_id: string; agentId
     queueResult(a.sessionId, approval.id, 'took');
     // Only now, once Claude Code took it: the terminal never reads "Approved from Podium" for one that didn't.
     transcriptLine($, answeredLine(approval, nowMs()));
+    recordDecision(e.agentId, e.tool_use_id, approval, 'plan');
   } else {
     if (approval) queueResult(a.sessionId, approval.id, 'closed');
     if (approved) queueClose(a, 'terminal', { planApproved: true });
@@ -1142,7 +1185,8 @@ async function permissionAsk($: Engine, r: Runtime, e: { tool_name: string; tool
   const d = await waitForAnswer($, a, (x) => (x.kind === 'allow-once' ? !a.ask.tool?.cut : x.kind === 'deny' || x.kind === 'reply') && responding(rt, 'permission'));
   if (!d || a.done) return null;
   a.answered = d;
-  transcriptLine($, answeredLine(d, nowMs()));
+  a.answeredAt = nowMs();
+  transcriptLine($, answeredLine(d, a.answeredAt));
   return toolDecision(d.kind === 'reply' ? { ...d, kind: 'deny' } : d);
 }
 
@@ -1157,8 +1201,11 @@ function settleToolAsk(id: string, res: ToolResult | undefined): void {
   const sent = d && d.kind !== 'allow-once' ? (toolDecision(d.kind === 'reply' ? { ...d, kind: 'deny' } : d).decision as { message?: string }).message : undefined;
   const denied = toolDenied(res, sent);
   finish(a);
-  if (d && (d.kind === 'allow-once') === !denied) queueResult(a.sessionId, d.id, 'took');
-  else {
+  if (d && (d.kind === 'allow-once') === !denied) {
+    queueResult(a.sessionId, d.id, 'took');
+    // Only now, once the call ended the way the decision said: a decision the terminal beat is not recorded as Podium's.
+    recordDecision(a.ask.agentId, id, d, 'permission', undefined, a.answeredAt);
+  } else {
     if (d) queueResult(a.sessionId, d.id, 'closed');
     queueClose(a, 'terminal', { answer: denied ? 'denied' : 'allowed' });
   }
@@ -1214,10 +1261,17 @@ function handleDeliveries($: Engine, r: Runtime): void {
   }
 }
 
+/** Texts of messages from Podium this mod submitted, not yet seen back as a turn's text (#353). */
+const sentFromPodium: string[] = [];
+
 /** A message from Podium starts a turn of its own once the session is idle, under the plugin's name (not as the person). */
 async function submitMessage($: Engine, sid: string, d: Delivery): Promise<void> {
+  const text = d.text ?? '';
+  // Remembered for the recording: the engine frames this prompt, and the turn that follows is recorded as the text sent (#353).
+  sentFromPodium.push(text);
+  if (sentFromPodium.length > 20) sentFromPodium.shift();
   try {
-    await $.prompt.submit({ text: d.text ?? '' });
+    await $.prompt.submit({ text });
     transcriptLine($, answeredLine(d, nowMs()));
     queueResult(sid, d.id, 'took');
   } catch (err) {
@@ -1228,6 +1282,10 @@ async function submitMessage($: Engine, sid: string, d: Delivery): Promise<void>
 
 /** /clear or /compact, as if the person typed it, once the session is idle. Never any other command. */
 async function runCommand($: Engine, sid: string, d: Delivery, command: 'clear' | 'compact'): Promise<void> {
+  // While it runs, the first mark of its kind in a recording is Podium's, with the sender (#353). It ends with the command, so a
+  // person's own /clear or /compact afterwards is never marked as Podium's.
+  const mine = { command, by: d.by };
+  ranFromPodium = mine;
   try {
     await $.command.run({ command });
     transcriptLine($, answeredLine(d, nowMs()));
@@ -1235,6 +1293,8 @@ async function runCommand($: Engine, sid: string, d: Delivery, command: 'clear' 
   } catch (err) {
     record($, 'command.run', err);
     queueResult(sid, d.id, 'refused');
+  } finally {
+    if (ranFromPodium === mine) ranFromPodium = null;
   }
 }
 
@@ -1528,6 +1588,8 @@ async function answerRequest($: Engine, answer: 'allow' | 'decline' | 'deliver',
  * else the shared options. Held for the rest of the session once it has a token.
  */
 async function takeIdentity($: Engine): Promise<Identity> {
+  nameSource = '';
+  nameIsSetting = false;
   let held: Identity | undefined;
   let readable = true;
   try {
@@ -1538,6 +1600,13 @@ async function takeIdentity($: Engine): Promise<Identity> {
   }
   const env = { user: await attempt(() => $.env.get('PODIUM_USER'), undefined), token: await attempt(() => $.env.get('PODIUM_TOKEN'), undefined) };
   const picked = pickIdentity({ held, env, options: { userName: opts.userName, token: opts.token } });
+  if (picked.userName.trim()) {
+    if (held && worthHolding(held)) nameSource = 'the identity this session already holds';
+    else {
+      nameSource = (env.user ?? '').trim() || (env.token ?? '').trim() ? 'PODIUM_USER' : 'the userName option';
+      nameIsSetting = true;
+    }
+  }
   // When the held identity could not be read, do not overwrite what may be there.
   if (readable && worthHolding(picked) && (!held || held.userName !== picked.userName || held.token !== picked.token)) {
     await attempt(() => $.state.set(IDENTITY, picked), undefined);
@@ -1563,12 +1632,33 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
   state = setIdentity(state, { cwd: e.cwd, projectRoot, repoName: repo?.name ?? repoFromRemote(repo?.remote) ?? lastSegment(projectRoot), model });
   if (usage) state = measure(state, { context: usage.context, cost: usage.cost ?? null, rateLimits: usage.rateLimits, startedAt: usage.startedAt });
   if (!same) state = addEvent(state, 'start', null, `session.start · ${shortName(model)}`, now, { surface: e.surface });
-  const fetch: FetchLike = (url, init) => $.http.fetch(url, init);
+  if (recorder.sessionId !== id) recorder.begin(id);
+  // A /clear starts the session again under a new id; the helper goes on (#584). A file saved since this one was read is not taken up.
+  // A name the identity now holds that the file is not for ends that link, so the check runs again below.
+  // A stand-in for an unusable file (no headers) is dropped on every start so a file fixed since is found.
+  if (link && (!link.headers || (who.userName.trim() && who.userName.trim() !== link.user))) {
+    link.stop();
+    link = null;
+  }
+  if (!link) {
+    // Two overlapping starts wait for one helper, not one each.
+    linking ??= (async () => {
+      const found = await findConfig($ as never).catch(() => null);
+      if (found?.problem) record($, 'tls', new Error(found.problem.text));
+      if (found?.problem) link = unusableLink(found.env.config ?? '', opts.serverUrl, found.problem);
+      else if (found?.found) link = await startLink($ as never, found.found, found.env, { sessionName: who.userName.trim(), nameSource, nameIsSetting, now: nowMs, log: (line) => void remember('tls', line) });
+    })().finally(() => {
+      linking = null;
+    });
+    await linking;
+  }
+  if (link?.headers && !who.userName.trim() && link.problem()?.code !== 'NAME_MISMATCH') who = { ...who, userName: link.user };
+  const fetch: FetchLike = (url, init) => (link ? link.fetch(url, init) : $.http.fetch(url, init));
   // Looked up once per load: the folder does not move, and a reload starts over.
   const build = rt ? rt.build : await findBuild($);
   const transport =
     rt?.transport ??
-    new Transport(fetch, { serverUrl: opts.serverUrl, token: who.token, heartbeatMs: opts.heartbeatMs, version: VERSION, build }, (line) => remember('transport', line));
+    new Transport(fetch, { serverUrl: link?.serverUrl ?? opts.serverUrl, token: who.token, heartbeatMs: opts.heartbeatMs, version: VERSION, build }, (line) => remember('transport', line));
   rt = {
     state,
     transport,
@@ -1641,6 +1731,8 @@ async function end($: Engine, e: { reason: string; sessionId: string; resume?: {
   for (const a of [...asks.values()]) if (a.sessionId === (e.sessionId || r.state.id)) finish(a);
   const now = await engineNow($);
   if (e.sessionId === r.state.id || !e.sessionId) {
+    if (e.reason === 'clear') recorder.clear(MAIN_LOOP, nowMs(), takePodiumCommand('clear'));
+    recorder.close();
     r.state = sessionEnd(r.state, e.reason, e.resume?.id ?? e.sessionId ?? r.state.id, now);
     // The hooks sandbox has no setTimeout: the deadline is the engine's clock. A sleep the dispatch
     // abandons rejects; either way the race is over.
@@ -1649,12 +1741,15 @@ async function end($: Engine, e: { reason: string; sessionId: string; resume?: {
       (async () => {
         await r.transport.idle();
         await flushOnce($, r, now, true);
+        await sendRecording($, now);
       })(),
       deadline,
     ]);
   }
   // After /clear the process goes on under a new id (the flusher picks it up); otherwise it is ending.
   if (e.reason !== 'clear') {
+    link?.stop();
+    link = null;
     for (const t of r.timers) t.cancel();
     r.timers = [];
     r.kick?.cancel();
@@ -1667,9 +1762,8 @@ async function podiumCommand($: Engine, args: string): Promise<string> {
   const r = rt;
   const verb = parseAnswer(args);
   if (verb) return answerRequest($, verb.answer, verb.id);
-  const m = /^name\s+([\s\S]+)$/i.exec(args.trim());
-  if (m && r) {
-    const name = m[1]!.trim().slice(0, 80);
+  const name = nameArg(args);
+  if (name !== null && r) {
     try {
       await $.store.set(`name:${r.state.id}`, name);
     } catch (err) {
@@ -1686,7 +1780,8 @@ async function podiumCommand($: Engine, args: string): Promise<string> {
     .map(([k, s]) => `${k} ${(s.totalMs / s.calls).toFixed(2)} ms avg, ${s.maxMs.toFixed(2)} max`)
     .slice(0, 8);
   return [
-    `Podium fleet console: ${trimTrailingSlashes(opts.serverUrl)}/#/`,
+    `Podium fleet console: ${serverBase()}/#/`,
+    link ? `TLS: ${link.problem()?.text ?? `connected over HTTPS with the certificate in ${link.configPath}`}` : '',
     `Connection: ${t.online === null ? 'not tried yet' : t.online ? 'online' : 'offline, retrying'}${t.liveSessions !== null ? ` (${t.liveSessions} live sessions)` : ''}`,
     `Versions: reporter ${devNote(VERSION, r.build)}${t.serverVersion ? `, server ${devNote(t.serverVersion, t.serverBuild)}` : ''}`,
     t.ownerNotice() ?? t.versionNotice() ?? t.updateNotice() ?? '',
@@ -1702,16 +1797,109 @@ async function podiumCommand($: Engine, args: string): Promise<string> {
     .join('\n');
 }
 
+// ---- session recording (#353, SPEC 5.3 "Session recording from the reporter") ----------------------
+// Off unless the `sessionRecording` option is on AND the last reply's grant says this session is chosen and consented. With it off
+// the recorder is never fed a thing: nothing is captured, queued or sent, and the owner is told when someone chose the session.
+
+/** Batches one last send may take: a backlog after an outage, bounded so the session's end is not held. */
+const RECORDING_FINAL_BATCHES = 20;
+/** Step text read per request: one entry holds RECORDING_LIMITS.text, one more character shows it was cut. */
+const RECORDING_STEP_TEXT_MAX = RECORDING_LIMITS.text + 1;
+
+let recorder = new Recorder();
+
+/** The loop a hook's `agentId` names; the orchestrator when it names none. */
+function recLoop(agentId: string | undefined): string {
+  return agentId ?? MAIN_LOOP;
+}
+
+/**
+ * An answer or approval from Podium that Claude Code took, kept in a recording where the mod takes it (#353): once, marked with who
+ * sent it, in order after the call it answers. The server writes nothing for it.
+ */
+function recordDecision(agentId: string | null | undefined, toolUseId: string, d: Delivery, askKind: Ask['kind'], questions?: OpenAsk['questions'], at: number = nowMs()): void {
+  safe('decision.record', () => recorder.decided(recLoop(agentId ?? undefined), callSeqs.get(toolUseId) ?? null, decisionRecord(d, askKind, questions), at));
+}
+
+/** Who sent the /clear or /compact that is running now from Podium, once: the mark it makes is theirs. Nobody for a person's own. */
+function takePodiumCommand(command: 'clear' | 'compact'): string | undefined {
+  if (ranFromPodium?.command !== command) return undefined;
+  const by = ranFromPodium.by;
+  ranFromPodium = null;
+  return by;
+}
+
+/** The grant a batch's reply carries, or null. */
+function grantOf(text: string): RecordingGrant | null {
+  try {
+    const g = (JSON.parse(text) as { recording?: unknown }).recording;
+    return isRecordingGrant(g) ? g : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Takes the server's grant and tells the owner, in the terminal, what changed. */
+function takeRecording($: Engine, grant: RecordingGrant | null): void {
+  const out = recorder.apply(grant, opts.sessionRecording);
+  if (!grant) return;
+  const now = nowMs();
+  if (out.started) transcriptLine($, startLine(grant, now));
+  if (out.ended === 'stopped') transcriptLine($, stoppedLine(grant, now));
+  else if (out.ended === 'limit') transcriptLine($, limitLine(grant));
+  if (out.refused) transcriptLine($, refusedLine(grant));
+}
+
+/**
+ * Posts the recording's next batch from the flush timer (never from a hook). A closing recorder sends what it has, up to
+ * RECORDING_FINAL_BATCHES requests, and then lets go of the queue.
+ */
+async function sendRecording($: Engine, now: number): Promise<void> {
+  const rec = recorder;
+  const sid = rec.sessionId;
+  const rounds = rec.closing ? RECORDING_FINAL_BATCHES : 1;
+  for (let i = 0; sid && i < rounds && rec.due(now); i++) {
+    const out = rec.nextBatch(now);
+    if (!out) break;
+    const res = await podiumCall($, 'POST', `${sessionPath(sid)}/recording`, out.batch);
+    if (recorder !== rec || rec.sessionId !== sid) return; // the session moved on while the request was out
+    if (res?.status === 200) {
+      rec.done(out.count, now);
+      try {
+        $.ui.log(`podium-reporter: recording: sent ${out.count} entries, ${rec.redactions} redactions`, { to: 'debug' });
+      } catch {
+        // logging is best effort
+      }
+      rec.redactions = 0;
+      takeRecording($, grantOf(res.text));
+    } else if (res?.status === 403) {
+      rec.stop(); // the three yes answers are not all true any more: nothing is stored, nothing is captured
+      return;
+    } else if (res?.status === 400 || res?.status === 413) {
+      rec.drop(out.count, now); // it would never be accepted
+      break;
+    } else {
+      rec.failed(now);
+      break;
+    }
+  }
+  if (rec.closing) rec.finish();
+}
+
 // ---- registration -------------------------------------------------------------------------------
 
 export const register: Register = (on, rawOptions) => {
   opts = readOptions(rawOptions as Record<string, unknown>);
   who = { userName: '', token: '' };
+  link?.stop();
+  link = null;
+  linking = null;
   rt = null;
   generation++;
   errors = [];
   stats = {};
   explained = new Set();
+  recorder = new Recorder();
   asks = new Map();
   outbox = [];
   acted = [];
@@ -1720,6 +1908,8 @@ export const register: Register = (on, rawOptions) => {
   for (const c of checks.values()) c.cancel();
   checks = new Map();
   lastCalls = new Map();
+  callSeqs = new Map();
+  ranFromPodium = null;
   messagesLineShown = false;
   for (const c of peerCalls) c.resolve(null);
   peerCalls = [];
@@ -1750,6 +1940,7 @@ export const register: Register = (on, rawOptions) => {
   on('turn.start', async ($, e, next) => {
     safe('turn.start', (r) => {
       r.state = turnStart(r.state);
+      recorder.prompt(recLoop(e.agentId), e.agentId ? e.text : unframeSent(e.text, sentFromPodium), nowMs());
     });
     return next(e);
   }).catch(($, e, next) => next(e));
@@ -1759,18 +1950,36 @@ export const register: Register = (on, rawOptions) => {
     // the step's text as one entry. Every chunk is yielded on as it came, the same object, in order. Any other step
     // takes the plain path. `for await` drops a stream's return value, so the result is `stream.result`.
     let watching = false;
+    // A loop being recorded (#353): the same chunks are read for the text the model wrote and the places it thought.
+    let recording = false;
     safe('turn.step.watch', (r) => {
       watching = opts.activityFeed && isWatched(r.state, e.agentId);
+      recording = recorder.want(recLoop(e.agentId));
     });
     let res: Awaited<ReturnType<typeof next>['result']>;
     let text = '';
-    if (!watching) res = yield* next(e);
+    let wrote = '';
+    const thought = new Set<number>();
+    if (!watching && !recording) res = yield* next(e);
     else {
       const stream = next(e);
       for await (const chunk of stream) {
-        if (text.length < STEP_TEXT_MAX) {
+        if (watching && text.length < STEP_TEXT_MAX) {
           safe('turn.step.chunk', () => {
             if (chunk.kind === 'text' && typeof chunk.text === 'string') text += chunk.text;
+          });
+        }
+        if (recording) {
+          safe('turn.step.record', () => {
+            if (chunk.kind === 'text' && typeof chunk.text === 'string') {
+              if (wrote.length < RECORDING_STEP_TEXT_MAX) wrote += chunk.text;
+            } else if (chunk.kind === 'thinking' && !thought.has(chunk.index)) {
+              // One mark for each thinking block, in order with the text around it. Its text is not recorded (SPEC 6.4).
+              thought.add(chunk.index);
+              recorder.said(recLoop(e.agentId), wrote, nowMs());
+              wrote = '';
+              recorder.thinking(recLoop(e.agentId), nowMs());
+            }
           });
         }
         yield chunk;
@@ -1781,6 +1990,7 @@ export const register: Register = (on, rawOptions) => {
       r.state = step(r.state, { agentId: e.agentId, model: e.model, effort: e.effort, usage: res?.usage ?? null, stopReason: res?.stopReason ?? null }, nowMs());
       const said = text ? activityText(text) : '';
       if (said) r.state = addActivity(r.state, e.agentId, { at: nowMs(), kind: 'text', text: said });
+      recorder.said(recLoop(e.agentId), wrote, nowMs());
     });
     return res;
   }).catch(async function* ($, e, next) {
@@ -1800,7 +2010,10 @@ export const register: Register = (on, rawOptions) => {
     safe('session.compact', (r) => {
       if (e.trigger === 'precompute' || !res || res.skip !== undefined || !res.messages) return;
       r.state = compaction(r.state, { agentId: e.agentId, trigger: e.trigger, tokensBefore: res.tokensBefore, tokensAfter: res.tokensAfter }, nowMs());
+      recorder.compact(recLoop(e.agentId), nowMs(), e.agentId ? undefined : takePodiumCommand('compact'));
     });
+    // The transcript was emptied: the owner is told again that this session is being recorded.
+    if (recorder.capturing && recorder.grant && e.trigger !== 'precompute' && res && res.skip === undefined && res.messages) transcriptLine($, startLine(recorder.grant, nowMs()));
     return res;
   }).catch(($, e, next) => next(e));
 
@@ -1844,6 +2057,7 @@ export const register: Register = (on, rawOptions) => {
         },
         nowMs(),
       );
+      recorder.prompt(res.agentId, e.prompt, nowMs());
     });
     return res;
   }).catch(($, e, next) => next(e));
@@ -1853,7 +2067,7 @@ export const register: Register = (on, rawOptions) => {
     const input = e as unknown as Record<string, unknown>;
     safe('tool.call', (r) => {
       r.state = toolStarted(r.state, e.agentId, tool);
-      if (opts.activityFeed && isWatched(r.state, e.agentId)) r.state = addActivity(r.state, e.agentId, { at: nowMs(), kind: 'tool', text: activityCall(tool, input) });
+      if (opts.activityFeed && isWatched(r.state, e.agentId)) r.state = addActivity(r.state, e.agentId, activityEntry(tool, input, e.tool_use_id, nowMs()));
       if (tool === 'Agent' && e.tool_use_id) r.state = agentRequested(r.state, e.tool_use_id, input, nowMs());
       if (tool === 'Skill') r.skillCalls++;
       // The arguments as a PermissionRequest will carry them: the call's own, without the event's fields.
@@ -1862,6 +2076,12 @@ export const register: Register = (on, rawOptions) => {
         lastCalls.set(loopKey(e.agentId), { tool, input: inputKey(args), id: e.tool_use_id });
       }
     });
+    // What a recording keeps of the call: its whole input now, its whole result when it ends (#353).
+    let callSeq: number | null = null;
+    safe('tool.call.record', () => {
+      callSeq = recorder.call(recLoop(e.agentId), tool, input, nowMs());
+      if (callSeq !== null && e.tool_use_id) callSeqs.set(e.tool_use_id, callSeq);
+    });
     let res: Awaited<ReturnType<typeof next>>;
     try {
       // While the mod responds, a question or a plan races the terminal's dialog against an answer from Podium (#206).
@@ -1869,6 +2089,10 @@ export const register: Register = (on, rawOptions) => {
       if (r && tool === 'AskUserQuestion' && e.tool_use_id && responding(r, 'question')) res = (await questionRace($, r, e as never, next(e) as Promise<ToolResult>)) as typeof res;
       else if (r && tool === 'ExitPlanMode' && e.tool_use_id && (responding(r, 'plan-feedback') || responding(r, 'plan-approve'))) res = (await planRace($, r, e as never, next(e) as Promise<ToolResult>)) as typeof res;
       else res = await next(e);
+    } catch (err) {
+      // A call that ends in an error has no result to settle: its number is not kept for good.
+      if (e.tool_use_id) callSeqs.delete(e.tool_use_id);
+      throw err;
     } finally {
       safe('tool.call.done', (r) => {
         if (tool === 'Skill') r.skillCalls = Math.max(0, r.skillCalls - 1);
@@ -1877,6 +2101,13 @@ export const register: Register = (on, rawOptions) => {
     safe('tool.call.result', (r) => {
       r.state = toolResult(r.state, { agentId: e.agentId, tool, input, result: (res ?? {}) as { deny?: string; isError?: boolean; text?: string } }, nowMs());
       if (e.tool_use_id) settleToolAsk(e.tool_use_id, res as ToolResult | undefined);
+      // How a finished call ended goes with the feed alone (#598); its output only with the option on and a viewer on the loop.
+      if (tool === 'Bash' && e.tool_use_id && opts.activityFeed) {
+        const withOutput = opts.activityOutput && isWatchedOutput(r.state, e.agentId);
+        r.state = finishActivity(r.state, e.agentId, e.tool_use_id, finishedCall((res ?? {}) as BashResult, withOutput));
+      }
+      recorder.outcome(recLoop(e.agentId), tool, input, callSeq, res, nowMs());
+      if (e.tool_use_id) callSeqs.delete(e.tool_use_id);
     });
     return res;
   }).catch(($, e, next) => next(e));

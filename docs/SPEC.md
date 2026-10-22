@@ -165,25 +165,43 @@ view early ([7.5](#75-lifecycle-timers)). Neither sends anything to a session.
   ([7.7](#77-hardening)), but it is still one server you run yourself. The server binds to `127.0.0.1` by
   default. In the container image it listens on all interfaces inside the container, and the port is published
   only on the host's `127.0.0.1` ([4.4](#44-packaging-running-and-distribution)). Reaching it from other
-  machines is an explicit choice (`--bind`) and needs a trusted network or a TLS proxy.
+  machines is an explicit choice (`--bind`). Over plain HTTP it needs a trusted network or a TLS proxy. With
+  built-in TLS turned on ([7.7](#77-hardening), *Built-in TLS*) the server opens a second port, for reporters only, that
+  needs a client certificate. The console stays on plain HTTP.
 - No hosted deployment, accounts, or cloud sync. A container on the same machine is not a hosted deployment.
 
 **Cost.** No billing accuracy. Cost is an estimate from token counts and a price table. The UI always labels
 it as an estimate. Never present it as an invoice.
 
 **Conversation content.** No reading of conversation transcripts. Podium sends short excerpts only
-([section 6.4](#64-failure-and-excerpt-rules)), never whole messages or files. There are three opt-in exceptions:
+([section 6.4](#64-failure-and-excerpt-rules)), never whole messages or files. There are five opt-in exceptions:
 
 - With the `fullPrompts` option on, an agent's own task prompt and final answer go out whole (up to 20,000
   characters each, [6.4](#64-failure-and-excerpt-rules)), never the conversation around them.
 - With the `activityFeed` option on (#118), while someone watches an agent's panel, that loop's recent tool
   calls and the text it writes between them go out as short entries (300 characters each, the last 20,
-  [6.4](#64-failure-and-excerpt-rules)), and only for as long as someone watches.
+  [6.4](#64-failure-and-excerpt-rules)), and only for as long as someone watches. If the Admin has chosen to
+  keep the Activity history (#432, off by default), they go out for every running loop of the session whether
+  or not anyone watches, and the server stores them until the Admin's period ends; only the session's owner
+  and an Admin can read what is stored ([7.7](#77-hardening)).
+- With the `activityFeed` option on, a Bash call's whole command (up to 20,000 characters, redacted) goes with its
+  entry, and the Activity history stores it like the rest of the entry (#431). A command's output goes out only
+  with the separate `activityOutput` option on, only while a viewer has that loop's feed open, and is never stored
+  ([6.4](#64-failure-and-excerpt-rules)). Whether the call has finished and how it ended (`done`, `failed`,
+  `exitCode`) is not output: it goes with the entry whenever the call finishes, with or without output (#598).
 - With orchestrator messaging on (#347), the text of a message one orchestrator sends another goes to the
   server and is kept there for 30 days, with secrets replaced on the sending machine. Only its owner and an
   Admin can read it ([7.7](#orchestrator-messaging-347)).
+- With session recording on (#353, `mockup/podium-recording.html`), everything one session's orchestrator and its
+  chosen agents do goes to the server whole: prompts, the model's text, tool inputs and their results, file contents
+  and command output, with secrets replaced on the machine. It needs three yes answers (the Admin's `session-recording`
+  flag, a choice by the session's owner or an Admin, and the reporter's `sessionRecording` option, off by default),
+  it is kept for 6 hours unless the Admin sets longer (7 days at most), and only the session's owner and an Admin can
+  read it. The session is marked as recorded on its card and its page for as long as it is, and the owner's terminal
+  says so ([6.4](#session-recording-opt-in-353), [7.7](#session-recording-353)).
 
-The model's thinking is never sent.
+The model's thinking text is never sent. A recording marks where the model thought and says that the text is not
+available ([6.4](#session-recording-opt-in-353)).
 
 **Other exclusions.**
 
@@ -304,7 +322,8 @@ scripts/podium-peers-e2e.sh          starts a throwaway server from the checkout
 scripts/podium-peers-e2e.test.ts     tests its help, argument checks and --dry-run
 scripts/podiumctl.test.ts            tests for podiumctl (4.4)
 bin/podiumctl                        command-line manager for the server (4.4; has --help)
-Containerfile, .containerignore      the server and UI as a Podman image (4.4)
+Containerfile, .containerignore      the server and UI as a container image (4.4)
+.dockerignore                        the same rules as .containerignore, for a Docker build (4.4)
 ```
 
 `server/src/index.ts` mounts the fleet router and starts the sweeper. `frontend/src/main.tsx` renders:
@@ -339,20 +358,32 @@ Added after the first build. `docs/ARCHITECTURE.md` ("Running as a service") rec
 
 - a build stage that runs `npm ci --ignore-scripts` and both builds;
 - a runtime stage with the server's production dependencies, the two `dist` trees, a non-root user and a
-  `/data` volume for the SQLite file.
+  `/data` volume for the SQLite files (`podium.sqlite`, and `activity.sqlite` beside it when the Admin keeps the
+  Activity history), the `openssl` package the server calls to make certificates (built-in TLS, [7.7](#77-hardening)),
+  and `EXPOSE 4317 4318`.
 
 Nothing else is needed. There is no second service.
 
 #### `podiumctl`
 
 `bin/podiumctl` has no dependencies and a `bin` entry in the root `package.json`. It manages the server in one
-of two modes: `container` (the default when Podman is installed) or `standalone` (a Node process on the host).
+of two modes: `container` (the default when Podman or Docker is installed) or `standalone` (a Node process on the host).
+Container mode uses Podman when it is installed and Docker otherwise; `--engine podman|docker` chooses.
 
 - Commands: `build`, `start`, `stop`, `restart`, `status`, `logs`, `health`, `url`, `token`, `config`,
   `enable`, `disable`, `shell`, `rm` and `run`, and a `--help`.
 - `status` exits 3 when the server is stopped.
-- `--mode`, `--port` and `--bind` are saved in `~/.podium/config.env` (mode 0600, home overridable with
+- `--mode`, `--engine`, `--port` and `--bind` are saved in `~/.podium/config.env` (mode 0600, home overridable with
   `PODIUMCTL_HOME`).
+- `--tls` (saved as `PODIUM_TLS=on`; `config set PODIUM_TLS=off` turns it off again) enables built-in TLS
+  ([7.7](#77-hardening)). With it, container mode also publishes the reporter port (`PODIUM_TLS_PORT`, default 4318, mutual TLS) on
+  the `--bind` address and bind-mounts the host folder `~/.podium/tls` (mode 0700) at `/data/tls`, so the CA survives
+  a restart, a rebuild and a removed volume, and a person can find it and back it up. After the container starts,
+  `podiumctl` checks that the mount is there and warns when it is not; the server logs `tls.storage_not_persistent`
+  when `/data/tls` is not on a named volume or a bind mount. Standalone mode keeps the CA in `data/tls` beside the
+  database (mode 0700).
+- `rm` never deletes the TLS folder by itself: it says the folder is kept and what deleting it means.
+  `rm --purge-tls --yes` deletes it, and every reporter config must then be reissued.
 
 #### Network
 
@@ -506,7 +537,12 @@ All hook inputs are plain frozen data. Do not mutate them.
 4. For every tool: if the result `isError` or is `{ deny }`, record a failure candidate on that loop
    ([6.4](#64-failure-and-excerpt-rules)).
 5. With the `activityFeed` option on and the loop watched ([6.4](#64-failure-and-excerpt-rules)), add one
-   activity entry for the call before it runs: the tool's name and a short summary of its arguments.
+   activity entry for the call before it runs: the tool's name and a short summary of its arguments. For a Bash
+   call the entry also carries the call's `id` and its whole command; once the call returns, and only with the
+   `activityOutput` option on and the loop listed in the reply's `watchOutput`, the same entry gets the output (#431).
+   Whenever the call returns, with or without output, the same entry gets `done` and, as the result says, `failed`
+   and `exitCode`; the mod reads the result's text for the exit line alone and keeps none of it (#598). A call
+   that throws returns no result, so it is not marked done. A call a rule denies is done and failed.
 6. For every tool, remember the loop's latest call (tool, input, `tool_use_id`), so a permission prompt can be
    paired with it.
 7. For `AskUserQuestion` and `ExitPlanMode` while the mod responds, open an ask and wait for an answer (see
@@ -949,6 +985,54 @@ points are marked **Verified** with what it found (ARCHITECTURE "Mod API finding
   for macOS through the mod. The Linux file was read on Debian 12 in a container, not through the mod. Windows
   is **unverified**.
 
+#### Session recording from the reporter (#353)
+
+What is recorded and what the server does are in [6.4](#session-recording-opt-in-353). This is what the mod does,
+and what it writes in the owner's terminal.
+
+- **When it captures.** Only while the last reply's `recording` ([6.1](#61-endpoint)) has `state: "recording"` and
+  all three `consent` answers true, and only for the loops it lists. It begins at the first reply that says so and
+  keeps nothing from before. The `activityFeed` option and the `watch` list play no part: a recording does not need
+  either.
+- **What it hooks.** `turn.start` and `agent.spawn` (the prompts), `turn.step` (the text a model request wrote and
+  the places it thought), `tool.call` (the call and its whole input, and its result), `session.compact` and
+  `session.end` with `reason: "clear"` (the marks), and the places it takes an answer or approval from Podium
+  (the question, plan and permission races of [Responding from Podium](#responding-from-podium)), where it records a
+  `decision` once Claude Code took it. A `/clear` or `/compact` it runs for Podium marks the sender while the command
+  runs. **Assumption:** a call's whole result is read from what
+  `next(e)` returns for `tool.call`; confirm with a real session and report any tool whose result the mod cannot see.
+- **Thinking.** `turn.step` delivers `thinking` chunks with empty text (#353 research, below). The mod records one
+  `thinking` entry for each thinking block, with no text, so the replay can show where the model thought.
+- **Batching.** Entries queue in memory and go out in `POST /api/fleet/sessions/:id/recording` ([7.1](#71-endpoints))
+  at most once every 5 seconds, up to 200 entries and 480,000 bytes a request; a queue that has passed 256 KB goes at the
+  next flush tick without waiting out the 5 seconds, so a busy loop does not pile up. A failed request is retried with the
+  same entries; the server drops a repeat by `(loop, seq)`. The mod treats `404` and `409` from the route like a network
+  failure: it backs off and retries the same entries, while `403` stops capture and `400` and `413` drop the batch. After each accepted
+  batch the mod writes one line to the debug log only (never the terminal): `podium-reporter: recording: sent <n> entries,
+  <n> redactions`. While the server cannot be reached the queue is bounded; past
+  its bound the oldest entries go and one `gap` entry records how many ([6.4](#session-recording-opt-in-353)).
+- **Stopping.** The mod stops capturing, and drops its queue after one last send, when a reply says `state` is
+  `stopped` or `limit`, when `consent.owner` or `consent.admin` turns false, when the option goes off, and when the
+  session ends. A reply to a batch that carries no readable `recording` is read as off: capture stops, the same as for a
+  server that sends none. A later reply, to a batch or to a report, that says `recording` again starts capture again. A
+  reload of the module while the reply still says `recording` picks it up again at the next reply.
+- **Terminal text.** The mod writes a line to the owner's terminal in the same words the console uses, in these
+  cases (`mockup/podium-recording.html`, *Owner's terminal*):
+  - *Recording starts*, once, when it begins capturing: "podium: This session is being recorded by <name>, from
+    <time>. The whole history of this orchestrator and every agent and fork under it is kept in Podium for
+    troubleshooting, and is deleted at <time>. Either of you can stop it from Podium. To refuse recording on this
+    machine, set sessionRecording to off in /plugin configure." It is written again after `/clear` and after a
+    compaction (the transcript was emptied) and on the first idle prompt after the module reloads.
+  - *Recording stops*: "podium: Recording stopped by <name> at <time>. What was recorded until then is kept until
+    <time>."
+  - *Chosen but not allowed*, when `consent.chosen` is true and the option is off: "podium: <name> chose to record
+    this session, but sessionRecording is off here, so nothing is recorded." Nothing about the session leaves the
+    machine.
+  - *Limit reached*: "podium: Recording stopped: this session reached its <n> MB limit. Nothing after this point is
+    kept." (for the disk budget, "the server's disk budget" in place of the session's limit).
+  - A time is the server's `keptUntil` or `startedAt` shown in the machine's local time, and "today" is left out
+    when it is not today.
+
 ### 5.4 Engine calls the reporter uses (Verified)
 
 All calls are async unless noted. Read each one's doc comment in the types file before first use.
@@ -1120,9 +1204,11 @@ supported.
 | `explainFailures` | boolean | `false` | Phase 5 only. When true, ask a small model to explain a failure (costs tokens). |
 | `fullPrompts` | boolean | `false` | When true, send each agent's whole task prompt and final answer as `promptText` and `answerText` ([6.4](#64-failure-and-excerpt-rules)). Off by default: only the 400-character excerpts are sent. |
 | `activityFeed` | boolean | `false` | When true, send the activity feed (see below). Title "Send an agent's recent activity". |
+| `activityOutput` | boolean | `false` | When true, the mod sends a Bash command's output with its activity entry, only for a loop a viewer has the feed open on (see below). Title "Send a Bash command's output". Needs `activityFeed` on. |
 | `fileDiff` | boolean | `false` | When true, the mod reads one file's diff when the console asks for it (see below). Title "Send a file's diff on request". |
 | `respond` | string, one of `off`, `questions`, `questions-and-plans`, `everything` | `off` | What this session accepts from Podium (see below). Title "Respond from Podium". |
 | `peers` | boolean | `false` | When true, this machine's orchestrators can message the owner's other orchestrators through Podium, within the rights the owner set ([5.3](#orchestrator-messaging-from-the-reporter-347)). Title "Message my other orchestrators". Set once per machine; the server cannot change it. The server takes it in the report (`session.peers`, #412). Read from `register`'s options (#414); the report sends `session.peers` true only with the option on and an interactive session. |
+| `sessionRecording` | boolean | `false` | When true, this machine's sessions may be recorded whole when someone with the right chooses to ([6.4](#session-recording-opt-in-353)). Title "Allow session recording". Set once per machine; the server cannot change it. The report sends `session.sessionRecording`. |
 
 Read the options via the `options` argument of `register`. A config change reloads the module.
 
@@ -1140,6 +1226,21 @@ Read the options via the `options` argument of `register`. A config change reloa
   the server's reply lists as watched: its tool calls and the text it writes, the last 20, each redacted and
   cut to 300 characters. It also sends `session.activityFeed`.
 - Off by default: nothing is captured and `watch` is ignored.
+- Turning it on is also consent to the Activity history: if the Admin has chosen to keep it (#432), the server
+  lists every running loop of the session as watched, so these entries are captured and stored on the server
+  whether or not anyone watches, until the Admin's period ends. The option description in the mod's
+  `plugin.json` says so.
+
+**`activityOutput`** (#431)
+- When true, the mod adds what a Bash call printed (stdout then stderr), and how it exited, to that call's activity
+  entry ([6.4](#64-failure-and-excerpt-rules)), and sends `session.activityOutput`. It needs `activityFeed` on as well.
+- Off by default and separate from `activityFeed`: the whole command rides `activityFeed`, the output needs this
+  too, because output holds more than a command does (file contents, environment dumps, tokens the redactor does not
+  know). Neither implies the other.
+- The mod sends output only for a loop in the reply's `watchOutput` ([6.1](#61-endpoint)), which lists only loops a
+  viewer has the feed open on. A loop that is in `watch` only because the Activity history keeps it is never asked
+  for output.
+- Its description in `plugin.json` says output can hold secrets the redactor does not recognize.
 
 **`fileDiff`** (#319)
 - When true, the mod answers a request in the reply's `diffs` ([6.1](#61-endpoint)) by sending the diff of that
@@ -1159,6 +1260,18 @@ Read the options via the `options` argument of `register`. A config change reloa
 - It needs `activityFeed` on as well. With that off, the mod accepts nothing.
 - Set it with `/plugin configure podium-reporter@eengelking-marketplace`.
 - The mod enforces its own level and never relies on the server for it.
+
+**`sessionRecording`** (#353, [6.4](#session-recording-opt-in-353))
+- It is the session owner's consent, the third of three yes answers. With it off the mod captures nothing for a
+  recording, whoever chose the session and whatever the Admin has switched on, and it says so in the terminal when a
+  recording was chosen anyway (see *Session recording from the reporter* in [5.3](#53-events-the-reporter-hooks)).
+- Off by default and separate from `activityFeed`, `fullPrompts` and `respond`: none of them implies it, and it
+  implies none of them.
+- A recording holds whole prompts, file contents, command output and tool results. The mod redacts what looks like
+  a secret before it leaves the machine, but that is best effort and not a guarantee. The option's description in
+  `plugin.json` says so.
+- Set it with `/plugin configure podium-reporter@eengelking-marketplace`. The mod reads it at `register` and enforces
+  it itself; it never relies on the server for it.
 
 #### Identity (#226)
 
@@ -1185,6 +1298,70 @@ mod one shared set of `userConfig` values and no storage for a single session's 
 
 Two logins on one machine are possible only through the environment variables above. If the engine gains a
 per-session login or a way to tell which session a sign-in came from, the mod should use it.
+
+#### The reporter config file (#577)
+
+With TLS on ([7.7](#77-hardening), *Built-in TLS*), a reporter authenticates with a certificate instead of a token.
+Everything it needs is in one file the Admin gives the person once. Designed in DECISIONS 42.
+
+- **Name.** `reporter-config-<name>-<epoch>.pem`, where `<epoch>` is the second the file was issued.
+- **Format.** A PEM-style text file, in this order:
+  1. The first line, `# podium-reporter-config v1`.
+  2. Header lines, `# key: value`: `user`, `server`, `issued-at` (an ISO time and an epoch), `expires` and
+     `fingerprint` (the SHA-256 of the person's certificate).
+  3. PEM blocks: the CA certificate (one, or two during a CA overlap, [7.7](#77-hardening)), the person's
+     certificate and the person's private key.
+- **Parsing.** By block type and role, never by position. A `CERTIFICATE` block is a CA certificate or the
+  person's certificate according to whether it is a CA. `PRIVATE KEY` is the key. A reader ignores a header line
+  it does not know.
+- **Where it is found.** `PODIUM_REPORTER_CONFIG`, if set, names the file. It is a plain environment variable
+  read with `$.env.get`, not a `userConfig` option. Otherwise the newest `reporter-config-*.pem` in `~/.podium/`
+  wins, by its `issued-at` header line, and every other file there is ignored (a reissue leaves older files
+  beside the new one, and the old certificate is revoked). `~/.podium/` is also `podiumctl`'s home, and the
+  names do not collide.
+- **No file.** The reporter keeps working as today: the `serverUrl` and `token` options over HTTP, if the server
+  allows reporters over HTTP.
+- **With a file.** `serverUrl` is the address in the file. The reporter never sends a credential over `http://`
+  when the URL was `https://`, and never falls back to HTTP unasked.
+- **Permissions.** The file holds a private key. The reporter refuses, or tightens, a file that is group- or
+  world-readable, as `ssh` does, and the box that shows the file says `chmod 600`.
+- **Identity.** The file is read at `session.start`. Before each request the helper checks the file's modification
+  time, and when it changed it re-reads the file only if the name in it equals the session's name (DECISIONS 29),
+  then builds a new connection from it. It keeps the last good copy if a read fails. So a renewal made by another
+  session, or a reissued config saved over the same file, is used within seconds. A new file saved under another
+  name is used from the next session, and the server address stays the one read at start.
+
+**The helper.** The mod cannot give `$.http.fetch` a CA or a client certificate, so podium-reporter starts a small
+Node script, `hooks/helper.mjs`, once per session. It makes the TLS connection with the CA and certificate from
+the file, and the mod sends its requests to it over a Unix socket with `$.http.fetch(..., { socketPath })`.
+
+- It is started as `node helper.mjs <config path> <socket path> <server url>` and prints `ready` on its stdout
+  when it is listening. The mod waits for that line, not for the socket file.
+- It forces `rejectUnauthorized: true` and starts with `NODE_TLS_REJECT_UNAUTHORIZED` and `NODE_OPTIONS` cleared.
+- It uses one socket per session, in a directory with mode 0700, and the socket is `chmod 0600`. A socket path is
+  104 bytes at most on macOS and 108 on Linux.
+- It exits when its parent dies and removes only its own socket. A `session.end` with reason `clear` does not stop
+  it.
+- A failure comes back as an `X-Podium-Helper-Error` header (`CERT_HAS_EXPIRED`, `ALTNAME`, `ECONNREFUSED`,
+  `CLIENT_CERT_REJECTED` and so on). It aborts the response on a mid-body upstream error, so a truncated reply is
+  never read as a `200`.
+- It writes the config file atomically (a temporary file, then a rename) under a lock, because several sessions
+  can renew at once, and keeps the mode 0600.
+- It forwards only the calls a reporter makes, the same list as the reporter port ([7.7](#77-hardening), Ports), kept
+  as a copy that a test compares with the server's. It builds the upstream request from the matched route, and
+  anything else is answered `403` with `X-Podium-Helper-Error: ROUTE_NOT_ALLOWED`, without going upstream.
+- When the certificate's end date has passed on this machine's clock it answers every request `502` with
+  `CERT_EXPIRED` and sends nothing upstream. The reporter treats that as any failed send: it keeps its reports and
+  retries with a back-off of at most 10 seconds, and `/podium` shows `offline, retrying` beside the reason.
+
+**Platforms.** macOS and Linux are in scope. Windows is out of scope and unsupported. The desktop app and VS Code
+are untested: `$.process` is CLI only per the engine types, so the helper may not start there.
+
+**How the reporter finds `node`.** The helper needs `node`, and a Claude Code started from a desktop launcher
+often has no `nvm` or Homebrew `PATH` (measured: the spawn fails with `ENOENT`). The reporter uses the file named
+by `PODIUM_NODE` if that is set. Otherwise it runs `node` on the `PATH` Claude Code started with, then looks in
+Homebrew's and `/usr/local`'s `bin`, `~/.volta/bin`, `~/.local/bin` and the newest version under `~/.nvm`. A missing
+`node` is reported plainly (below).
 
 ### 5.10 Alternatives and extras the implementer may use
 
@@ -1217,20 +1394,23 @@ one `Report`. The server decides who sent a report from the token ([7.7](#77-har
   { "ok": true, "serverTime": <epoch ms>, "ackedEvents": <n>, "sessionId": "…", "liveSessions": <n>,
     "serverVersion": "…", "reporterSupport": { "min": "…", "max": "…" },
     "reporterCompat": "ok" | "outdated" | "newer" | "unknown",
-    "watch": ["<agentId>" | "@orchestrator", …], "respond": boolean, "deliveries": Delivery[],
-    "diffs": DiffRequest[], "peers": boolean, "peerDeliveries": PeerDelivery[], "peerRequests": PeerRequest[] }
+    "watch": ["<agentId>" | "@orchestrator", …], "watchOutput": ["<agentId>" | "@orchestrator", …], "respond": boolean, "deliveries": Delivery[],
+    "diffs": DiffRequest[], "peers": boolean, "peerDeliveries": PeerDelivery[], "peerRequests": PeerRequest[],
+    "recording": RecordingGrant }
   ```
 
   | Field | Meaning |
   |---|---|
   | `serverVersion`, `serverBuild`, `reporterSupport`, `reporterCompat` | Explained in [6.8](#68-version-compatibility). |
-  | `watch` | The loops a viewer is watching right now, the orchestrator's main loop as `@orchestrator`, so the mod knows whose activity to send ([6.4](#64-failure-and-excerpt-rules)). Always empty while the Admin has the activity feed turned off. |
+  | `watch` | The loops a viewer is watching right now, the orchestrator's main loop as `@orchestrator`, so the mod knows whose activity to send ([6.4](#64-failure-and-excerpt-rules)). While the Admin keeps the Activity history (#432) and the session's reporter has the `activityFeed` option on, it also lists the orchestrator and every running agent, watched or not. Always empty while the Admin has the activity feed turned off. |
+  | `watchOutput` | The loops of `watch` that a viewer has the feed open on right now (a live lease), when the Admin's `activity-output` flag is on (#431). A subset of `watch`: the loops the Activity history lists without a viewer are never here, so the mod captures a Bash call's output only while someone is looking. Empty while the flag is off or nobody watches; an older server sends no field, which the mod reads as empty. |
   | `respond` | Whether the server takes answers for this session now ([7.7](#77-hardening): authentication on, the Admin's `respond` and `activity-feed` flags on, and the session has an owner). The mod announces asks only while it is true. |
   | `diffs` | The file diffs the session's signed-in owner is waiting for now (`{ id, path }`, #319, [6.4](#64-failure-and-excerpt-rules)), at most 4. Always empty while the Admin's `file-diff` flag is off or the session has no owner. |
   | `deliveries` | The messages and commands sent from Podium for this session that the mod has not yet given a result for ([6.2](#62-the-report), [7.1](#71-endpoints)), in the order they were sent, at most 20, and always empty while `respond` is false. An answer to an ask never comes here, only through the held request. |
   | `peers` | Whether this session's orchestrator takes part in orchestrator messaging now (#347, [7.7](#orchestrator-messaging-347)): authentication on, the Admin's `peer-messaging` flag on, the report made with a person's token (not the admin secret), and the report's `session.peers` true. The mod offers its tools only while it is true. |
   | `peerDeliveries` | Another orchestrator's messages for this one (`kind: "message"`) and Podium's own notices about this orchestrator's messages and requests (`kind: "notice"`), oldest first, at most 20. A message comes only while the session reports itself idle (`status: "waiting"`, `waitReason` not `permission`); a notice comes in any reply. Each takes a result through the peer result route ([7.1](#71-endpoints)), never responding's. Always empty while `peers` is false. |
   | `peerRequests` | The owner's open requests about this session's reporter (an Admin's proposal, an orchestrator's request for access, a message waiting for approval), at most 20, for the toast and `/podium allow\|decline\|deliver` ([5.3](#orchestrator-messaging-from-the-reporter-347)). Always empty while `peers` is false. |
+  | `recording` | The session's recording state (#353, [6.4](#session-recording-opt-in-353)): `{ state: "off" \| "recording" \| "stopped" \| "limit", consent: { admin, chosen, owner }, loops, limit: "session" \| "budget" \| null, startedBy, startedAt, stoppedBy, stoppedAt, keptUntil, bytes }`. The mod captures only while `state` is `recording` and all three `consent` answers are true. `state` is `off` and `loops` empty whenever nothing is chosen or kept for this session, which is every reply while the Admin's `session-recording` flag is off or the server has no token. An older server sends no field, which a mod reads as `off`. |
 
 - `400 { "ok": false, "error": "…", "path": "…" }` for a body that fails validation. The mod drops that report
   and logs once to debug. It never retries a 400.
@@ -1281,6 +1461,7 @@ interface Report {
     attached: boolean | null;           // whether any client is attached (5.3, 5.4); false for a background session after /exit; null from a reporter older than 0.7.0 or when the roster could not be read
     fileDiff?: boolean;                 // whether the reporter's fileDiff option is on (5.9); absent from a reporter older than the release that adds it
     activityFeed?: boolean;             // whether the reporter's activityFeed option is on (5.9); absent from a reporter older than 0.13.0
+    activityOutput?: boolean;           // whether the reporter's activityOutput option is on (#431); absent from a reporter older than the release that adds it
     activity?: ActivityEntry[];         // the main loop's activity feed, sent only while the reply's `watch` lists `@orchestrator` (6.4)
     background?: {                      // what an idle session waits on (#119), with waitReason null; absent from a reporter older than 0.11.0 and when there is none
       tasks: { type: 'shell' | 'agent' | 'monitor' | 'workflow' | 'wakeup' | 'other'; description: string; status: string }[];  // at most 20; description ≤ 120 chars, never a whole shell command
@@ -1294,6 +1475,7 @@ interface Report {
     asks?: Ask[];                       // the asks open now, at most 8; sent only while the last reply said `respond: true`, else omitted
     clearedFrom?: string | null;        // the session id this one continues after a /clear (5.8); null or absent otherwise
     peers?: boolean;                    // whether the reporter's `peers` option is on (#347, 5.9); absent from an older reporter, whose sessions are never listed as peers and never get a message
+    sessionRecording?: boolean;         // whether the reporter's `sessionRecording` option is on (#353, 5.9); absent from an older reporter, which is never recorded
   };
   agents: AgentReport[];                // every agent seen this session, running or finished
   events: ActivityEvent[];              // not yet acknowledged
@@ -1363,6 +1545,15 @@ interface ActivityEntry {
   at: number;                           // when the reporter saw it
   kind: 'tool' | 'text' | 'reasoning';  // `reasoning` is reserved; the reporter does not send thinking
   text: string;                         // a tool call: the tool's name, a space, a short summary of its arguments; text: what the model wrote in one step. Redacted, ≤ 300 chars
+  // A Bash call's detail (#431). All optional, only on a `tool` entry; an entry from an older mod has none of them and shows as before.
+  id?: string;                          // the tool_use_id, so output that arrives after the entry first went out is matched to it
+  command?: string;                     // the whole command, redacted, line breaks kept, ≤ 20,000 chars then "[cut off at 20,000 characters]". Rides activityFeed; stored in the Activity history
+  commandCut?: boolean;                 // the mod cut the command
+  output?: string;                      // stdout then stderr, redacted and cut like the command. Only with the activityOutput option, only for a loop in the reply's `watchOutput`; never stored. "" is a call that printed nothing; absent while the call runs or when no output was captured
+  outputCut?: boolean;                  // the mod cut the output
+  done?: boolean;                       // the call has finished (#598): sent with activityFeed, with or without `output`; absent while it runs. Not output, so it needs no activityOutput option
+  exitCode?: number;                    // the exit status, when the mod can read it. Sent with `done`
+  failed?: boolean;                     // the call failed, sent with `done`, with or without `exitCode`
 }
 
 // What a session can be answered with from Podium (#206). Which levels allow which: `questions` gives question and
@@ -1517,29 +1708,365 @@ With the `activityFeed` option on, the mod can send a loop's recent work.
 - The visible text of each model request is one entry (whitespace collapsed).
 - Each is redacted by the rule above and cut to 300 characters. A loop keeps its last 20, and one report
   carries at most 60,000 characters of them.
+- A Bash entry also carries its call id and the whole command (#431): redacted by the same rule, line breaks kept,
+  cut to 20,000 characters with a visible `[cut off at 20,000 characters]` marker (`command`, with `commandCut`).
+  Only a Bash row carries a whole command; any other tool row stays at its 300-character summary.
+  The mod removes ANSI escape sequences and other control characters (not line breaks or tabs) from a command and from
+  output before redacting, so a coloured secret is still caught. Of the tool rows, the mod sends `id` and `command` for Bash only.
+- With the `activityOutput` option on, the entry gets the call's output, stdout then stderr, redacted and cut the
+  same way (`output`, `outputCut`). Once the call returns, the entry also gets `done` and the exit status (`exitCode`,
+  `failed`), with the option on or off (#598): these are not output.
+  Claude Code's tool types carry no numeric exit code, so the mod sets `failed` from the call's error flag and `exitCode`
+  only when the text of a failed call says "Exit code N" (a live run against Claude Code 2.1.306 showed that text: the
+  status line, then stdout and stderr merged; the mod shows the output without the status line). A call still running has none of them. Without the option, or for a loop no viewer has open, the mod reads that status line and keeps none of the output. Claude Code swaps a result of about 90 KB or more for a short
+  `<persisted-output>` stub before the mod sees it, so the entry carries that stub.
+- Commands and output count against their own budget, not the 60,000 characters of summaries: one report carries
+  at most 200,000 characters of them over all its loops. It is filled from the orchestrator first, then the agents
+  in order, and from a loop's newest entry back. An entry that does not fit loses its output, then its command, and
+  keeps its summary.
+- The mod also keeps one report under 480,000 serialized bytes, as a recording's request does, since multi-byte text slips
+  past a character budget: it drops output first, then commands, oldest first, until it fits.
 - Thinking is not sent: `turn.step` streams `thinking` chunks, but they are left alone.
 - The orchestrator, subagents and forks are all treated alike.
 
 **When it is sent**
-- Nothing is captured, sent or stored unless someone is watching that loop. The console's panel for an agent
-  or the orchestrator takes a short lease on it (`GET /api/fleet/sessions/:id/agents/:agentId/activity`), and
-  the reply to each report lists the loops under a live lease (`watch`, [6.1](#61-endpoint)).
-- The mod captures and sends entries only for those, from the moment it sees them listed, and forgets a
-  loop's entries once it is no longer listed.
+- Under the default policy, nothing is captured, sent or stored unless someone is watching that loop. The
+  console's panel for an agent or the orchestrator takes a short lease on it
+  (`GET /api/fleet/sessions/:id/agents/:agentId/activity`), and the reply to each report lists the loops under
+  a live lease (`watch`, [6.1](#61-endpoint)).
+- Under a keep policy (see *Activity history* below) the reply also lists the orchestrator and every running
+  agent of a session whose reporter has the option on, whether or not anyone watches. The mod needs no change
+  for this: it captures and sends whatever `watch` lists.
+- The mod captures and sends entries only for the loops listed, from the moment it sees them listed, and
+  forgets a loop's entries once it is no longer listed.
+- **Output has a stricter rule (#431).** The mod captures a Bash call's output only for a loop in the reply's
+  `watchOutput`, which lists the loops under a live viewer lease and never a loop listed only for the Activity
+  history. A command that finished before the viewer opened the feed has no output to show. When the loop leaves
+  `watchOutput` the mod stops capturing and forgets what it held.
 
 **What the server does**
-- It keeps the last 20 entries of a watched loop in memory only, never in the database.
+- For the live window it keeps the last 20 entries of a watched loop in memory only.
 - It drops them when the lease lapses, when the session leaves the live set or is deleted, and on restart.
-- It never keeps an entry older than the lease, so a viewer who comes back starts empty. Nothing is
-  backfilled.
+- It never keeps an entry older than the lease in memory, so a viewer who comes back starts empty. Nothing is
+  backfilled there.
+- Under a keep policy it also writes every entry a report carries to the Activity history, described next.
+  The live window is unchanged. The history takes the entry's `command` but never its `output`, `exitCode`,
+  `failed` or `done`.
+- It holds a Bash entry's output in memory only, on the lease, with the rest of the live window, and ignores it
+  while the Admin's `activity-output` flag is off or the session's `activityOutput` is not true. Output is never
+  written to `podium.sqlite` or `activity.sqlite`, and never put in the state, the stream or a log.
+- It holds and serves `done`, `failed` and `exitCode` the same way, in memory with the entry, but without those two
+  switches: they are not output (#598). They attach to a held entry that arrived without them, and a call the lease
+  did not hold when it started is not held when it finishes. They survive the `activity-output` flag turning off and
+  the option turning off.
 
 **Switches**
 - With the option off, the mod captures nothing, ignores `watch`, and sends `activityFeed: false`.
 - The feed needs two switches: this reporter option on the machine, and the server's `activity-feed` feature
   flag (Admin > Settings > Feature flags, [8.1](#81-what-the-ui-must-do)), which is on by default.
+- Output has two more switches (#431): the machine's `activityOutput` option and the Admin's `activity-output`
+  flag (off by default, needs `activity-feed`). With either off, no output is captured or kept, the whole command
+  still rides `activityFeed`, and the row says in words which switch is off.
 - With the flag off the server grants no lease, every reply's `watch` is empty, it drops every lease and entry
-  it held at the moment the flag goes off, and it keeps nothing a mod sends. Turning it back on needs nothing
+  it held at the moment the flag goes off, it keeps nothing a mod sends, and it captures nothing for the
+  Activity history. Entries already stored are still purged by the policy. Turning it back on needs nothing
   else, since the next fetch takes a lease as usual.
+
+**Activity history (the Admin keeps the feed, #432)**
+- The Admin chooses how long the feed is kept in Admin > Server > Data. The choices are: *Not stored* (the
+  default, and exactly the behavior above), *purge after* n hours, days, weeks or months, *purge when the
+  session ends*, and *keep everything*. An optional size cap in gigabytes removes the oldest entries first.
+  The choice is one JSON row, `activity_history`, in the `settings` table
+  ([7.2](#72-database-sqlite)) and is global.
+- A keep policy needs authentication ([7.7](#77-hardening)). With no token the server treats the policy as
+  *Not stored* and refuses to save another, because nobody could be told apart as the one who may read it.
+- Entries go to a second SQLite file, `activity.sqlite`, in the same folder as `PODIUM_DB`, so the main
+  database's backups, vacuum and retention are not slowed by it. The file has its own schema version
+  (`PRAGMA user_version`), WAL, and incremental auto-vacuum. `entries` holds one row per entry (session, loop,
+  a sequence number per session and loop, the entry's own time `at`, the server-clock time `t` that the purge
+  and the filters use, kind, text, a Bash entry's whole command and whether the mod cut it (schema version 5, #431),
+  and for an entry sent from Podium who sent it and its note);
+  `stored_sessions` holds the name, project and owner so the Admin pages need no join into the main database.
+- Every entry is stored: tool calls, text, and the answers and messages sent from Podium, each keeping its
+  marker. Each was already redacted and cut to 300 characters before it left the machine, and the server adds
+  no second pass. The overlapping 20-entry snapshots the mod resends are stored once.
+- It is not a complete record. The mod keeps 20 entries per loop and one report carries 60,000 characters, so
+  a busy session can lose entries or a whole loop's feed between two reports, and nothing is replayed after
+  an outage. Capture starts when the server first lists the loop.
+- A purge runs every 5 minutes. Under *purge after* it removes entries older than the period; under *purge
+  when the session ends* it removes the entries of sessions that are not live; the size cap removes the
+  oldest entries until the total is under it. Every run that removes something writes one `admin_log` entry,
+  `activity_purged`, with the count, the size and the policy. A run that removes nothing writes nothing.
+- A session's own retention ([7.5](#75-lifecycle-timers), Retention) still applies: the entries of a session
+  that is deleted, or whose retention has run out, are removed with it, so the shorter of the two wins.
+- Each removal compacts the file (incremental vacuum, then a WAL checkpoint) so the space comes back. Removal and
+  compaction run in small chunks that give the server's other work a turn between them, so a large purge or delete
+  does not stall the console, and takes longer in total than it would in one go. A delete request answers when its
+  removal has finished.
+- Reading it needs a signed-in browser that is the session's owner or an Admin (the same sign-in as the file
+  diff, [7.7](#77-hardening)): `GET /api/fleet/respond/sessions/:id/activity-history?loop=&before=&limit=`
+  answers 401 without one and 403 for anyone else. The live route's reply carries only counts about the loop's
+  stored history (`history`: total, since, keptUntil, whether this viewer may read it, the owner's name), so
+  the window can say what is kept without showing text.
+- The Activity window shows the newest stored page and the live entries after it, and can page back
+  ([8.1](#81-what-the-ui-must-do)). Under the default policy no reply carries `history` and the window is as it
+  was.
+
+#### Session recording (opt-in, #353)
+
+A recording keeps everything the orchestrator and the agents under it do, whole, so a run can be replayed to see
+what happened and why. It is the most that Podium ever keeps of a conversation, which is why it needs three yes
+answers and says so wherever it is on (`mockup/podium-recording.html`). Reading it back is under *Session recording*
+in [7.7](#session-recording-353) and the notice and the replay are in [8.1](#session-recording-353-mockuppodium-recordinghtml).
+
+**The three yes answers**
+1. The Admin turns on the `session-recording` feature flag (Admin > Settings > Feature flags,
+   [8.1](#81-what-the-ui-must-do)). It is off by default, and it cannot be on while the server runs without a token
+   ([7.7](#77-hardening)): with no token, nobody could be told apart as the one who may read a recording.
+2. The session's owner, or an Admin, chooses to record the session and which of its loops, with **Record** on the
+   orchestrator page. Nothing before that moment is kept.
+3. The owner allows it in the reporter: the `sessionRecording` option, off by default
+   ([5.9](#59-mod-configuration-userconfig)). It is the one the owner controls on the machine, so it is the one that
+   cannot be overruled from the browser.
+
+All three are carried in `recording.consent` of every reply ([6.1](#61-endpoint)). If any is false the mod captures
+nothing and the server stores nothing. A person who chose a session whose owner has not allowed it is told so in
+the console ("This session's reporter does not allow recording"), and the owner is told in the terminal
+([5.3](#session-recording-from-the-reporter-353)). Turning the flag off, or the option off, ends capture at once; an
+Admin turning the flag off also stops every recording, and what was recorded is kept until it expires.
+
+**What is captured.** For each chosen loop (the orchestrator, a subagent, a fork), in the order things happened:
+- `prompt`: the task prompt an agent starts with, the person's prompt, and a message sent from Podium.
+  The mod records every prompt of a loop and cannot tell where one came from, so a message from Podium arrives as
+  an ordinary `prompt` entry. The server remembers each message it delivered (loop, time, sender, text) and, when the mod's
+  entry for it arrives (same loop, within 10 minutes, the same text once runs of whitespace are folded to one space), adds
+  the sender as the entry's marker (`by`), as the Activity history marks them. The match is exact, never "contains": a
+  short message such as "ok" does not mark a later, longer prompt that holds it. The server writes no prompt of its own: a
+  delivery the mod never records leaves nothing in the recording. Redaction differs between mod and server, and Claude
+  Code may rewrap or rewrite a message before the mod sees it, so a prompt whose text no longer matches exactly stays
+  unmarked (it fails safe: an unmarked prompt, never a wrong sender). Only a message is remembered this way: an answer, an approval and
+  `/clear` and `/compact` do not arrive as a prompt, and the mod records them itself (`decision`, `clear`, `compact`).
+- `text`: what the model wrote in each request, whole.
+- `tool`: each call, with its **whole** input (a Bash command in full, the content of a Write, the old and new text
+  of an Edit), not the short summary the Activity feed carries.
+- `result`: that call's **whole** output (a file's contents for Read, command output for Bash, a Grep's matches),
+  with `failed` when it failed, and `callSeq` pointing at its call.
+- `thinking`: a mark where the model thought, with no text (below).
+- `clear` and `compact`: marks for a `/clear` and for a compaction, with the loop it happened in. When the command came
+  from Podium, the mark carries who sent it (`by`).
+- `decision`: an answer or approval sent from Podium that Claude Code took ([5.3](#responding-from-podium)), so a replay
+  shows that a question was asked, who answered it from Podium and with what, and that a plan or a tool's permission
+  prompt was approved or denied and by whom, in order after the call it answers. `name` is the kind of ask it settled
+  (`question`, `plan` or `permission`), `callSeq` points at the call (`AskUserQuestion`, `ExitPlanMode` or the tool),
+  `by` is who sent it, `failed` is set when it refused (a deny, a plan sent back), and `text` is what was chosen, in the
+  words Claude Code received it in, redacted like any other text:
+
+  | Sent from Podium | `name` | `text` |
+  |---|---|---|
+  | A question's answer | `question` | one `<question>: <answer>` line per answered question; the labels or typed text |
+  | A message in place of an answer | `question` | `Replied in place of an answer: <message>` |
+  | A plan's approval | `plan` | `Approved the plan (<and use auto mode \| auto-accept edits \| manually approve edits>)` |
+  | "No, keep planning" | `plan` | `Sent the plan back: <feedback, or "No, keep planning">`, `failed` |
+  | A message in place of approving | `plan` | `Replied in place of approving the plan: <message>`, `failed` |
+  | A tool allowed once | `permission` | `Allowed once` |
+  | A tool denied (or a message in place of the answer) | `permission` | `Denied: <reason>`, `failed` |
+
+  The mod records a `decision` where it takes the answer, never the server, and only once Claude Code took it: a plan's
+  approval after the call resolved approved, a tool's decision after the call ended the way the decision said. A Podium
+  answer the terminal beat, an approval Claude Code did not take and an answer nobody collected leave no entry. The
+  mod names the sender (`by`) itself, since only it knows what it took; the server keeps `by` for `decision`, `clear` and
+  `compact` from the mod and ignores it on any other kind.
+- `gap`: a mark, with `lost`, where entries of a loop were dropped on the machine (below).
+- `stopped` and `limit`: marks the server writes where capture ended (below).
+
+Nothing else is captured: not the system prompt, not a request's whole message list, not an image or a file that is
+not a tool's result, not the settings or the environment. Cost, tokens and the plan are already in the state.
+
+**Limits of one entry.** A text is redacted, then cut at 100,000 characters with a visible
+`[cut off at 100,000 characters]` marker and `cut: true`. The type and limits are `RecordingEntry` and
+`RECORDING_LIMITS` in `server/src/fleet/protocol.ts`, copied into the mod.
+
+**Redaction (best effort).** Before anything leaves the machine, the mod redacts every string it records, tool
+inputs and results included, with the whole rule set of the file diff ([6.4](#file-diff-opt-in-on-request-319): the
+secret shapes, provider tokens, JSON Web Tokens, private key blocks, credentials in URLs, authorization headers,
+values of keys whose name says they are secret, and long random-looking values). A value is replaced with
+`[redacted]` and the rest of the text stays. The server and the console never see the original, and the server adds no
+second pass. In addition:
+- A `Read`, `Edit` or `Write` of a path on the file diff's never-send list (`.env`, `.env.*`, `*.pem`, `*.key`,
+  `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `.npmrc`, `.netrc`, `credentials*`) records the call with its path and
+  a result of `[withheld: this file is on the never-send list]`, and an `Edit` or `Write` records neither its old nor
+  its new text. A Bash command that reads one of them cannot be recognized in general; its output is only redacted.
+- Each redaction counts toward `redactions` in the log line the mod writes, never in the text.
+
+**What redaction does not cover.** A secret of a shape the rules do not know, a secret split across two entries or by
+the 100,000 character cut, a secret the model wrote in its own words ("the password is hunter2"), a secret inside
+base64 or another encoding, a secret in a file whose name is not on the never-send list, and personal data of any
+kind. A recording therefore holds whatever the session saw. The Admin's switch, the owner's option and the
+owner-and-Admin read rule are the control, and the User Guide says that redaction is not a guarantee.
+
+**Thinking.** The mod receives the model's thinking as `thinking` chunks of `turn.step`. On `claude-sonnet-5-5` at
+medium effort, in the main loop and in a subagent, those chunks arrive with **empty text**: a thinking block exists
+(its chunks are counted) and no readable text comes with it (#353, research comment). Other models, other efforts
+and forks have **not** been tested. Until they are, a recording keeps a `thinking` entry for each block and no text,
+and the replay says "Thinking: text is not available" in its header and on each such row, so it never reads as if
+the agent did not think. If a later mod version receives text, a recording does not start keeping it without a
+change to this section.
+
+**Where it goes.** The mod sends entries in batches of at most 200 entries and 480,000 bytes
+(`POST /api/fleet/sessions/:id/recording`, [7.1](#71-endpoints)), inside the 512 KB body limit. Each entry has a
+`seq` per session and loop, so a retry or a resend is dropped on the server and an entry is stored once. The server
+keeps recordings in the Activity history's second file, `activity.sqlite` ([6.4](#activity-feed-opt-in-observed-only-118),
+*Activity history*), in their own table, so the main database's backups, vacuum and retention are not slowed by
+them, and they appear on *Stored activity* with the Source set to Recordings. Capture does not wait for a viewer and
+does not need the `activityFeed` option or a keep policy.
+
+**Gaps.** A recording is not guaranteed complete.
+- While the server cannot be reached the mod queues entries in memory, up to 8 MB. Past that the
+  oldest entries go and one `gap` entry per loop says how many (`lost`). Nothing is kept across a restart of the
+  session's process.
+- An entry the mod cannot read (a tool whose result it cannot see) is recorded without its result, and the replay
+  says so.
+- **Answers and approvals.** A question's answer or a permission decision made in the terminal is not marked as an entry of
+  its own: the mod cannot see a permission prompt that nobody from Podium answered, and a question's result is recorded
+  only when the engine hands it over as text (an `AskUserQuestion` result is an object, so the call shows with no
+  `result`). What ran, and whether it was refused, is still in the tool's `result`. A `/compact` or `/clear` a person types
+  while one sent from Podium is running can be marked as Podium's.
+- Capture begins when the first reply that allows it arrives, so a short delay after **Start** is normal.
+- A loop that starts under a recorded session after **Start** is not recorded unless it was chosen; the page's layer
+  names the recorded and the unrecorded loops.
+
+**Retention and size.** All three numbers are the Admin's, in Admin > Settings > Session recording, kept as one
+JSON row, `recording_settings`, in the `settings` table ([7.2](#72-database-sqlite)):
+- *Keep a recording for*: 6 hours by default, at least 1 hour and at most 7 days. It is counted per part, from when
+  that part was recorded, and a purge every 5 minutes removes what is older, so a short time is honored within a few
+  minutes. A chosen recording that holds no entry yet stays until that long after it was started (a running one whose
+  session is live stays regardless), and only then goes. The time shown to a person as "kept until" is when the oldest part still held goes. A session's own
+  retention ([7.5](#75-lifecycle-timers), Retention) also applies, and the shorter of the two wins. A shorter time
+  removes parts that are already older.
+- *Disk budget*: 4 GB by default, for all recordings together. When the stored total would pass it, every running
+  recording stops, with a `limit` mark (`limit: "budget"`) at the point where it stopped. Nothing already stored is cut
+  short, and a new recording cannot start while the total is at the budget, which is when it has no *headroom*: headroom
+  is one full request (480,000 bytes), so a start is refused when the stored total plus 480,000 bytes is above the budget
+  ([7.7](#session-recording-353)). Otherwise the total rests just under the budget, a start is accepted, and its first
+  batch stops with `limit`.
+- *Limit for one session*: 512 MB by default. A recording stops when its session reaches it, with a `limit` mark
+  (`limit: "session"`), and the owner is told in the terminal.
+- **The 4 GB, the 512 MB and the 8 MB queue are set from a measurement** of the write load ("Measured write load"
+  below). The traffic in it was simulated: **real sessions have not been measured**, so the numbers can change when they
+  are. The server enforces them from the Admin's row, so changing them needs no code change. The per-session limit
+  cannot be set above the disk budget, and both defaults are inside their ranges (8 MB to 4 GB, and 64 MB to 100 GB).
+- Sizes are the stored text's bytes. The budget and the cap are checked as a batch is stored, so a recording can
+  pass its limit by at most one batch (about 480 KB).
+
+**Measured write load (#353, simulated traffic).** `scripts/podium-recording-load.mjs` reproduces every number below. It starts a
+throwaway server, drives sessions through the mod's own `Recorder` (so redaction, the 100,000 character cut and the batching
+are the real ones), and reads the server's disk writes and CPU. It was run on an Apple M5 (macOS 27.0.1, APFS SSD) with the
+load generator on the same machine, over loopback.
+- **Load.** Each session is an orchestrator with 3 agents. Every loop makes a tool call about every 8 s (exponential gaps).
+  A call has an input of 0.5 to 5 KB (small for Read, Grep and Glob), a result after 0.2 to 3 s, a text entry half the time
+  and a thinking mark 40% of the time. The *busy* profile gives results of 1 KB to 200 KB (55% under 8 KB, 30% to 50 KB,
+  the rest above, cut at 100,000 characters; mean 22 KB); *typical* has a mean of 4.6 KB. Sessions report every 5 s. This is
+  made-up traffic, not real sessions; **real sessions have not been measured yet**.
+- **Method.** Bytes written and CPU are the server process's own, from `proc_pid_rusage` (`ri_diskio_byteswritten`, user and
+  system time). It was checked by writing a known 100 MiB file, which it read back as 100 MiB; `time -l` reports 0 block
+  operations on macOS, so it is not used. Operations come from the block driver's counters in `ioreg`, which are
+  **system-wide and noisy** (the same configuration read 33 to 363 operations a second; the machine's own background is
+  about 40), so they say only that the load is small: tens to about 200 a second, bursts of 1,600 to 3,000 a second in the
+  one-second maxima, which the baseline (470 to 730) also shows from checkpoints. The count that is exact is commits: one
+  request is one transaction. Each run is 180 s after a 10 s warm-up (one is 600 s); disk per hour is that rate times 3,600.
+
+| Sessions (loops) | Recording | Requests/s | Ingested KB/s | Server writes KB/s | Server CPU, mean | Request p95 |
+|---|---|---|---|---|---|---|
+| 5 (20) | off | 0 | 0 | 20 | 0.7% | n/a |
+| 5 (20) | on, 1 s | 3.4 | 48 | 175 | 1.2% | 4 ms |
+| 20 (80) | off | 0 | 0 | 234 | 1.9% | n/a |
+| 20 (80) | on, 1 s | 13.6 | 218 | 1,280 | 4.0% | 5 to 9 ms |
+| 50 (200) | off | 0 | 0 | 761 | 4.2% | n/a |
+| 50 (200) | on, 1 s | 33.8 | 531 | 3,855 | 8.2% | 11 ms |
+| 20 (80), typical results | on, 1 s | 13.5 | 52 | 863 | 3.4% | 4 ms |
+
+| 20 sessions, busy | Requests/s | Server writes KB/s | Writes minus the 234 baseline | Server CPU, mean |
+|---|---|---|---|---|
+| batch every 1 s | 13.6 | 1,280 | 1,046 (4.8 per byte ingested) | 4.0% |
+| batch every 2 s | 8.8 | 1,071 | 837 | 3.1% |
+| batch every 5 s | 4.0 | 903 | 669 (3.1 per byte ingested) | 2.6% |
+| batch every 10 s | 2.0 | 799 | 565 | 2.1% |
+
+At 50 sessions a batch every 5 s took 10.0 requests/s, 2,789 KB/s of writes (against 3,855) and 4.8% CPU (against 8.2%).
+Runs of the same setting differed by 3 to 8% in bytes, and the one 600 s run wrote 13% more than the 180 s ones (1,451 KB/s
+for 20 sessions at 1 s), so read the writes as plus or minus 15%. Server memory stayed at 118 to 155 MB. A probe of
+`/api/health` every 250 ms read a p95 of 1.6 to 3.3 ms with recording on and 1.6 to 1.7 ms with it off; its worst reading was
+27 to 69 ms with recording on and 4 to 12 ms with it off. A batch is stored in one synchronous transaction, so the server
+answers nothing else while it runs.
+
+Findings:
+- **The server writes 3 to 12 times what it ingests,** and much of the cost is per commit, not per byte. Beyond the baseline
+  a batch cost about 40 KB plus about 2.3 times its own size: 47 KB for the typical profile's 4 KB batches, 77 KB for the
+  busy profile's 16 KB ones (1 s), 167 KB for 54 KB ones (5 s) and 283 KB for 108 KB ones (10 s). (Each row goes into a table
+  and three indexes, and the recording's counters change; this was not profiled further.) The *typical* profile shows it
+  most: 52 KB/s ingested, 629 KB/s written beyond the baseline. Fewer, larger batches are the lever.
+- **Disk per hour of recording, busy profile:** 9.3 to 9.6 MB per loop (an orchestrator or an agent) counted by the server,
+  9.9 to 10.2 MB in the file (about 6% more), so a session of 4 loops is about 38 MB an hour (40 MB in the file). The 600 s
+  run gave 9.3 and 9.9, the 180 s runs 9.6 and 10.1. With the typical profile it is 2.3 MB per loop (2.7 in the file), 9 MB
+  for a session of 4. At the default 6 hours of retention, the busy session holds about 225 MB, and 20 busy sessions fill
+  4.5 GB.
+- **The caps stop recording as specified.** At the per-session limit (8 MB, and the then default 256 MB) the recording held 7.94
+  and 255.94 MB, its state read `limit` with `limit: "session"`, the last row was the `limit` mark, a later batch got `403
+  recording is off`, and starting it again got `409` (delete it first). At the disk budget (64 MB, and the then default 2 GB)
+  every running recording stopped with `limit: "budget"` and its mark, at 63.96 and 2,047.92 MB stored; the file held
+  2,058 MB, 0.5% more. The server took 164 MB/s from a single poster. Deleting one recording let a new one start.
+  One gap, since fixed: a start was refused only when the total was at or above the budget, but a recording stops when the
+  next entry would pass it, so the total rested a little under the budget and a start was accepted; its first batch then
+  stopped with `limit` ("budget"). A start now needs headroom (see *Disk budget*).
+- **The purge keeps up.** The server purges every 5 minutes. With 20 busy sessions writing for 11 minutes and every row
+  older than 30 s moved back by 7 hours every 10 s (a stand-in for waiting out the retention), the stored total made a
+  sawtooth: it grew to 56 to 67 MB (5 minutes of writing) and fell to about 7 MB at each of the two runs, which removed 7,497
+  and 8,666 entries; the file fell back to 8.6 MB. Requests stayed at a p95 of 8 ms. A full budget (2,048 MB, 21,685 rows,
+  all aged) was removed in one run in under a second (polled every 250 ms), the file went from 2,058 MB to under 1 MB, and
+  `/api/health` read a p95 of 2.0 ms and a worst of 95 ms. The first run is 5 minutes after the server starts.
+
+Caveats: the traffic is invented; the server and the generator share one machine (the generator used 2 to 13% of a core);
+the runs are minutes long and the hours are an extrapolation; the purge run ages rows by rewriting their time, so it also
+adds writes of its own and says nothing about the write load; the system-wide operation counts are not a measurement of
+the server alone.
+
+**Decision (the maintainer's, from the measurement above; the traffic was simulated).**
+- **Batch interval: 5 s instead of 1 s.** It cuts requests by 3.4 times, the server's writes for 20 busy sessions by 29%
+  (36% beyond the baseline) and its CPU by 35%. The cost is a replay that trails a live session by up to 5 s, and up to 5 s
+  of entries lost if the session's process dies. 10 s saves a further 12% only. Because one request is at most 480 KB, 5 s
+  allows a session 96 KB/s on average, so the mod also sends at once, at its next flush tick, when its queue passes 256 KB.
+- **Batch size: unchanged, 200 entries and 480,000 bytes.** At 5 s the mean batch was 7 entries and 54 KB, the largest 370 KB.
+  The limits are not what is reached.
+- **Limit for one session: 512 MB instead of 256 MB.** A busy session of 4 loops holds about 225 MB over 6 hours, close to
+  256 MB, and one of 8 busy loops would reach 256 MB after about 3.4 hours and stop recording while the trouble is still
+  going on.
+- **Disk budget: 4 GB instead of 2 GB.** 2 GB holds 6 hours of about 9 busy sessions of 4 loops (about 37 typical ones).
+  Reaching it stops every recording at once, so it should be a safety stop, not the normal limit.
+- **The mod's queue: unchanged, 8 MB.** It is memory, not disk; the largest queue in the runs was 370 KB, so 8 MB is ample.
+
+**Stopping, keeping and deleting.**
+- **Stop** ends capture for the whole session (the orchestrator and every agent and fork). The server writes a
+  `stopped` mark with who stopped it and when. What was recorded is **kept** until it expires, can still be
+  replayed, and can be deleted. Stopping is for the session's owner and an Admin. The mod sends in batches, so
+  its last batch can still be on its way when the person stops: the server takes entries from a stopped recording
+  whose `at` is at or before the stop time, and refuses any after it. A recording that stopped for a limit, a
+  deleted one, and any batch while the flag or the owner's option is off are refused as before.
+- **Delete** removes the whole recording for good, and stops capture if it is still running. It does not touch the
+  session, History or the live feed. Deleting is for the session's owner and an Admin.
+- **`/clear`.** A `/clear` gives the session a new id. When the server sees the first report of a session whose
+  `clearedFrom` names a recording that is running (with the orchestrator among its loops), the new session inherits the
+  choice, the starter and the start time, recorded for the orchestrator's loop; the old recording stops, with no `stopped`
+  mark and no one named. The owner's consent does not carry over: the new session still needs its own `sessionRecording`
+  option, which its own report states. Nothing is carried when the flag is off or the new session already has a recording.
+- A session that ends keeps its recording as it is (capture ended with it) until it expires. Deleting the
+  session, or its own retention running out, removes the recording with it.
+- The owner can also stop capture on the machine at any time by turning the `sessionRecording` option off. It ends
+  capture; it does not delete what was kept.
+
+**Access.** Only the session's owner and an Admin can read, stop, delete or open the replay of a recording, with the
+same sign-in and the same owner test as the Activity history ([7.7](#session-recording-353)). The wall and the
+orchestrator page show to **everyone** that a session is recorded, who started it, which loops and when it goes (the
+notice, [8.1](#session-recording-353-mockuppodium-recordinghtml)), and show nothing of its content.
 
 #### File diff (opt-in, on request, #319)
 
@@ -1792,7 +2319,96 @@ Reporter 0.14.0 adds `session.respond`, `session.asks`, `session.clearedFrom`, t
   ([5.3](#responding-from-podium)), a different version degrades to "approve it in the terminal" rather than
   failing quietly.
 
+#### Session recording and the range (#353)
+
+Session recording adds `session.sessionRecording`, the reply's `recording`, the recording routes ([7.1](#71-endpoints))
+and the `sessionRecording` option ([5.9](#59-mod-configuration-userconfig)), all of them ignorable by the other side.
+
+- An older mod sends no `session.sessionRecording`, so the server reads its owner as not allowing it and never
+  lists a loop to record. The console says "an older podium-reporter" in the picker's note.
+- An older server sends no `recording`, which a newer mod reads as `off`, so it captures nothing.
+- Which release carries it is decided in its `release-prep/<version>` PR, which then moves `plugin.json`, `VERSION`
+  and, on a new minor, `max` in `REPORTER_SUPPORT`. A feature PR for #353 changes none of them.
+
+#### The release check (#499, `mockup/podium-update-notice.html`, `mockup/podium-update-check-admin.html`)
+
+Podium has no registry, so people update by pulling the new release and running `podiumctl build`. The server tells
+them when one exists. The mod and the server share one version, so an out-of-date server also means an out-of-date
+reporter, and the reporter's own check above still covers the mod.
+
+- **Where it runs.** On the server, once per server, never in a browser, so it is one request a day however many tabs
+  are open and the page's `connect-src 'self'` ([7.7](#response-headers-and-the-container-249)) is unchanged.
+- **When.** About 30 seconds after the server starts, then every 24 hours. It does not run on a request.
+- **What it asks.** `GET https://api.github.com/repos/eengelking/podium/releases/latest`, with a 10 second
+  timeout. GitHub's `latest` is never a draft or a pre-release, and a tag that is not `vMAJOR.MINOR.PATCH` is
+  ignored as well. Nothing about the install, the sessions or the people is sent.
+- **The comparison.** The tag's `MAJOR.MINOR.PATCH` against the server's own version (`StateBody.server.version`), all
+  three numbers. A version that is not `MAJOR.MINOR.PATCH` (a dev build's `unknown`, the simulator's `0.1.0-sim`)
+  never shows a notice. The release link is built from the tag (`https://github.com/eengelking/podium/releases/tag/vX.Y.Z`); the
+  `html_url` in the reply is not used.
+- **Who sees it.** Every viewer of the wall, in the notice stack ([8.1](#wall-notices-114-mockuppodium-wall-noticeshtml)).
+- **Dismissing it** hides the release it names, for everyone, until a newer release than that one is published. The
+  version is kept in the `settings` table (`wall_update_dismissed`), so it survives reloads and a restart. It only ever
+  moves forward: a tab closing an older release does not bring back a newer one already closed.
+- **A failed check is silent.** Offline, rate limited, a bad status, a reply it cannot read, no answer: the wall shows
+  no notice and no error, the last good answer is kept, and the next daily check tries again. The server writes one
+  short `update.check_failed` warning per failed check.
+- **The switch.** Admin > Settings > Feature flags > **Release check** (`update-check`). It is **on by default**. Off, the
+  server makes no request to GitHub at all and holds no notice, for installs that must not make outbound calls.
+  Turning it on checks at once instead of waiting for the next daily run.
+- **What reaches the wall.** `StateBody.wall.update` is `{ latest, url }` while there is a newer release that
+  nobody has closed the notice for, and `null` otherwise (an older server sends no field, which reads as `null`). A
+  change reaches open tabs through the `wall` stream event.
+
 ---
+
+#### Authenticating by certificate (#577)
+
+Designed in DECISIONS 42. With TLS on ([7.7](#77-hardening), *Built-in TLS*), `POST /api/fleet/report` and every
+other route the mod calls can be made over mutual TLS, through the helper ([5.9](#59-mod-configuration-userconfig)), on
+the reporter port (4318 by default). That port serves only those routes and the renewal route, and only to a client
+with a valid certificate. The console is on the HTTP port.
+
+- **Who is calling.** The server authenticates the person from the certificate in the handshake and not from
+  `X-Podium-Token`. The reporter port is `https.createServer` with `requestCert: true` and `rejectUnauthorized: true`
+  and the Podium CA(s) as `ca`, so a connection with no certificate, an expired one or one from another CA is dropped
+  in the handshake and no route runs. The server then looks the certificate up by its SHA-256 fingerprint and checks it
+  is not revoked, which the handshake cannot know. The report's `userName` must still equal that person (DECISIONS 20).
+- **The token.** A reporter that has a config file is identified by its certificate. A token set in the options or
+  in `PODIUM_TOKEN` is still sent with its requests, inside the TLS connection, and the server ignores it when a
+  certificate is present. A reporter without a file sends its token over HTTP, while the Admin allows reporters
+  over HTTP. The console signs in with a name and a token as before.
+- **Renewal.** `POST /api/reporter/renew` is authenticated by the person's current certificate. The body carries
+  the reporter's new public key (no Node API builds a CSR), and the response carries a new certificate for it.
+  The helper writes the new certificate and the CA(s) in one atomic write, so the file never holds one without
+  the other. The reporter renews when 30 days of the certificate are left, or half its lifetime when that is shorter (a certificate
+  that lasts under 60 days). A renewal needs a certificate that is
+  valid in the handshake, so its answer, a new CA included, only travels over a connection the reporter's side and
+  the server both verified.
+- **Renewal limit.** A person's certificate is renewed at most once an hour. While the person's newest live
+  certificate was issued less than an hour ago, the server answers `429` with a `Retry-After` header (seconds, at
+  most 3600) and the code `TOO_SOON`, before it signs anything or stores a row, and a second request that arrives
+  while one is being signed counts the same way. The window is fixed and is not a setting. The reporter treats a
+  `429` as a wait and not a refusal: it goes on with the old certificate and asks again after `Retry-After`, and
+  never sooner than a minute.
+- **No grace (#665).** A certificate that has expired is not renewed. It cannot reach the reporter port, so there is
+  no renewal to answer and nothing for a forged expired certificate to pass for. An Admin generates a new config
+  for the person (Reissue config). The helper compares the certificate's `notAfter` with its clock before it
+  connects, sends nothing, and answers every request with `CERT_EXPIRED`, which the mod words as "Your Podium
+  certificate expired on 2026-08-30. Ask an Admin to generate a new reporter config." in the status line and in
+  `/podium`.
+- **A new CA in the response.** The renewal response adds `rotation: { ca, cross }` (the new CA and its cross
+  certificate) while a planned overlap is open, and leaves the field out at every other time. Only for a planned CA rotation, as an addition, with a cross certificate that
+  verifies under the CA the reporter already holds. After an emergency rotation the server does not offer it
+  ([7.7](#77-hardening)).
+
+#### Compatibility and the certificate reporter (#577)
+
+The reporter that reads a config file and starts the helper is a new minor version of the mod, so it ships with
+a release like any other mod change, and `REPORTER_SUPPORT.max` moves to that release's `MAJOR.MINOR.0` in the
+same release-prep PR. A mod without it keeps working against a server with TLS on while the Admin allows
+reporters over HTTP, and a mod with it keeps working against a server with TLS off by using no config file.
+The renewal response carries no new `reporterSupport` field.
 
 ## 7. The server
 
@@ -1814,6 +2430,7 @@ mod), the mod's responding routes, the browser's responding routes, and the Admi
 | `GET /api/fleet/events?sessionId=&before=&limit=` | Page through stored events newest first (`limit` ≤ 200, default 50, `before` = event time). |
 | `GET /api/fleet/history?day=YYYY-MM-DD&page=N&pageSize=N` | Ended or dropped sessions that day. Phase 4. Details below. |
 | `POST /api/fleet/notices/:id/close` | Turn a wall notice off for everyone ([8.1](#81-what-the-ui-must-do)). No token, like Remove. 400 for an id that is not a known notice. |
+| `POST /api/fleet/update-notice/close` | Body `{ version }`: the X on the update notice hides the release it names for everyone ([6.8](#the-release-check-499-mockuppodium-update-noticehtml-mockuppodium-update-check-adminhtml)). No token. 400 unless `version` is `MAJOR.MINOR.PATCH` and is not newer than the release on offer (or none is on offer), so a made-up version cannot hide every later release. |
 | `PUT /api/fleet/wall/background-sessions` | Body `{ show: boolean }`: the Show them / Hide them link on the background-sessions note changes this setting. No token. 400 unless `show` is a boolean. |
 | `POST /api/fleet/sessions/:id/drop` | Remove a heartbeat-lost session from the live view now: the same exit as the automatic drop ([7.5](#75-lifecycle-timers)). No token. 404 if the session is not live, 409 if it is not `stale`. |
 | `DELETE /api/fleet/sessions/:id` | Remove a session and its rows (for stuck test data). Requires the token if one is configured. |
@@ -1824,7 +2441,10 @@ mod), the mod's responding routes, the browser's responding routes, and the Admi
 **`GET /api/fleet/state`**
 - Body: `{ serverTime, config, sessions: SessionView[], kpis, clearedToday, events: ActivityView[], server: { version, reporterSupport }, wall, features }`.
 - `wall` is the wall's notice and background-sessions settings ([8.1](#81-what-the-ui-must-do)).
-- `features` maps each Admin feature flag's id to whether it is on ([8.1](#81-what-the-ui-must-do)).
+- `features` maps each Admin feature flag's id to whether it is on ([8.1](#81-what-the-ui-must-do)). It also carries one
+  derived entry, `activity-history` (#432), true when the Admin keeps the Activity history, a token is set and the
+  `activity-feed` flag is on. It is not an Admin flag and is not in the flag list. The console reads it to offer the
+  sign-in that stored history needs, and a policy change reaches open consoles as a fresh snapshot.
 
 **`GET /api/fleet/sessions/:id/agents/:agentId/text`**
 - Body: `{ prompt: string | null, answer: string | null }`.
@@ -1832,14 +2452,32 @@ mod), the mod's responding routes, the browser's responding routes, and the Admi
 
 **`GET /api/fleet/sessions/:id/agents/:agentId/activity?every=`**
 - Body: `{ entries: (ActivityEntry & { seq })[], since, live, enabled, serverTime }`. `@orchestrator` is the main
-  loop. `seq` numbers entries in the order the server took them.
+  loop. `seq` numbers entries in the order the server took them. An entry may carry the Bash fields of
+  [6.2](#62-the-report) (`id`, `command`, `output`, `done`, `exitCode`, `failed` and the cut flags, #431); `output`
+  only while the Admin's `activity-output` flag is on. `done`, `exitCode` and `failed` are not output and are served
+  with the feed whatever that flag says (#598).
 - Each call takes or renews a lease on that loop for `every` seconds (5, 10, 20, 30 or 60; anything else is 5)
   plus 15 seconds. While a lease is live, the reply to each report lists the loop in `watch`.
 - For a session that is not live it answers `live: false`, `since: null` and no entries, and takes no lease.
 - `enabled` is false while the Admin has the activity feed turned off ([8.1](#81-what-the-ui-must-do)). The
   reply then has no entries and `since: null`, `live` as usual, and no lease is taken.
 - 404 for an unknown session or agent.
-- In memory only, never in the state or the stream. No token, like the other reads.
+- The entries are in memory only, never in the state or the stream. No token, like the other reads.
+- Under a keep policy (#432) the reply may also carry `history`: counts about this loop's stored history,
+  with no text (`policy`, `total`, `since`, `keptUntil`, `canRead`, `owner`). `canRead` is true when the
+  request carries a respond sign-in for the session's owner or an Admin. The reply has no `history` key
+  under the default policy or when the loop has nothing stored, so it is exactly as it was.
+
+**`GET /api/fleet/respond/sessions/:id/activity-history?loop=&before=&limit=`** (#432)
+- One page of a loop's stored Activity history, oldest first: `{ entries, olderBefore, total, since,
+  keptUntil }`. `loop` is `@orchestrator` or an agent id of the session, `before` is the `seq` of the oldest
+  entry already shown (omit it for the newest page), and `limit` is 1 to 100 (the console asks for 20).
+  `olderBefore` is the `seq` to pass for the next older page, or null.
+- It needs a signed-in respond session that is the session's owner or an Admin: 401 without a sign-in, 404 for a
+  session the database does not hold, 404 while the policy is *Not stored*, 403 (with `owner`) for anyone else, then
+  404 for an unknown loop and 400 for a bad `before` or `limit`. It works for a session that has ended and does not
+  need the `respond` flag: sign-in is open to the owner and an Admin whenever a keep policy is on and a token is
+  set. `Cache-Control: no-store`. The text is never logged.
 
 **`GET /api/fleet/respond/sessions/:id/files/diff?path=`** (#319)
 - The console's request for one file's diff. It needs a respond session ([7.7](#77-hardening), *File diff*),
@@ -1861,6 +2499,12 @@ mod), the mod's responding routes, the browser's responding routes, and the Admi
 - Body: `{ day, sessions, total, page, pageSize }`, where `total` counts the whole day.
 - Each row also carries `clearedFrom` (the session it continues after a `/clear`) and `clearedInto` (the
   session that continued it), each null when there is none (#206, [5.8](#58-session-identity-clear-restarts)).
+- A row also carries `recording: { keptUntil }` (#353) when a recording of the session is held and the request comes
+  from a signed-in viewer who is the session's owner or an Admin (the sign-in of [the browser routes for session
+  recording](#browser-routes-for-session-recording-353)); `keptUntil` is when the oldest part still held goes, as
+  `keptUntil` is everywhere else. For anyone else, for a session with no recording, and while the Admin's
+  `session-recording` flag is off (the replay routes answer `404` then), the field is absent, so History tells nobody
+  else that a recording exists and never points at one that cannot be opened.
 
 #### Mod routes for responding
 
@@ -2071,6 +2715,90 @@ signed-in person's own reporters: the admin secret has none (`403`). `403` too w
   owner or an Admin (the admin secret or an Administrator). Each is `{ id, from, to, owner, text, sentAt, state,
   stateAt, why, approved }`. `403` for anyone else, `404` when there is none.
 
+#### Certificate routes (#577)
+
+Names and shapes are confirmed in the design (DECISIONS 42). They exist only while TLS is on, and the Admin routes
+need the unlocked Admin session like the rest of the Admin API.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/tls/status` | The header pill's data: `{ enabled: false }` when TLS is off, otherwise the first of the CA and the serving certificate to end (`subject`, `expiresAt`, `daysLeft`, `stage`), `renewalFailed` and `showCountdown`. No fingerprint, name or path, so it is open like the console's other reads. Reused for 30 seconds, never past the moment a certificate ends. |
+| `POST /api/reporter/renew` | The reporter renews its certificate ([6](#authenticating-by-certificate-577)). Authenticated by the client certificate. Body: the new public key. Reply: the new certificate, and for a planned CA rotation the added CA and its cross certificate. `429` with `Retry-After` when the person's certificate was renewed less than an hour ago. |
+| `GET /api/admin/certificates` | The CA, the serving certificate, their dates and fingerprint, the names, the settings, the last renewal failure and the previous certificates. |
+| `PUT /api/admin/certificates` | Change the `tls.*` settings ([7.7](#77-hardening)). A value outside its range is a `400` that names the range. |
+| `POST /api/admin/certificates/renew` | Renew the serving certificate now. |
+| `POST /api/admin/certificates/rotate-ca` | Rotate the CA. Body `{ endOverlap }`: false is a planned rotation with an overlap, true is the hard cutover. |
+| `POST /api/admin/certificates/retire-ca` | Retire the old CA after a planned rotation. Answers `409` when there is none. The reply names how many reporters were still on it (`refused`) and how many connections it closed. |
+| `GET /api/admin/certificates/ca.pem` | The CA certificate, for a person who wants to check it. No key. The page no longer links it (#665). |
+| `GET /api/admin/people` | Also answers `tls` (whether TLS is on) and, on each row, `certificate`: `{ notAfter, revoked }` for the person's live certificate, or the newest revoked one, and null when TLS is off or they never had one. Never a key. |
+| `POST /api/admin/people` | Also returns the reporter config file, once, with the token. It cannot be fetched again. |
+| `POST /api/admin/people/:id/certificate/reissue` | A new config file, once. The earlier certificate is revoked. A revoked person is restored (their token is unchanged), since a certificate for a revoked person is refused. |
+| `POST /api/admin/people/:id/certificate/revoke` | Revoke the person's certificate. Their token and console sign-in are unchanged. |
+| `GET /api/admin/people/:id/certificate.pem` | The person's public certificate and the CA. Never a key. |
+| `POST /api/admin/people/:id/revoke-all` | Revoke the certificate and the token. Refused for the last active Administrator. |
+
+`POST people/:id/revoke`, in the list below, is still the token's revoke, and with TLS on it also revokes the person's certificate ([7.7](#77-hardening), *Revocation*).
+
+#### Mod route for session recording (#353)
+
+Needs `X-Podium-Token` from the session's owner ([7.7](#77-hardening)), like the responding routes.
+
+**`POST /api/fleet/sessions/:id/recording`**: the mod's batch of recorded entries ([6.4](#session-recording-opt-in-353)).
+- Body: one `RecordingBatch`, `{ v: 1, sentAt, entries }`, at most 200 entries. Each entry is `{ loop, seq, at, kind,
+  text, name?, callSeq?, failed?, cut?, lost? }` with `kind` one of `prompt`, `text`, `tool`, `result`, `thinking`,
+  `clear`, `compact`, `gap` (`stopped` and `limit` are written by the server and refused). `text` keeps its line
+  breaks and is clipped to 100,000 characters plus the cut-off marker.
+- `200 { ok: true, stored, recording }`: `stored` is how many entries were new (an entry held already, by
+  `(loop, seq)`, is dropped and not an error) and `recording` is the `RecordingGrant` after the batch, so a limit
+  reached by this batch stops the mod at once. The entries that fit are stored, and the one that would pass the limit
+  and everything after it are not; the batch is then answered with `recording.state: "limit"`.
+- A recording a person stopped (state `stopped`) still takes entries whose `at` is at or before the stop time
+  (`stoppedAt`), so the last batch interval is not lost; entries after it are dropped (not stored, not an error), and
+  the answer is `200` with `recording.state: "stopped"`. The entries are stored after the `stopped` mark in the
+  replay's order of storing.
+- `403 { ok: false, error: "recording is off" }` while the three yes answers are not all true for this session,
+  except for that late batch of a stopped recording; also for a recording stopped by a limit or the budget, and one
+  that was deleted (nothing is stored, and the mod stops capturing). `404` for a session that is not live and has no recording, `400`
+  for a body that fails validation, `401` for a missing or wrong credential, `409` as for a report, `413` above
+  512 KB.
+- A session that has ended is not accepted again: its recording is kept as it is.
+
+#### Browser routes for session recording (#353)
+
+On responding's `/respond` router: they need its sign-in, `X-Podium-Respond: 1` on a change, and send
+`Cache-Control: no-store`. Every one needs the signed-in person to be the session's owner or an Admin (the same test
+as the Activity history, [7.7](#activity-history-432)): `401` without a sign-in, `403` for anyone else, `404` while the
+`session-recording` flag is off or the session is unknown. A recording's text is never logged.
+
+- **`GET /api/fleet/respond/sessions/:id/recording?before=&limit=&loop=`**: one page of a replay, oldest first, as a
+  `RecordingPage`: `{ entries, olderBefore, total, grant, loops, owner }`. Without `before` it answers the newest
+  `limit` rows (default and most 200, `RECORDING_LIMITS.page`); `before` is the `n` of the oldest row already shown
+  and `olderBefore` is the `n` for the next older page, or null. `loop` limits the page to one loop (`@orchestrator`
+  or an agent id). `loops` lists every loop of the session with its name and whether it is recorded. `404` when the
+  session has no recording (never chosen, deleted or expired), `400` for a bad `before`, `limit` or `loop`. It works for
+  a session that has ended and when capture has stopped.
+  Each row is a `RecordingRow`: `n` is the server's order, `seq` the entry's own number within its loop (the mod's, from
+  1; 0 and below for a mark the server wrote), and a `result`'s `callSeq` is the `seq` of the `tool` row it answers.
+- **`GET /api/fleet/respond/sessions/:id/recording/consent`**: the consent before anything is chosen, `200 { ok: true,
+  grant }`, where `grant` is the `RecordingGrant` the next report would get (state `off` and `consent.chosen` false when
+  no recording exists), and `keepHours`, the Admin's *Keep a recording for* value. The picker reads `grant.consent.owner`
+  on open to say, before Start, that the owner has not allowed recording, and `keepHours` to say how long a recording
+  is kept (it states no number until the answer arrives or if it fails). It carries no text and needs no recording to exist. The wall's `SessionView` is sent to everyone, so
+  the owner's option is not put there; this route is how the owner and an Admin learn it. Same access as the rest.
+- **`PUT /api/fleet/respond/sessions/:id/recording`**: start, or change which loops are recorded. Body:
+  `RecordingStartRequest`, `{ loops }`, 1 or more loop ids of the session. `200 { ok: true, grant }`. Loops added
+  later are recorded from that moment on; nothing before it is kept. `409` when the disk budget has no headroom (7.7) or the
+  recording has stopped for its limit (`DELETE` it first to start again), `400` for a loop the session does not have.
+  It does not need the reporter's option: it records the choice, and the reply's `grant.consent.owner` says whether
+  the owner has allowed it, so the picker can tell the person.
+- **`POST /api/fleet/respond/sessions/:id/recording/stop`**: stop capture, keep what was recorded. `200 { ok: true,
+  grant }`, also for a recording already stopped. The server writes a `stopped` mark.
+- **`DELETE /api/fleet/respond/sessions/:id/recording`**: delete the whole recording and stop capture. `200 { ok: true,
+  entries, bytes }`; compacting the file runs in chunks as for a stored-activity delete. `404` when there is none.
+- Each of the three changes is written to the Admin log with who did it ([7.7](#session-recording-353)). The
+  `grant` of a person who may not read it is never sent: the state shown on a card is the session view's
+  `recording` ([7.4](#74-view-types)), which carries no text.
+
 #### Admin API
 
 The `/api/admin/*` routes ([7.7](#77-hardening)):
@@ -2089,6 +2817,48 @@ The `/api/admin/*` routes ([7.7](#77-hardening)):
       created again. It writes one `person_deleted` Admin log entry per person, naming who deleted whom.
     - The People page offers it with a checkbox per row, a selection bar (**Delete N…**, **Clear**) and a **Delete**
       button on each row. Both open a confirmation dialog first. Selection is of the rows on the current page only.
+  - Reports (#484, [8.1](#admin-layout-143-mockuppodium-adminhtml)): `GET reports/:report` for `usage`, `spend`, `people`, `sessions`,
+    `failures` and `activity`, and `GET reports/retention` for the Data page's tables.
+    - Query: `from` and `to` (`YYYY-MM-DD`, inclusive, at most 400 days apart, `to` not after today), `by`
+      (`day`, `week` or `month`; weeks start Monday), and `person`, `group` and `model` where the report has them.
+      A bad value is a `400`.
+    - Reply: `{ report, from, to, by, tz, basedOn, oldestDay, columns: [{ key, label, unit }], rows, total }`.
+      `oldestDay` is the first day the rollups hold (today when there are none yet). `partial` is `true` whenever `from` is
+      before it: a period wholly before it has `rows: []`, and one that straddles it returns the rows from `oldestDay`
+      on, so the page says so instead of drawing zeros. `basedOn` is `rollups`, `rollups and live` or `admin log`. A figure that is unknown is `null`, not 0.
+    - `format=csv` returns the same `columns` and `rows` as text (RFC 4180, a header row, a cell that starts with
+      `=`, `+`, `-` or `@` prefixed with `'`), `Content-Disposition: attachment`. The page's JSON export is the
+      reply itself, so an export always matches the screen.
+    - Today is read from the live tables, and every earlier day from the rollups.
+    - **Columns.** Every report's `rows` are objects, and `columns` names their keys in order. `period` is the bucket's
+      first day (`YYYY-MM-DD`, or `YYYY-MM` for `by=month`). A money field is `null` when no priced model was
+      involved. `breakdown` is a query value that adds a `key` column.
+      - `usage`: `period, people, reporters, sessions, peakLive`. `reporters` is the most reporters heard from on any one day
+        in the bucket (a rollup holds a count per day, so a distinct count over a week is not possible). `total` has the same keys over the whole period
+        (`people` and `reporters` counted once, `peakLive` the highest).
+      - `spend`: `breakdown` is `none` (default), `person`, `group`, `model` or `project`. Rows: `period, key, sessions,
+        tokIn, tokOut, costUsd, unpricedSessions`. `key` is absent for `none`.
+      - `people`: one row per person, no `period`: `person, group, sessions, lastReportAt, state` (`active` reported in the
+        period, `quiet` known but not in the period, `never` never reported). The reply also carries
+        `summary: { people, groups, reporters, reporterVersions: {version: count}, engineVersions: {version: count} }`.
+      - `sessions`: `breakdown` is `outcome` (default), `model`, `effort` or `plan`. Rows: `period, key, sessions,
+        avgDurationS, maxDurationS, agentsPerSession, blowouts, maxContextPct`.
+      - `failures`: `breakdown` is `class` (default), `tool` or `person`. Rows: `period, key, count, people` and, while the
+        stored sessions still exist (30 days), `sessionIds` (at most 10) for the History link.
+      - `activity`: read from `admin_log`, not the rollups; `kind` filters. Rows: `t, kind, detail, source`, newest first,
+        at most 1,000. It has no `by`. `truncated` is `true` when the log held more than 1,000 entries in the period, and
+        the page then says "Showing the newest 1,000 entries. Narrow the period or filter by kind to see the rest."
+      - `retention`: `{ tables: [{ name, rows, oldestDay, keptDays }], detail: [{ name, keptDays }] }`.
+      - An empty person, group, model or project is `-` in every `key` and in the filters.
+      - `spend/projection` (`horizon=month|30d`, `window=7|14|30`, default 14, `by=person|group`): rows `key, runRatePerDay, spentThisMonth, projected` (`null` for both `runRatePerDay` and `projected`
+        when there is too little history, with `reason: 'history'`), a `total` row of the same keys, and the reply carries
+        `window: { from, to, days }`, `horizon`, `unpricedSessions` and `historyDays`.
+      - `spend/today/:owner`: `total` and, each adding up to it, `bySession: [{ id, name, model, costUsd, share }]`,
+        `byModel: [{ model, costUsd, share }]`, `bySource: { orchestrator, agents }`; `unpriced` is the count of sessions
+        left out. For a group, `byPerson: [{ owner, costUsd, share }]` comes first and the route takes `?group=1`.
+    - `GET reports/spend/today/:owner` (#482) returns `{ owner, total, bySession, byModel, bySource, unpriced }` for
+      the breakdown, and `GET reports/spend/projection` (#483) the projection; both are described under *Spend*.
+    - A report with names in it (person, group, model, project) returns them as text.
   - Groups: `GET/POST groups`, `DELETE groups/:id`.
   - Reporters (the Reporters page, [7.7](#77-hardening), [8.1](#81-what-the-ui-must-do)): `GET reporters`,
     `GET reporters/:key`, `DELETE reporters/:key`, and `POST reporters/remove`.
@@ -2106,7 +2876,45 @@ The `/api/admin/*` routes ([7.7](#77-hardening)):
       change;
     - orchestrator messaging (#347): `peerMessaging` `{ roundTrips, perMinute, maxChars, retainDays }`, whole numbers
       from 1 to 100, 1 to 60, 1 to 20,000 and 1 to 365 (defaults 10, 6, 20,000 and 30), any of them in one change,
-      written to the Admin log as `peer_limits_changed`.
+      written to the Admin log as `peer_limits_changed`;
+    - the Activity history (#432): the reply's `activityHistory` is `{ settings: { policy, n, unit, capGb },
+      totals: { entries, bytes, sessions, fileBytes }, lastPurge: { at, entries, bytes } | null, authOn }` (`bytes` is
+      the entries' estimated size, `fileBytes` the file's pages in use, for "on disk"), and a change sends
+      `{ activityHistory: { policy, n, unit, capGb } }`. `policy` is `default`, `after`, `end` or `all`; `unit` is
+      `hours`, `days`, `weeks` or `months`; `n` is 1 to 3650 and `capGb` is null or 1 to 1000. A keep policy is a 400
+      while the server runs without a token. A change is written to the Admin log as `activity_history_changed`.
+  - The Activity history (#432, [6.4](#64-failure-and-excerpt-rules)):
+    - `POST activity-history/preview` (`{ settings }`): what saving those settings would do now without doing it.
+      For a keep policy, `{ entries, bytes, sessions, stopsCapturing: false }` is an estimate of what the purge would
+      remove (counts by index, bytes from each session's average entry size), and `sessions` is the number of sessions
+      that would lose at least one entry. For `default`, it is what is stored now, with `stopsCapturing` true when
+      anything is stored. `bytes` is always the estimate of the entries' size, never the file's.
+    - `GET stored-activity?page=&pageSize=&q=&loop=&project=&owner=&olderThanDays=&from=&to=`: the stored sessions
+      (`{ total, page, pageSize, rows, totals, match, projects, owners }`; a row is `{ sessionId, name, project, owner,
+      live, entries, bytes, oldestAt }`). `loop` is `all`, `main` or `agents`; `from` and `to` are epoch
+      milliseconds on the server's clock. `match` is what the filter matches, for "Delete all N that match". When a
+      filter changes which entries count (`loop`, `olderThanDays`, `from`, `to`), `bytes` is an estimate from each
+      session's average entry size. A bad value is a `400`.
+    - `POST stored-activity/delete` (`{ ids }` of at most 200 sessions, or `{ match: <filter> }`, or `{ all: true }`;
+      an empty filter is a `400`): removes the entries, compacts the file, and answers `{ entries, sessions,
+      bytes, freed }`, where `sessions` is the number of sessions that lost at least one entry, `bytes` the estimate of
+      the entries' size and `freed` what the file gave back on disk. It writes one `activity_deleted` entry to the Admin log with the count, the size and how
+      the entries were chosen, and never the entries' text.
+  - Session recording (#353, [6.4](#session-recording-opt-in-353)):
+    - the settings reply carries `recording`: `{ settings: { keepHours, budgetMb, sessionMb }, totals: { recordings,
+      bytes, running }, authOn }`, and a change sends `{ recording: { keepHours?, budgetMb?, sessionMb? } }`:
+      `keepHours` 1 to 168 (default 6), `budgetMb` 64 to 102,400 (default 4,096), `sessionMb` 8 to 4,096 (default 512,
+      and not above `budgetMb`). A value outside its range is a `400`. A change is written to the Admin log as
+      `recording_settings_changed`. The defaults are set from measurement ([6.4](#session-recording-opt-in-353)).
+    - the flag itself is `session-recording` in `features`, like any other, and turning it on is a `400` while the server
+      runs without a token.
+    - `GET recordings?page=&pageSize=&state=&q=`: the recordings, running or kept, as `{ total, page, pageSize, rows,
+      totals }`; a row is a `RecordingAdminRow`: `{ sessionId, name, owner, startedBy, state, limit, loops, label,
+      bytes, keptUntil }`. `state` is `recording`, `stopped` or `limit`. The Stored activity page lists the same
+      recordings through its Source filter, and its delete works on them as on any stored activity.
+    - `POST recordings/:sessionId/stop` and `DELETE recordings/:sessionId`: as the browser routes, for any session.
+      Each is written to the Admin log (`recording_stopped`, `recording_deleted`) with the Admin as the one who did it.
+      The Admin's table asks first, in the warning-bordered confirmation box.
   - Orchestrator messaging on a reporter (#347): `GET reporters/:key/peers` (`{ reporter, peers, trust, rights,
     effective, requests }`: its reporter, the owner's reporters, the owner's Trust my own reporters, and the stored and
     effective rights and open requests of every pair of the owner's reporters, each request as the owner's read lists
@@ -2124,6 +2932,27 @@ The `/api/admin/*` routes ([7.7](#77-hardening)):
 ### 7.2 Database (SQLite)
 
 Path: `PODIUM_DB` env, default `<repo>/data/podium.sqlite` (add `data/` to `.gitignore`). Pragmas: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`. Migrations are a numbered list applied in order and recorded in `schema_migrations`.
+
+The Activity history (#432) is a second file, `activity.sqlite`, in the same folder (`:memory:` when the main
+database is). It has its own schema version in `PRAGMA user_version`, WAL, `synchronous=NORMAL` and incremental
+auto-vacuum, and holds only these tables, which nothing in the main database references:
+
+```sql
+CREATE TABLE entries (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, loop TEXT NOT NULL, seq INTEGER NOT NULL,
+  at INTEGER NOT NULL, t INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, "by" TEXT, note TEXT, ref TEXT);
+  -- unique (session_id, loop, seq); indexes on t and on (session_id, ref); `at` is the entry's own time, `t` the same
+  -- instant on the server's clock; "by", note and ref are set only for an entry sent from Podium
+CREATE TABLE stored_sessions (session_id TEXT PRIMARY KEY, name TEXT NOT NULL, project TEXT, owner TEXT,
+  first_t INTEGER NOT NULL, last_t INTEGER NOT NULL,
+  entries INTEGER NOT NULL, bytes INTEGER NOT NULL, oldest_t INTEGER);  -- what the Admin pages show, with no join into the main
+  -- database; entries, bytes (an estimate) and oldest_t are kept in step with `entries` (schema version 2)
+CREATE TABLE loops (session_id TEXT NOT NULL, loop TEXT NOT NULL, entries INTEGER NOT NULL, first_at INTEGER,
+  last_t INTEGER, PRIMARY KEY (session_id, loop));  -- per-loop counts and first and last times, so the live feed's `history`
+  -- note and a history page cost one indexed read (schema version 3)
+```
+
+A session's rows are removed by code (a deleted session, a purge, an Admin delete, or the hourly run that drops the
+entries of sessions the main database no longer holds), since no foreign key crosses files.
 
 ```sql
 CREATE TABLE sessions (
@@ -2203,7 +3032,34 @@ CREATE TABLE reporters (                                                  -- #14
 );
 CREATE TABLE reporter_sessions (reporter_key TEXT NOT NULL REFERENCES reporters(key) ON DELETE CASCADE, session_id TEXT NOT NULL, PRIMARY KEY (reporter_key, session_id));  -- counts a reporter's sessions and finds the recent ones that still exist
 CREATE TABLE reporter_ignores (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, pattern TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE (kind, pattern));  -- #167, migration 13: a report from a reporter that matches a rule is refused. kind is key, address or version; pattern is text with * for "anything"
-CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);       -- allow_admin_secret_reporting: '1' (default) or '0'; feature.<id>: '0' once the Admin turns a feature flag off and '1' once on, an unset flag taking its default (on, except `respond`, `file-diff` and `peer-messaging`, which are off, #206, #319, #347); wall_notice.<id>: '0' once a notice is off; wall_show_background_sessions: '1' when on (default off); model_prices: JSON of only what the Admin changed from the built-in prices, `{ "<key>": { std?, long? } }` (#117); peer_settings: JSON of the orchestrator messaging limits and retention, `{ roundTrips, perMinute, maxChars, retainDays }` (#347)
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);       -- allow_admin_secret_reporting: '1' (default) or '0'; feature.<id>: '0' once the Admin turns a feature flag off and '1' once on, an unset flag taking its default (on, except `respond`, `file-diff`, `peer-messaging`, `session-recording` and `activity-output`, which are off, #206, #319, #347, #353, #431); wall_notice.<id>: '0' once a notice is off; wall_show_background_sessions: '1' when on (default off); model_prices: JSON of only what the Admin changed from the built-in prices, `{ "<key>": { std?, long? } }` (#117); peer_settings: JSON of the orchestrator messaging limits and retention, `{ roundTrips, perMinute, maxChars, retainDays }` (#347); activity_history: JSON of the Admin's Activity history choice, `{ policy, n, unit, capGb }`, an unset row meaning `default` (#432); recording_settings: JSON of the session recording limits, `{ keepHours, budgetMb, sessionMb }`, an unset row meaning `{ 6, 4096, 512 }` (#353); the recordings themselves are in `activity.sqlite`, not here
+```
+
+Migration 22 (#484) adds the daily rollups that Admin > Reporting reads ([8.1](#admin-layout-143-mockuppodium-adminhtml)). A rollup row
+holds counts, tokens, cost and names (a person, group, model, project and effort), never a prompt, an answer, a tool's
+input or a path. A day is a calendar day in the server's time zone (`day` is `YYYY-MM-DD`); every report states that zone.
+
+```sql
+CREATE TABLE usage_daily (      -- one row per day, person, model and project; a session counts on the day it was last seen
+  day TEXT NOT NULL, owner TEXT NOT NULL, group_name TEXT NOT NULL, model TEXT NOT NULL, project TEXT NOT NULL,  -- '' when none: no owner, no group, no model, no repo
+  sessions INTEGER NOT NULL, agents INTEGER NOT NULL, cost_usd REAL NOT NULL,   -- cost_usd: summed only from priced models (the unpriced-model dash stays a dash); unpriced_sessions says how many sessions had none
+  unpriced_sessions INTEGER NOT NULL, tok_in INTEGER NOT NULL, tok_out INTEGER NOT NULL, tok_cr INTEGER NOT NULL, tok_cw INTEGER NOT NULL,
+  PRIMARY KEY (day, owner, model, project)
+);
+CREATE TABLE sessions_daily (   -- one row per day, outcome, model, effort and plan; durations in whole seconds
+  day TEXT NOT NULL, outcome TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, plan TEXT NOT NULL,   -- outcome: the session's end_reason, or 'running' for one still live when the rollup ran; plan: where the session's plan came from (TaskCreate, TodoWrite, podium_plan) or 'none'
+  sessions INTEGER NOT NULL, duration_s INTEGER NOT NULL, max_duration_s INTEGER NOT NULL, agents INTEGER NOT NULL, blowouts INTEGER NOT NULL, max_context_pct REAL NOT NULL,
+  PRIMARY KEY (day, outcome, model, effort, plan)
+);
+CREATE TABLE failures_daily (   -- one row per day, person, failure class and tool
+  day TEXT NOT NULL, owner TEXT NOT NULL, class TEXT NOT NULL, tool TEXT NOT NULL, count INTEGER NOT NULL,
+  PRIMARY KEY (day, owner, class, tool)
+);
+CREATE TABLE fleet_daily (      -- one row per day for the fleet as a whole
+  day TEXT PRIMARY KEY, active_people INTEGER NOT NULL, active_reporters INTEGER NOT NULL,
+  sessions_started INTEGER NOT NULL, peak_live_sessions INTEGER NOT NULL,
+  reporter_versions_json TEXT NOT NULL, engine_versions_json TEXT NOT NULL   -- { "<version>": reporters heard from that day }
+);
 ```
 
 Migration 15 (#206) links a session to the one it continues after a `/clear` (5.8):
@@ -2301,9 +3157,29 @@ The sweeper runs this hourly:
   up for an hour (so a long outage cannot empty the list before anyone reports), it removes reporters not heard
   from for `days` days (30 unless the Admin sets another) and writes a `reporters_forgotten` entry to the Admin
   log.
+- Before it deletes anything, the same run writes the daily rollups (#484): for each day from the oldest
+  retained session's day to today, it rebuilds that day's rows in `usage_daily`, `sessions_daily`,
+  `failures_daily` and `fleet_daily` from the rows still stored (a day that began before the session retention is
+  skipped, since what is left of it would lower its figures, except the day the retention cutoff falls in: when no run
+  has written it yet, as on the first run after an upgrade, it is written from what is left, so the oldest day can be
+  partly built), in one transaction, so a run twice gives the
+  same rows. A day whose raw rows are already gone is left as it is. Rollup rows older than 395 days are deleted.
+  `peak_live_sessions` is the highest count of sessions live at one second, read from the day's samples while
+  they last and never lowered once written (a day's figure only grows).
+- A rollup holds no session content (see the schema). Admin > Server > Data lists each table, its row
+  count, its oldest day and how long it is kept.
+- The Activity history (#432) is purged by its own run every 5 minutes, not by this hourly one, because the
+  Admin may keep it for hours. It lives in `activity.sqlite` and follows the Admin's policy
+  ([6.4](#64-failure-and-excerpt-rules)). The hourly run also removes the entries of any session the main
+  database no longer holds, so a session's own retention ends its history too (the shorter wins).
+- Session recordings (#353) are purged by the same 5-minute run. Each part older than the Admin's *Keep a recording
+  for* (6 hours by default, at most 7 days) is removed, and so are the parts of a session the main database no
+  longer holds. A recording left with no entry is dropped only once it was started more than that long ago, and never
+  while it is running and its session is live. The run compacts the file as for the Activity history, and writes one `recording_purged` entry to the
+  Admin log per run that removes something, with counts and sizes and never text.
 
-The thresholds are env-configurable: `RETAIN_SAMPLES_MS`, `RETAIN_EVENTS_MS`, `RETAIN_SESSIONS_MS` and
-`RETAIN_ADMIN_LOG_MS`. `GET /api/admin/log` also returns the period as `retainMs`, and Admin > Admin log says
+The thresholds are env-configurable: `RETAIN_SAMPLES_MS`, `RETAIN_EVENTS_MS`, `RETAIN_SESSIONS_MS`,
+`RETAIN_ADMIN_LOG_MS` and `RETAIN_ROLLUP_MS` (395 days). `GET /api/admin/log` also returns the period as `retainMs`, and Admin > Admin log says
 "Entries are kept for N days."
 
 ### 7.3 Ingest rules and derivation
@@ -2383,6 +3259,7 @@ interface SessionView {
     state: 'open' | 'pending' | 'not-taken' | 'closed';
   }[];
   clearedFrom: string | null;           // the session this one continues after a /clear (5.8)
+  recording?: RecordingView | null;     // #353: { state: 'recording' | 'stopped' | 'limit', limit, startedBy, startedAt, stoppedBy, stoppedAt, keptUntil, bytes, loops: { loop, name, recorded }[], ownerAllows }; everything the wall and the page show about a recording and no text; null or absent when nothing is chosen or kept
   agents: AgentView[];                  // AgentReport + modelFamily + costUsdEst
   series: { tokensPerSec: number[]; peakContext: number[]; running: number[]; blowoutSecondsAgo: number[] };  // 60 points, oldest first; peakContext in 0..1; missing seconds zero-filled
 }
@@ -2441,8 +3318,151 @@ The registry removes a client on `close`/`error`, and a write that throws never 
   publishes it on the host's `127.0.0.1` ([4.4](#44-packaging-running-and-distribution)).
 - If `PODIUM_TOKEN` is set, `POST /report`, `DELETE` and `POST /hook` require `X-Podium-Token`. Reads and the
   `drop` route stay open on localhost.
-- Tokens and the admin secret travel in a header over plain HTTP. A server reachable over a network needs a
-  trusted network or a TLS proxy.
+- Over plain HTTP, tokens and the admin secret travel in a header, so a server reachable over a network needs
+  a trusted network or a TLS proxy. With built-in TLS on, the server opens a second port for reporters, which needs a
+  client certificate, and a reporter with a certificate sends no token (*Built-in TLS*, below). The console stays on
+  plain HTTP, and plain HTTP also serves reporters while the Admin allows it. Podium does not serve HTTPS to browsers;
+  a person who wants it puts a proxy in front (#305).
+
+#### Built-in TLS (#577)
+
+Designed in DECISIONS 42, on #323 and #577. Podium makes its own CA, signs a serving certificate, and gives each
+person a client certificate in one generated config file ([5.9](#59-mod-configuration-userconfig)), the way
+`kubeadm` and `kubectl` do. A person's machine trusts nothing new and installs nothing. The certificates are for
+`podium-reporter` only: the TLS port serves no console and no browser (#665).
+
+**Enabling.** TLS is opt-in and off by default. `PODIUM_TLS=on`, or `podiumctl start --tls`, makes the first start
+create a CA and a serving certificate when none exist. A fresh install without it stays on plain HTTP, with
+loopback as the default bind. A CA that exists is never overwritten. A missing or unreadable key stops TLS with a
+log line and leaves HTTP working.
+
+**Ports.** HTTP keeps `4317` and serves the console, Admin and any reporter that uses a token. The reporter port is
+`4318`, changed with `PODIUM_TLS_PORT`, and is HTTPS with mutual TLS. `podiumctl` publishes both and the
+Containerfile exposes both. The port a reporter config names is the one people reach, `PODIUM_TLS_PUBLIC_PORT` when it
+is set and the listening port otherwise; `podiumctl` sets it in container mode to the host's `PODIUM_TLS_PORT`, since
+the server listens on 4318 inside (#649). A value that is not a port is ignored. The reporter port serves only the
+routes a reporter calls (`POST /api/fleet/report` and `/hook`, the peers, asks, diffs, deliveries and recording routes
+under a session, and `POST /api/reporter/renew`); any other path on it is a `404` and the console is not reachable there. The Host check
+applies to both ports (DECISIONS 33).
+
+**Keys and certificates.** The CA, the serving certificate and every person's certificate use EC P-256 keys, made
+with `openssl` (called with `execFile`, no shell).
+
+| Certificate | Lifetime | Names and subject |
+|---|---|---|
+| CA | 10 years, fixed at creation | `CA:TRUE`, `keyCertSign`, with SKID and AKID. |
+| Serving | 1 year (`tls.serving.lifetimeDays`) | `serverAuth`. Names are `localhost`, `127.0.0.1`, the bind address and `PODIUM_ALLOWED_HOSTS`. |
+| Person | 90 days (`tls.reporter.lifetimeDays`) | `clientAuth`. Subject `CN=pdm_<key id>, O=podium`. A name never goes into the subject. |
+
+**Storage.** In `/data/tls` (`data/tls` in standalone mode): `ca.crt`, `ca.key`, `serving.crt`, `serving.key` and
+`previous/` (the last 3 replaced serving certificates). Every key is mode 0600 and the directory 0700. `/data` is
+durable, so a restart or a rebuild keeps the CA. Person certificates are in a table in `podium.sqlite` with
+`fingerprint_sha256` (unique), `serial`, `issuer_fingerprint`, `person_id`, `not_before`, `not_after`,
+`issued_at`, `revoked_at` and `reason`. The CA's and the serving certificate's dates and fingerprint are in a
+small metadata table or in settings rows. Podium keeps only a person's certificate, never their key.
+
+**Serving certificate renewal.** It is always automatic, with no setting to turn it off. It renews at start and `tls.serving.renewBeforeDays` before expiry, with the same
+names and the same CA, and is swapped in with `setSecureContext` without a restart (an open connection keeps the
+old one, a new connection gets the new one). The replaced certificate goes to `previous/`. A failure is logged,
+retried daily and shown to the Admin. An Admin can renew now, which also re-issues for a changed bind address or
+`PODIUM_ALLOWED_HOSTS`.
+
+**Settings.** Changed in Admin > Server > Certificates ([7.1](#certificate-routes-577)). Each change is written to
+the Admin log.
+
+| Key | Default | Range |
+|---|---|---|
+| `tls.serving.lifetimeDays` | 365 | 30 to 825 |
+| `tls.serving.renewBeforeDays` | 30 | 7 to 90 |
+| `tls.reporter.lifetimeDays` | 90 | 30 to 365 |
+| `tls.header.countdown` | true | on or off |
+| `tls.allowReportersOverHttp` | see below | on or off |
+
+`tls.header.countdown` hides only the healthy countdown in the header pill. The pill is blue at 30 days or fewer,
+orange at 10, red at 5, and reads "Certificate expired" after that. It tracks the CA and the serving certificate,
+whichever expires first, and never a person's certificate. A failed renewal and an expired certificate always show.
+
+**Reporters over HTTP.** `tls.allowReportersOverHttp` defaults to **off** on a fresh install that enables TLS and
+to **on** for an existing install, so nothing stops when TLS is turned on. While it is on, the Admin page shows a
+warning that name, token and everything the reporter sends are not encrypted. Turning it off asks first, names how
+many reporters it will refuse, and says the console on loopback keeps working. With it off, the HTTP port (4317)
+refuses reporter routes except on loopback, so reporters must use the reporter port (4318) with a reporter config. The console on loopback stays on HTTP so an Admin can always sign in,
+and the Administrators group always keeps a member, so a server whose certificate expired can be recovered.
+
+**Mapping a certificate to a person.** The reporter port runs `https.createServer` with `requestCert: true`,
+`rejectUnauthorized: true` and `ca` set to the Podium CA(s), so Node drops a client without a valid certificate in the
+handshake. `ca` matters: without it Node verifies against the public roots. Nothing in Podium sets
+`rejectUnauthorized: false`, so a safety check does not rest on application code (#665). A certificate that passed the
+handshake is looked up by SHA-256 fingerprint, never by subject or serial, and its revocation and issuer are checked
+on every request. Extended key usage is enforced both ways.
+
+**Revocation.** An Admin can revoke a person's certificate, their token, or both (Revoke all). Revoking only the
+certificate stops the reporter and leaves the token and the console sign-in. Revoking the token also revokes the
+certificate, so a person who is cut off cannot go on with the other credential; Revoke all is the same action
+by name, and a reissue (or a token rotation followed by one) gives the person a way back. Revoke token and Revoke
+all are refused (`400`) for the last active member of Administrators, as Delete is, and the message says to add
+or move another person first; the admin secret still signs in to Admin either way. Revoking only the certificate
+is not guarded, since the console sign-in does not use it. The server checks the fingerprint's revocation and
+issuer on **every request**, or destroys the open sockets when a certificate is revoked or a CA retired, because a
+keep-alive connection stays authorized after the client `ca` list is narrowed.
+
+**CA rotation.** Planned rotation has an overlap. The server makes a new CA, signs a cross certificate for it with
+the old one (`CA:TRUE`, `keyCertSign`, SKID and AKID, no `pathlen:0`, a lifetime of 120 days that ends the overlap: a
+reporter's 90-day certificate and a margin), and presents `[new leaf, cross certificate]` in that order, leaving the
+cross certificate out once it has expired. A CA is made with `pathlen:1`, because OpenSSL refuses the chain `[leaf, cross]`
+under a root with `pathlen:0`; a CA made before that (`pathlen:0`) cannot take a planned rotation and is refused with
+a message that points to **Rotate CA and end the overlap now**. `GET /api/admin/certificates` says so in `canOverlap`
+(false for such a CA), and the page then shows why before the Admin presses anything: the confirmation explains that the
+CA cannot be rotated with an overlap, **Rotate CA** is disabled with that reason as its description, and only **Rotate CA
+and end the overlap now** is open. The cutover makes a `pathlen:1` CA, so the next rotation can be planned (#638). A new CA's subject is `CN=Podium CA <date>`, so two
+CAs in one overlap can be told apart. Only one overlap is open at a time. The old CA's key is not kept: the planned
+rotation replaces `ca.key` and nothing is signed with the old key afterwards. The listener, the serving renewer, the
+check on each request and the CA(s) in a new config all read one list of trusted CAs, so they cannot disagree. It trusts both CAs for client certificates until the cross certificate expires (its 120 days end the overlap by themselves) or the Admin retires the old CA, whichever comes first, and the new CA
+reaches reporters in the renewal response ([6](#authenticating-by-certificate-577)). The Admin retires the old CA
+when none are left; the page counts the reporters still on it (each person once, by their newest live certificate), and
+retiring refuses them at once and closes the open connections that came in on a certificate the old CA signed. After a leaked CA key there is no overlap (**Rotate CA and end the overlap now**): a hard cutover, no
+in-band delivery, and every reporter needs a reissued config; every open connection that held a client certificate is
+closed. A reporter asleep past both the cross certificate and
+its own certificate's end needs a reissue.
+
+**Failure behavior** (written from #577, pending the maintainer's confirmation in the review of #578).
+
+- *The reporter* says what is wrong in the status line and in `/podium`, never a bare "offline", for each of:
+  no `node`; no config file; a config file that is group- or world-readable; an expired certificate (it says it
+  expired on a named date and that an Admin must generate a new config, from the certificate's `notAfter` and the
+  machine's clock, with no connection attempt); a revoked certificate; a name in the
+  file that does not match the session's; an unreachable server (it retries as today); a server certificate that
+  is expired, not for this name or not signed by the CA in the file; and a skewed clock. When a server certificate
+  looks expired or not yet valid, the status line is `check the clock` if the server's time is unknown (the handshake
+  failed before any reply) or differs from the machine's by more than 5 minutes, and it shows this machine's date (and
+  the server's, from the `Date` header of its last reply, when known). It does not claim the clock is certainly wrong. A
+  server time within 5 minutes of the machine's leaves the message that the server certificate expired (#650). It never
+  sends a credential over `http://` when the URL was `https://`, and never falls back to HTTP unasked. Wording follows
+  `docs/standards/voice.html`.
+- *The helper* returns a structured error and aborts the response on a mid-body upstream error ([5.9](#59-mod-configuration-userconfig)).
+- *The server* logs `tls.*` events (handshake failures, use of a revoked or expired certificate, renewals) and
+  writes every rotate, retire, revoke and setting change to the Admin log. The header pill covers the CA and the
+  serving certificate. Each person's expiry is shown on Admin > People.
+
+**Threat model** (written from #577, pending the maintainer's confirmation in the review of #578). `.github/SECURITY.md` carries the same list for readers.
+
+- *TLS stops:* passive snooping of tokens, reports and answers; an active man in the middle; a host answering as
+  the server (the reporter verifies the CA from its file); replay of captured traffic; a stolen database yielding
+  usable reporter credentials (person certificates are public and tokens are hashes); and an expired or revoked
+  certificate being used (checked on every request).
+- *TLS does not stop:* a compromised machine or a stolen config file (the private key is in it: revoke the
+  certificate and keep the file mode 0600); a stolen console token (revoke it); **a stolen `/data/tls`**, which
+  holds the CA key and so everything it signs (an emergency rotation, a hard cutover and a reissue, and the folder
+  must be backed up and permissioned like a secret); any process running as the same user (it can read the config
+  and use the helper's socket); and plain HTTP while reporters are allowed over HTTP.
+
+**Browsers.** Browsers do not use this TLS (#665). The console and Admin are plain HTTP on the console port, with the
+name-and-token sign-in, and a person who wants HTTPS for them puts a proxy in front. No browser needs the CA, so the
+Certificates page has no Download CA and no browser-trust text.
+
+**Platforms and limits.** macOS and Linux are in scope, Windows is unsupported ([5.9](#59-mod-configuration-userconfig)).
+A public certificate authority and ACME are out of scope: a server with a real name can sit behind a TLS proxy
+(#305).
 
 #### Who a report is from (issue #36)
 
@@ -2462,6 +3482,63 @@ The registry removes a client on `close`/`error`, and a write that throws never 
   that is presented is still checked.
 - A session id that already belongs to another owner is refused with `409`.
 - Any valid credential may `DELETE` a session.
+
+#### Activity history (#432)
+
+Stored activity is reported text and can hold anything an agent read or ran, so it is the second read that is not open.
+
+- Keeping it needs authentication on. Without a token the server runs the *Not stored* policy and refuses to save
+  another.
+- Reading it needs a respond session (the same sign-in as the file diff, *Responding* in
+  [8.1](#81-what-the-ui-must-do)). The session's owner (the signed-in person whose name equals the session's
+  `owner`, compared case-insensitively) and an Admin can read it. An Admin can read it because the Admin runs the
+  server and can already delete it; unlike the file diff, this is not limited to the owner. A session owned by
+  `Admin` is read with the admin secret. A session with no owner can be read only by an Admin. Everyone else gets
+  `403`, and the live route's `history.canRead` is false for them.
+- Only the Admin changes the policy, previews it, lists what is stored and deletes it, through the Admin API
+  ([7.1](#71-endpoints)), which needs the unlocked Admin session. Each change and each delete is written to the
+  admin log (`activity_history_changed`, `activity_deleted`), and each purge run that removes something is
+  (`activity_purged`), with counts and sizes and never entry text.
+- The text is never logged, and a backup of the database folder holds it until a purge or a delete removes it. A
+  delete removes it from the database and compacts the file; it does not change copies made earlier.
+
+#### Session recording (#353)
+
+A recording is the most Podium keeps of a conversation: whole prompts, file contents, command output and tool results
+([6.4](#session-recording-opt-in-353)). It is the third read that is not open, and the only one whose content is written
+as it happens.
+
+- **It needs all three yes answers** to capture or store anything: the Admin's `session-recording` flag, a choice by
+  the session's owner or an Admin, and the reporter's `sessionRecording` option. With the flag off the server lists
+  no loop to record, refuses the mod's route (`403`) and the browser routes (`404`), stops every recording, and keeps
+  what is stored until it expires.
+- **It needs authentication on.** Without a token the flag cannot be turned on and the server reads it as off, for the
+  reason the Activity history gives: nobody could be told apart as the one who may read.
+- **A start needs headroom under the disk budget.** Headroom is one full request, 480,000 bytes. A start (`PUT`) is
+  refused with `409` when the stored total plus 480,000 bytes is above the budget, because ingest stops a recording at the
+  entry that would pass the budget and a recording that starts with less room would stop at its first batch. The error
+  reads "the disk budget has no room for a new recording". Deleting a recording makes room.
+- **Who may read, choose, stop, delete or open it:** the session's owner and an Admin, by the Activity history's
+  rule (a respond session; the signed-in person whose name equals the session's `owner`, compared
+  case-insensitively; a session owned by `Admin` is read with the admin secret; a session with no owner by an Admin
+  only). Everyone else gets `403`. The owner and an Admin are equals here: either can start, stop and delete, and an
+  Admin can do it without the owner's knowing, which is why the notice cannot be hidden and the owner's terminal is
+  told, by the mod, every time.
+- **Everyone** who can open the console sees that a session is recorded: the state, who started it, which loops are and
+  are not recorded and when it goes (`SessionView.recording`, [7.4](#74-view-types)), and never any content. This is
+  not a wall notice and has no way to be closed ([8.1](#session-recording-353-mockuppodium-recordinghtml)).
+- **Only the Admin** changes the retention and the two sizes, lists every recording with its owner, who started it,
+  state and size, and stops or deletes any of them, through the Admin API ([7.1](#71-endpoints)).
+- **The admin log.** Each of these is written with who did it and the session, never any text:
+  `recording_started` (loops, by whom), `recording_stopped`, `recording_deleted` (entries, bytes),
+  `recording_limit` (the session or the budget stopped one), `recording_read` (a replay was opened: a read without
+  `before`, so paging back does not repeat it), `recording_settings_changed` (the three values before and after) and
+  `recording_purged` (a purge run that removed something, with counts and sizes). The flag is `feature_changed`, as for
+  every flag.
+- The text is never logged, in a line, an error or the admin log. A backup of the database folder holds it until a
+  purge or a delete removes it; a delete removes it and compacts the file, and does not change copies made earlier.
+- A recording is redacted on the machine before it is sent and the server adds no second pass. Redaction is best
+  effort ([6.4](#session-recording-opt-in-353)), so the User Guide says that a recording can hold a secret.
 
 #### File diff (#319)
 
@@ -2534,8 +3611,13 @@ A file's diff is source code. Reads are open by design, so this is the one read 
 **The admin log**
 - It records unlocks, failed unlocks, lockouts, people, rotations, revocations, group changes, the reporting
   switch, the feature flags (a flag turned on or off, kind `feature_changed`), the wall settings (a notice
-  turned on or off, background sessions shown or hidden), the model prices (a price set, a price reset) and a
-  reporter taken off the list (`reporter_removed`), each with the source address.
+  turned on or off, background sessions shown or hidden), the model prices (a price set, a price reset), a
+  reporter taken off the list (`reporter_removed`) and the Activity history (#432: a policy saved,
+  `activity_history_changed`; entries deleted by the Admin, `activity_deleted`; a purge run that removed
+  something, `activity_purged`, one entry per run, with counts and sizes and never text) and session recording
+  (#353: `recording_started`, `recording_stopped`, `recording_deleted`, `recording_limit`, `recording_read`,
+  `recording_settings_changed` and `recording_purged`, never text; [7.7](#session-recording-353)), each with the source
+  address.
 
 **Names**
 - A name is 1 to 48 characters and a group name 1 to 24, with no control characters, both unique
@@ -2728,7 +3810,7 @@ This is the only way anything reaches a session from Podium, so every rule here 
 **Security note**
 - `.github/SECURITY.md` says what responding exposes: that it lets the server's people send answers and
   messages into sessions whose owners opted in, what the console shows to whom, and that the browser's token
-  and the session cookie travel over plain HTTP unless a TLS proxy is used.
+  and the session cookie travel over plain HTTP unless a TLS proxy or built-in TLS is used.
 
 #### Orchestrator messaging (#347)
 
@@ -2889,7 +3971,8 @@ read the open routes.
 - Five *different* wrong values from one address throttle it for 15 minutes. The same wrong value sent again
   counts once, so a reporter with a stale credential, which always sends the same one, throttles nobody.
 - A person's token (`pdm_…`, 192 bits) is never counted or throttled, whether right, revoked or unknown, so
-  reporters with a person's token are unaffected whatever else the address sends.
+  reporters with a person's token are not counted or throttled by this counter, whatever else the address sends.
+  The per-address limit on failed requests (below) is separate and does apply to them.
 - While an address is throttled, any other value is answered `429 { ok: false, error: "too many wrong tries", retryAfterSec }`
   with a `Retry-After` header, even the right admin secret, since answering it would confirm a guess.
 - The refusal is logged as `auth.failed` (`reason: "too many wrong secrets"`, `status: 429`) and shown in the
@@ -2897,6 +3980,18 @@ read the open routes.
 - The counters are in memory only.
 - At start the server warns (`server.weak_token`, never the secret) when `PODIUM_TOKEN` is under 24
   characters.
+
+#### Failed requests per address (#667)
+
+- Ahead of every `/api` route, one address may make 300 requests a minute that end in a response of 400 or more.
+  `PODIUM_FAILURE_LIMIT` changes the number (a whole number of at least 1; anything else stops the server at start).
+- Successful requests are never counted. Every response of 400 or more counts, a `404` or `409` included.
+- Past the limit the next request gets `429 { ok: false, error: "too many failed requests", retryAfterSec }` with a
+  `Retry-After` header, until the minute is over. That includes a valid request from the same address, a reporter
+  with a person's token or a certificate included.
+- The first refusal for an address in a window is logged as `auth.throttled` (`warn`). The counters are in memory only.
+- The address is the one Express sees, so behind a proxy it follows `PODIUM_TRUST_PROXY` (7.7, reverse proxy).
+- It is separate from the wrong-secret throttle and the Admin and sign-in lockout, which are unchanged.
 
 #### Plain HTTP warnings (#306)
 
@@ -2934,10 +4029,31 @@ Other places the warning shows:
   entry's text is clipped to 300 characters and stripped of control characters. Past 60,000 characters of
   activity in one report, the server drops the feed of the loops that do not fit (the orchestrator's first,
   then the agents' in order) rather than the report.
+- An activity entry's `id` is clipped to 200 characters, and its `command` and `output` to 20,100 (the 20,000-character
+  cap plus the cut-off marker), keeping line breaks. `exitCode` is a non-negative integer; `commandCut`, `outputCut`,
+  `done` and `failed` are booleans. A wrong type is rejected with the field's path. The new fields are dropped, not
+  rejected, on an entry that is not a `tool` entry, and `output` and `outputCut` are dropped unless the session's
+  `activityOutput` is true. `done`, `exitCode` and `failed` are kept with the feed whatever `activityOutput` says, and
+  count toward neither budget (#598). An older server drops them without `activityOutput`, so it ignores the new use:
+  its rows stay as they were. Past 200,000 characters of commands and output in one
+  report, the server drops the output of the oldest entries that do not fit, then their command (the orchestrator's
+  loop first, then the agents' in order, each from its newest entry back), and keeps their summaries.
 - Reject, never crash, on junk.
 - Never execute, `eval`, or interpolate reported strings into SQL (parameterized statements only) or into HTML
   (the UI uses React text nodes only).
 - CORS: none needed (same origin). Do not enable `*`.
+
+#### The release check's request (#499)
+
+The release check ([6.8](#the-release-check-499-mockuppodium-update-noticehtml-mockuppodium-update-check-adminhtml)) is the only request the
+server makes to a site of its own choosing, and the only one that does not answer a reporter or a browser.
+
+- It is one HTTPS `GET` to `api.github.com` a day, with `User-Agent: podium-release-check` and no body, no token and no
+  identifying field. The reply is read as JSON and only `tag_name`, `prerelease` and `draft` are used.
+- It runs only while the Release check flag is on. Off, the server makes no outbound request.
+- A server that cannot reach GitHub works as before: nothing waits on the check and nothing shows its failure.
+- The container needs no new capability or port for it. A firewall that blocks outbound HTTPS makes every check fail
+  quietly, which looks the same as no newer release.
 
 #### Server logging (issue #140)
 
@@ -2947,14 +4063,18 @@ Other places the warning shows:
 - `PODIUM_LOG_LEVEL` is `debug`, `info` (default), `warn` or `error`.
 - `PODIUM_LOG_FORMAT` is `text` or `json`:
   - `text` (default) prints the message alone, as before. The events added in #140, such as `session.*`,
-    `reporter.*`, `admin.*`, `sweep.removed` and `auth.failed`, print in text only at `debug`, so the default
-    output is unchanged.
+    `reporter.*`, `admin.*` and `sweep.removed`, print in text only at `debug`, so the default output is
+    unchanged. A refused credential (`auth.failed`) and the `tls.*` events print at their own level, so an
+    Admin can see why a reporter is refused. Repeats of one event, route, source and reason within 60 seconds
+    are folded into the first line, and the next line says how many were held back. `json` and the shipper
+    are not folded.
   - `json` prints one object per line with `timestamp`, `level`, `message`, `event`, `service`, `host`,
     `version` and the event's fields.
 - Access logging is one `http.request` line per request at `debug`, with no query string, header or body. A
   request the client drops before the response is one `http.aborted` line at `debug` with the same fields but
   no status.
 - `sweep.removed` names at most the first 10 session ids and counts the rest in `session_ids_omitted`.
+- `update.check_failed` (warn) is one short line when the daily release check ([6.8](#the-release-check-499-mockuppodium-update-noticehtml-mockuppodium-update-check-adminhtml)) gets no usable answer.
 - **Shipping.** When `PODIUM_LOG_SHIP_URL` is set the server also pushes the JSON lines, gzipped NDJSON, to
   VictoriaLogs' `/insert/jsonline` with `_time_field=timestamp&_msg_field=message&_stream_fields=service,host`
   and the headers in `PODIUM_LOG_SHIP_HEADERS` (`Name=Value;Name2=Value2`).
@@ -3060,7 +4180,11 @@ pages, responding, the orchestrator page and the right panel.
 - The left pane, the right pane and the top bar each collapse and expand on their own, from a visible control
   and from a shortcut: `[` left, `]` right, `\` top bar, `w` wall mode, `Esc` leaves wall mode.
 - The shortcuts are ignored while typing in a field, with ctrl, meta or alt held, and on a resize handle.
-- A collapsed pane leaves a 24 px edge tab with an expand button (`aria-expanded`, `aria-controls`). Its
+- Every collapse control in the app is one pill, `EdgeTab` (`.edge-tab`): the top bar's, the Kanban KPI rows',
+  the Plan / Files fold's and both panes'. It shows a styled tip (`data-tip`) on hover and keyboard focus, and a
+  new collapse or open control uses it. A pane's pill sits in the `.cols` grid beside the pane, straddling its
+  inner edge near the top, and the tip names the shortcut ("Collapse the left pane ([)").
+- A collapsed pane leaves a 24 px edge strip holding the same pill as its expand button (`aria-expanded`, `aria-controls`). Its
   content is `hidden`, so it is out of the tab order and the accessibility tree, and its saved width comes
   back when it opens.
 - A collapsed top bar leaves a 4 px strip with a Show top bar button, and takes the info banner with it.
@@ -3068,8 +4192,8 @@ pages, responding, the orchestrator page and the right panel.
   the connection…" alert (and a red strip), and reconnecting clears it.
 - The collapsed flags are remembered in `localStorage` under `podium.collapsed`, apart from the widths. The Board
   (`podium.collapsed.board`) and My reporters (`podium.collapsed.reporters`) keep their own.
-- Below 1040 px the panes are stacked, so the control collapses the stacked section to a one-row tab, and the
-  Wall mode button is hidden.
+- Below 1040 px the panes are stacked, so the pill becomes a 28 px full-width bar that collapses the stacked section
+  (the rail's closes it upward, the activity panel's downward), and the Wall mode button is hidden.
 
 **Wall mode**
 - A Wall mode button (in the top bar, or in the upper right corner when the top bar is collapsed) collapses
@@ -3195,6 +4319,11 @@ activity panel and legend as the wall, with the board in the middle.
 - The board keeps its own collapsed flags under `podium.collapsed.board` and opens with the left and right
   panels collapsed to their edge tabs, so the columns get the width. The top bar starts open. The fleet page's
   flags are separate.
+- The eight KPI tiles collapse and reopen as one element (#538). Open, a small chevron pill sits on the block's bottom
+  edge ("Hide KPI rows"); collapsed, the block is a thin bar the width of the tiles with the open chevron centered
+  ("Show KPI rows"). The choice is saved under its own key, `podium.collapsed.board.kpis`, apart from the top bar's
+  flags and the fleet page's, and the tiles start open. The control is a button with `aria-expanded` and
+  `aria-controls`. Wall mode neither reads nor changes it. There is no shortcut for it.
 - Opening the board clears the selected orchestrator. Selecting a session or "All orchestrators" in the rail,
   or a click on an activity event, leaves the board.
 
@@ -3332,8 +4461,11 @@ menu and the page scroll on their own.
 - It is `<nav aria-label="Admin sections">` of buttons, the current one `aria-current="page"`, in three
   groups:
   - People and access: People, Groups, Reporters.
-  - Server: Settings, Model prices, Reporting and security.
-  - Activity: Spend, Admin log.
+  - Server: Settings, Model prices, Security, Data, Stored activity (#432).
+  - Reporting (#484): Usage, Spend, People and groups, Sessions, Failures, Admin activity.
+  - Activity: Admin log.
+- The page that was "Reporting and security" is now **Security** (#484), so two entries do not both say
+  "Reporting". Its content is unchanged.
 - Each group has a heading (#244, `mockup/podium-admin-menu.html`): a small outline icon, the group's name at
   18 px in the primary ink, and a rule under it, with the groups 24 px apart. The name is 16 px from 761 to
   1280 px of viewport, where the rail is 224 px and 18 px would wrap "People and access". No color is used,
@@ -3352,15 +4484,139 @@ menu and the page scroll on their own.
 - A token shown once sits above the header of whichever page is open until the owner says it is saved.
 
 **People**
-- **Create user**: a Name field and a **Create user** button. The token it makes is shown once.
-- **Reporting people**: a **Search people** label with its field to the right, the table, and the pager. The
-  table's Token column names each token as `pdm_<key id>`, as the Reporters page does, and never shows any of
-  the secret (#218).
+- **Create user**: a Name field and a **Create user** button. The token it makes is shown once, and with TLS on
+  so is the person's reporter config file (see *The show-once box*).
+- **Reporting people**: a **Search people** label with its field to the right, the table, and the pager. A person
+  has two credentials, so the table has a **Reporter certificate** cell and a **Console token** cell, each with its
+  own badge (shape, word and color) and a note that opens on hover and on keyboard focus. The certificate's note
+  gives the date and what happens next; the token's is `pdm_<key id>`, as the Reporters page names it, and no
+  page ever shows any of the secret (#218). There is no Status column. The Group select sits under the person's
+  name and "created" under Last report (#587).
+- **The certificate badge** reads *valid*, *renewal due* (30 days or fewer left; the reporter renews it itself),
+  *lapses soon* (the certificate is close to its end and the reporter has not renewed it, so reissue the config in
+  time), *expired* (the reporter is refused and cannot renew: reissue the config), *revoked* or *none*. With TLS off the cell says "TLS is off" and the certificate actions
+  are disabled.
+- **The Actions menu**: each row has one menu, grouped Console token (Rotate token, Revoke token, or Issue new
+  token for a revoked token), Reporter certificate (Download certificate, Reissue config…, Revoke certificate) and
+  Person (Revoke all…, Delete…). An action that does not apply is disabled, not hidden. Up, Down, Home, End and
+  Escape work, and it closes when focus leaves it. Rotate token, Revoke token, Revoke certificate, Revoke all,
+  Reissue config and Issue new token each open a warning-bordered confirmation in a full-width row under the
+  person that says what will happen; Delete opens the dialog. Revoke token's confirmation says the reporter is
+  refused too, since revoking the token revokes the certificate ([7.7](#77-hardening), *Revocation*). Issue new
+  token's says, while TLS is on and the person's certificate is revoked, that their reporter stays refused until Reissue
+  config (#629).
+  **Download certificate** gives the public certificate and the CA, never a key.
+- **The show-once box** (after Create user, Reissue config or a token rotation) is headed "Token and reporter
+  config for <name>" (or "Token for <name>" when TLS is off). It holds the token settings (`userName`, `token`,
+  `serverUrl`), and with TLS on the file `reporter-config-<name>-<epoch>.pem` with **Download reporter config**, the
+  two steps (save it in `~/.podium/`; optionally set `PODIUM_REPORTER_CONFIG`) and the note that a running
+  session does not pick it up and podium-reporter needs Node.js on the PATH. A reissue shows only the file and a
+  rotation only the token. Its buttons are **Copy token settings**, **Download reporter config** and **I have saved
+  it**; none is primary, since Create user is the page's primary button. The file cannot be fetched again.
 
 **Groups**
 - **Create group**, then **Manage groups**.
 
+<a id="admin-reporting-484"></a>**Reporting (#484, `mockup/podium-admin-reporting.html`)**
+- A menu group of seven pages, all Administrator-only like the rest of Admin. Every page is the usual stack: a
+  header, then one **Period and filters** section above one **Report** section.
+- **Period and filters**: a **Period** choice (Last 7 days, Last 30 days, Last 90 days, This month, Last month,
+  Custom with From and To), **By** (Day, Week, Month), and **Person**, **Group** and **Model** where the report has
+  them. The default is Last 30 days by day. Under the controls one line states the time zone ("Days are in
+  Europe/Berlin time") and what the report is based on and how far back it goes ("Based on daily rollups since
+  2026-03-02; today is read live"). The choice is remembered in `localStorage` under `podium.adminReporting`, read
+  and written with try/catch.
+- **Report**: a summary row of totals, a chart in a neutral ink (never a hue, as on Spend) whose gridlines carry
+  value labels and whose axis names the first and last period, the table the chart is
+  drawn from, and the pager. **Export** has **CSV** and **JSON**, and **Print** prints the page without the menu.
+  An export is exactly the table's `columns` and `rows` for the chosen period and filters ([7.7](#77-hardening),
+  `GET reports/:report`).
+- A period that reaches before the first rollup day says "Podium has no history before 2026-03-02. The figures
+  below cover 2026-03-02 to 2026-04-01." A period with no rows says "Nothing was recorded in this period."
+  Neither draws zeros.
+- The pages:
+  - **Usage**: active people, active reporters, sessions started and the peak of sessions live at once, per
+    period.
+  - **Spend**: total, and by person, group, model or project (**Break down by**), per period. It keeps the
+    content of the old Admin > Activity > Spend page: *Spend today, by person* and *by group* as Chart or Table,
+    now the first section of this page with its `podium.adminSpend` choices unchanged, above the report. Figures
+    are estimated from tokens, not a bill, and a model without a price shows a dash. A session counts on the day it
+    was last seen, so a session that runs past midnight is not split. The page has three sections, in this order:
+    *Spend today* (with the breakdown below), *Projection* and *Spend over time*.
+    - **Breakdown (#482).** A row in *Spend today, by person* is a button (Enter and Space work). It opens the
+      person's breakdown under the list, with a **Close** button, and focus moves to its heading. The breakdown
+      is of the same "since midnight" figure as the row, cut three ways, each adding up to the row:
+      - *By session*: each session that spent something today, with its name, model, the share it spent today and
+        a link to it in History.
+      - *By model*: each model's share of today's spend.
+      - *Orchestrator and agents*: the session's own loop against the agents it launched. A session's today share is
+        split in the same proportion as its whole cost (the agents' `cost_usd_est` against the rest).
+      - The amounts use the same estimate and prices as the table. A part on a model with no price shows a dash
+        and is left out of the sum, and a line under the breakdown counts those sessions ("plus 2 sessions on
+        models without a price"), so the priced parts still add up to what the row shows.
+      - On *by group*, a group row opens the same panel with a **By person** cut first (its members and their
+        shares), and a click on a member opens that person's breakdown. A row for sessions with no owner opens the
+        panel with only the by-session and by-model cuts.
+      - It reads `GET reports/spend/today/:owner` (the live sessions, as the table does; `owner` is the name,
+        `Admin`, or `-` for no owner). The people in it are drawn as text.
+    - **Projection (#483).** A forecast of spend over a horizon ahead, from the rollups.
+      - **Horizon**: *Rest of this month* (default) or *Next 30 days*. **Window**: the trailing 7, 14 (default)
+        or 30 complete days the run rate is taken over. Today is not in the window.
+      - Method: the **run rate** is the window's priced spend divided by its days. *Rest of this month* is the
+        month's spend so far, today included, plus the run rate for each day left after today. *Next 30 days* is
+        30 times the run rate. It does not allow for weekdays, a trend or a price change.
+      - Shown: the projected total, and beside it the window ("14 days, 2026-10-06 to 2026-10-19"), the run rate
+        per day, and the assumptions in one line ("Straight run rate. Models without a price are left out.
+        Not a budget."). Per person or group when **Group by** says so, each with its own run rate.
+      - With fewer than 7 complete days of history in the window (the server has less, or a person has been
+        active on fewer than 3 of them), it shows "Not enough history to project. Podium has N days so far" in
+        place of the number, never a guess. A person under that rule is listed with a dash.
+      - Models without a price are left out and the projection says how many sessions that was in the window.
+      - It reads `GET reports/spend/projection?horizon=&window=&by=person|group`, which returns the same
+        `columns` and `rows` as any report, so CSV and JSON export work. Because the rollups hold the history,
+        no extra history is recorded for it.
+  - **People and groups**: how many people, groups and reporters there are; who reported in the period; who has
+    not reported (quiet for the period, or never); the reporter versions and engine versions in use.
+  - **Sessions**: counts by outcome, model, effort and plan; average and longest duration; agents launched per
+    session; and how many sessions hit a context blowout and how full the window got.
+  - **Failures**: counts by failure class and tool, over time and by person, each class row linking to History
+    filtered to those sessions while they are within the 30 days History keeps. It is the root-cause report.
+  - **Admin activity**: the Admin log filtered by kind and period, read from `admin_log` (90 days).
+- Names are untrusted text, drawn as text nodes. A CSV cell is neutralized as in [7.7](#77-hardening).
+
+**Data and Stored activity (#432, `mockup/podium-activity-history.html`)**
+- **Data** (it was Data kept under Reporting, #484, and moved to the Server group because it now holds a setting
+  and deletes, while a report only reads). Sections: *Daily rollups* (each table, its rows, its oldest day, how long
+  it is kept; the text says a rollup holds counts, tokens, cost and names, and no prompts or tool input), *Detail
+  rows* (samples, events and ended sessions, the Admin log, and Activity history, each with how long it is kept,
+  and a line saying the first four are set with `RETAIN_*` environment variables (`RETAIN_SAMPLES_MS`, `RETAIN_EVENTS_MS`,
+  `RETAIN_SESSIONS_MS`, `RETAIN_ADMIN_LOG_MS`) and cannot be changed here),
+  and *Activity history*.
+- *Activity history* is one form of Settings-style rows, each the full width of its panel. A select picks the
+  policy (Not stored, Purge after a set time, Purge when the session ends, Keep everything). *Purge after* adds a
+  row for the number and unit, and any keep policy adds a row for the optional size cap and a warning bar (the
+  warning color, `role="note"`) that says every reporter will send more, the server will store more, and that only
+  the session's owner and the Admin can read it. A line under the form shows the last purge, and the stored total.
+  Without a server token the keep choices are disabled with a line saying a token is needed.
+- **Save** is the page's one primary button. A save that would remove stored entries (a shorter time, purge when
+  the session ends) or stop capturing first asks, in the warning-bordered confirmation box: it names how many
+  entries and how much space will go, and offers a button for each answer. Returning to Not stored offers *Stop
+  and delete N entries*, *Stop, keep what is stored* and *Cancel*. The count comes from the preview route.
+  Saving is written to the Admin log.
+- **Stored activity** shows the totals (entries, size on disk, sessions, how many match), the filters (session,
+  loop, project, owner, older than, entries from and to, source), a table of sessions with a tick box (name and
+  project, owner, state as shape plus word, entries, size, oldest entry) and the pager. A selection bar offers
+  *Delete N…* for the ticked sessions, *Delete all N that match…* (only with a filter set) and *Delete
+  everything…*. Each opens the confirmation box naming the entries and size that will go, and for a running
+  session says it keeps being captured while the policy keeps history. After a delete a line says how many entries
+  went, how much space was freed, and that the Admin log has it. Source has two choices: Activity and, since #353, Recordings (its rows are sessions with a recording, sized in bytes of
+  text, and *Delete* on them is the recording's delete).
+- Nothing here shows entry text. Reading stored text is in the Activity window ([8.1](#81-what-the-ui-must-do)).
+
 **Spend (#239, `mockup/podium-admin-spend.html`)**
+- Since #484 this page is Reporting > Spend, not Activity > Spend. Its content below is unchanged except that a
+  row is now a button that opens a breakdown (#482), and the projection (#483) and the over-time report sit
+  below it (see *Reporting*).
 - One section, **Spend today, by person** (or **by group**), whose lead says it is estimated from tokens, not a
   bill.
 - Its panel has a toolbar with **Group by** (People, Groups) and **Show as** (Chart, Table) and, at the right
@@ -3399,7 +4655,16 @@ features that can be switched off appear here."
 - The flags are:
   - **Agent activity feed** (`activity-feed`): "Shows an agent's recent tool calls and text in its panel while
     someone watches. Needs the reporter's activityFeed option on the machine as well. Nothing is kept after
-    the panel closes."
+    the panel closes unless the Admin chooses to keep activity in Admin > Server > Data. Off, nothing is captured
+    or kept."
+  - **Bash output in the activity feed** (`activity-output`, #431, `mockup/podium-feed-expand-admin.html`): "Lets a
+    person open a Bash row in the Activity feed to see what the command printed and how it exited. Needs the Agent
+    activity feed on, and the reporter's activityOutput option on the machine as well. Output is held in memory while
+    the panel is open and is never stored. Off, no output is captured or sent." It sits under Agent activity feed.
+    With a warning bar (`role="note"`) under it while it is on: "Output holds whatever a command printed: file
+    contents, environment dumps and tokens the redactor does not know. Podium hides the secrets it recognizes, but it
+    cannot promise to catch all of them. Anyone who can open the Activity panel of a session can read its output
+    while the panel is open." Off by default.
   - **Respond from Podium** (`respond`, #206, [7.7](#77-hardening)).
   - **File diff** (`file-diff`, #319): "Lets the owner of a session, and only the owner, open a changed file's diff in
     the console. The diff is source code, read from the machine only when asked and never stored. Needs the
@@ -3408,7 +4673,18 @@ features that can be switched off appear here."
     orchestrators find and message each other, on the machines they choose, through this server. Only between one
     person's own reporters. Each machine must also turn it on in podium-reporter, and the owner gives each pair the
     right on My reporters."
-- Flags default to on, except `respond`, `file-diff` and `peer-messaging`, which are off by default.
+  - **Session recording** (`session-recording`, #353, [7.7](#session-recording-353),
+    `mockup/podium-recording.html`): "Lets a session's owner, or an Admin, record everything an orchestrator and its
+    agents do, so a run can be replayed to see what happened and why. Needs sign-in on the server. Off by default."
+    With a warning bar (`role="note"`) under it: "A recording holds whole prompts, file contents, command output and
+    tool results. Secrets are removed on the machine before it is sent, but that is best effort. A session is
+    recorded only when its owner has allowed it in the reporter and someone has chosen it. Only the owner and an
+    Admin can read a recording." The row is unavailable, with a line saying a token is needed, when the server has no
+    `PODIUM_TOKEN`.
+  - **Release check** (`update-check`, #499, [6.8](#the-release-check-499-mockuppodium-update-noticehtml-mockuppodium-update-check-adminhtml),
+    `mockup/podium-update-check-admin.html`): "Asks GitHub once a day for the latest Podium release and says at the
+    bottom of the wall when a newer one is out. Off, this server makes no request to GitHub." It is the last row.
+- Flags default to on, except `respond`, `file-diff`, `peer-messaging`, `session-recording` and `activity-output`, which are off by default.
 - They live in the server's `settings` table (`feature.<id>`), apply to every browser, survive a restart, and
   each change is written to the admin log (`feature_changed`).
 - The console gets them in `StateBody.features` and a change as a fresh snapshot.
@@ -3467,6 +4743,82 @@ a map of it.
 **Settings**
 - Admin > Settings > Feature flags has the **Respond from Podium** row ([7.7](#77-hardening)), off by default.
 
+#### Session recording (#353, `mockup/podium-recording.html`)
+
+The mockup is the specification: every string, frame and placement in it is literal, and this section is only a map
+of it. It is built from the components on `development` (the mockup's notes say which are new), and a new component
+becomes a standard in the release-prep PR, not in the feature PR.
+
+**Admin**
+- **Settings > Feature flags > Session recording** (`session-recording`) with its warning bar ([8.1](#feature-flags-118-mockuppodium-feature-flagshtml)
+  lists the others). Unavailable, with a line saying a token is needed, when the server has none.
+- **Settings > Session recording** holds the form of the three limits: *Keep a recording for* (a number and hours or
+  days, 6 hours by default, at most 7 days), *Disk budget* (GB) and *Limit for one session* (MB). Saving is the
+  page's primary button and is written to the Admin log; a shorter time removes recordings that are already older,
+  and the form says so. A line under it says how many recordings and how much is stored, of the budget. The defaults
+  are set from measurement ([6.4](#session-recording-opt-in-353)).
+- **Recordings** (a section on the same page) lists every recording, running or kept: the session, who owns it, who
+  started it, its state as shape plus word (Recording, Stopped, Limit reached), size, when it goes, and **Stop** or
+  **Open replay**, and **Delete**. Stop and Delete ask first in the warning-bordered confirmation box. The state word is
+  `.badge.recording` (a filled dot, in the critical color) while it records.
+- *Stored activity* lists the same recordings with its Source filter set to Recordings.
+
+**Choosing what to record**
+- **Recording** is the last cell of the orchestrator page's facts panel, after Fork, shown to the session's owner and an
+  Admin (to everyone else it states the state and has no button). The facts stay twelve cells in two rows of six:
+  Machine and System become one cell (`Silverbolt | macOS 26.0`). Not recorded, the cell is a button like Resume and
+  Fork: the word **Record** and the record mark. Recorded, it states the state and when it goes.
+- The record mark is a ring with a disc inside. The ring is always neutral; the disc is neutral when idle, absent
+  when the recording is only kept, and critical and pulsing on the app's shared beat (`data-beat`, still under
+  reduced motion) only while it records.
+- **Record** opens the modal with the Respond modal's option rows: the orchestrator, its agents and its forks, each
+  with a box. Recording is per loop, starts when **Start recording** is pressed, and keeps nothing from before. The
+  modal has five states: the owner allows it; just after Start; the owner has not allowed it (nothing to press, and
+  the text names the `sessionRecording` option); the feature is off; and a viewer who is not the owner or an Admin.
+
+**The notice cannot be hidden**
+- It is not a wall notice. Wall notices are for informational notes that someone may close, and consent is not one:
+  there is **no X and no switch**, on the wall or in Admin, and nothing a viewer can do hides it.
+- On the wall, a recorded card gets a second band in the critical color with a filled dot, the words "Recording
+  everything" or "Recording N of M loops", and who started it and when it goes (`.band.recording`).
+- On the orchestrator page, a layer inside the page's surface above its band (`.rec-bar`) says what is kept, who
+  started it, which loops are recorded and which are not (in words, not on the agent table), and when it is deleted,
+  with **Stop recording**, **Open replay** and **Delete recording** for the owner and an Admin.
+- The terminal shows the same text ([5.3](#session-recording-from-the-reporter-353)).
+
+**Stopped, ended and limit**
+- Stopping keeps what was recorded. The page goes to a third state, "Recording stopped", with the same layer in the
+  neutral color and a ring in place of the filled dot, and it keeps **Open replay** and **Delete recording**.
+  A recording that hit a limit reads the same way with the limit named.
+- An ended session shows its final state (the Done band, all agents done) plus that layer. It is reached from
+  History, whose row has a line under the name, "recording kept until <time>" (shown to the session's owner and to an
+  Admin only, from the row's `recording`, [7.1](#71-endpoints)), and from Admin's Recordings table.
+  Nothing is shown once the recording is deleted or has expired.
+
+**Replay**
+- A page of its own, at `#/?open=<id>&replay` (built on #542's address, so it survives a reload; a viewer who may not
+  read it sees the refusal at the same address), reached from **Open replay**, with a back link to the orchestrator
+  page. Read-only: a replay never runs anything or sends anything to the session.
+- It is the Activity feed's rows, oldest first, with the loop's name before each row, and a collapsed result under
+  each tool call, the one its `callSeq` names (a stored row carries its own `seq`, so calls that overlap get their own
+  results; a result with no `callSeq` goes to the oldest call of the same loop and tool still waiting). A loop filter, a position slider (`.scrub`) and **Jump to next failure** move through it. A failed
+  call uses the failure box. A compaction, a clear, a gap, a stop and a limit are marked rows (`.feed li.mark`). A
+  prompt, a clear or a compact that came from Podium, and a `decision`, show who sent it as the Activity history marks
+  a Podium entry ("You, from Podium" for the signed-in viewer's own, else the name). A `decision` is a row of its own
+  right after the call it answers (`callSeq`), reading `Answered a question`, `Approved a plan`, `Sent a plan back`,
+  `Allowed a tool once` or `Denied a tool` by `name` and `failed`, with its text; one with `failed` uses the failure
+  styling, because it refused something.
+- **It loads the newest 200 rows** (`RECORDING_LIMITS.page`) and **Show older** pages back through a long run
+  (`GET …/recording?before=`, [7.1](#71-endpoints)). The whole result is stored; it is not all loaded at once.
+- **Thinking.** The replay says in its header that thinking text is not available, and each place the model thought has
+  a Reasoning row that reads "Thinking: text is not available" ([6.4](#session-recording-opt-in-353)).
+- States: loading ("Loading…"), a failed load (the error box with Try again), nothing recorded yet, a delete asking
+  first, a stopped recording, a recording that reached its limit, and a viewer who is not the owner (the empty-state
+  box with a plain refusal). A loop name too long for its row is cut with its full name as a title.
+- Confirmations: in Admin, the warning-bordered box with a button for each answer. Everywhere else, the Respond
+  modal's confirmation box: a bold question, Cancel, and the critical-colored action button. Stop, Delete and Delete
+  this recording all ask first and say what stays and what goes.
+
 #### Wall notices (#114, `mockup/podium-wall-notices.html`)
 
 Informational notes about the wall sit in one stack at the bottom of the wall, below the cards, one per row.
@@ -3481,8 +4833,18 @@ Informational notes about the wall sit in one stack at the bottom of the wall, b
   On/Off). They are stored in the server's `settings` table and sent to the wall in `StateBody.wall`, so they
   apply to every browser and survive a restart. A change reaches open tabs through the `wall` stream event.
 - All notices default to on.
-- The only notice today is the background-sessions note. A later notice adds one entry to `NOTICES` in
+- The notices are the background-sessions note and the update notice. A later notice adds one entry to `NOTICES` in
   `server/src/fleet/wallSettings.ts` and one to the stack in `Wall.tsx`.
+- **The update notice (#499, `mockup/podium-update-notice.html`)** is the one notice that is not in `NOTICES`. It reads
+  `Podium 0.15.0 is available`, in a green pill (`pill good`), then `You are running 0.14.3.` and a **Release notes**
+  link that opens the release in a new tab. It shows only while `StateBody.wall.update` is set
+  ([6.8](#the-release-check-499-mockuppodium-update-noticehtml-mockuppodium-update-check-adminhtml)).
+  - Its X is "Close notice: Update available". It hides the release the notice names, for everyone
+    (`POST /api/fleet/update-notice/close`), not the notice: a newer release shows it again. The confirmation is titled
+    **Notice dismissed**, says `“Update available” will show again when a release newer than 0.15.0 comes out`, and
+    links to Admin > Settings as the others do.
+  - Its switch is the **Release check** flag under Feature flags, because turning the notice off for good means
+    stopping the check. It has no row under Wall notices.
 - Whether background sessions are shown is a separate server setting (`StateBody.wall.showBackgroundSessions`,
   off by default), switched in Admin > Settings > The wall or by the note's Show them / Hide them link, so
   turning the note off never removes the way to show them.
@@ -3589,6 +4951,33 @@ and the right panel are exactly as above.
   is no Me, no "you" tag and no viewer's band first.
 - #245 retired the "You are" picker, "Only me" and the `podium.me` key. A stale `podium.me` is ignored.
 - Names and machine names are untrusted text and drawn as text nodes.
+
+#### Pinned cards (#496, `mockup/podium-pin-cards.html`)
+
+A person can pin a wall card so it keeps its place until they unpin it. Pinning is on the Fleet wall only: not the
+Board, History, Admin or the rail, and there is no dragging a card to a new place.
+
+- Each wall card has a pin button in its first row, just before the model chip. The row keeps an empty 24 px space
+  there, so no card text is covered; the button is a sibling of the card's own button, laid over that space. Its name
+  is "Pin <session> to its place on the wall" and, once pinned, "Unpin <session>", with `aria-pressed`. It shows on
+  hover and keyboard focus (always on touch screens). A pinned card always shows it, filled, and has a stronger
+  border, so pinned is not shown by color alone. Any number of cards can be pinned.
+- A pin holds a slot: the card's place in reading order (first, second, third...) in its wall, or in its band
+  while Group by makes bands. The slot is the card's position when it was pinned. The card holds that slot while
+  statuses, costs, activity and the sort order change and while other cards appear, leave or re-order; the unpinned
+  cards fill the other slots in the usual order. Unpinning returns the card to the usual order.
+- Two pinned cards never share a slot: a later pin that would take a taken slot goes to the next free one. A slot
+  past the last card means last, and the card returns to its slot as more cards arrive.
+- A slot is a place in the flow, not a row and column, so a change in the number of columns (a window resize, a pane
+  moving) leaves it reading in the same order, left to right and top to bottom.
+- A pinned card the filter hides, or that Group by "Me" leaves out, is not drawn and leaves no gap: the other cards
+  close up, and it returns to its slot when it is shown again. Its pin is kept. Changing Group by changes the
+  band, so the card keeps the slot number it was pinned at in whatever band it falls in.
+- A pin for a session that ended or was removed is dropped once the fleet is loaded, so no stale pin remains and
+  a session that comes back is not pinned.
+- Pins are remembered per browser in `localStorage` under `podium.pins` as a list of `{ id, slot }` (at most 200),
+  read and written with try/catch. They are not per person and the server does not know about them. Anything
+  unreadable is ignored.
 
 #### Reporters page (#142, `mockup/podium-reporters.html`)
 
@@ -3807,6 +5196,17 @@ The header, the facts and a status band are one bordered surface, in this order:
 the session has context blowouts and its Blowouts cell is open) the blowout detail, then the facts, then the
 status band as the last row.
 
+**Address**
+- The open orchestrator is kept in the address as `#/?open=<id>`, the way History keeps its opened session, so a
+  reload or a shared link opens the same page. The wall is `#/`. The selected agent is not in the address.
+- Opening an orchestrator from the wall adds a browser history entry, so Back returns to the wall and Forward opens
+  it again. Moving to another orchestrator (the rail, an activity event) replaces that entry, so Back still returns
+  to the wall.
+- "All orchestrators" and Fleet return to the wall's entry when the console added one, and otherwise replace the
+  address with `#/`. Opening an orchestrator from the board, My reporters or Traffic goes to its address.
+- When the open session leaves the fleet, the address goes back to `#/` with the usual message. An address naming
+  a session that is not in the fleet lands on the wall with "That session is not in the fleet. Sessions that ended are listed in History."
+
 **Header block** (on the left)
 - The name at 28 px beside the state shape, which is the status band's shape.
 - The goal line: the plan title and current step.
@@ -3831,9 +5231,10 @@ The session id is not in the header; it is a cell in the facts grid (#352).
 
 **Facts grid**
 
-Ten cells in fixed places, five to a row (two columns at 640 px and narrower, by the page's own width, so five
-rows). Row one is Agents, Est. cost, Tokens, Running for, Agent time. Row two is Blowouts, Reporter, Session,
-Resume, Fork (#352, `mockup/podium-fork.html`). A cell never moves because another has nothing to say.
+Twelve cells in fixed places, six to a row (two columns at 640 px and narrower, by the page's own width, so six
+rows). Row one is Agents, Est. cost, Tokens, Running for, Agent time, Blowouts. Row two is Machine, System,
+Reporter, Session, Resume, Fork (#352, `mockup/podium-fork.html`; #427, `mockup/podium-facts-system.html`). A cell
+never moves because another has nothing to say.
 
 - **Agents**: running, done, and a red "N failed" button that opens the first failure. The orchestrator counts
   as an agent, running while the session runs, done once it is done, and neither while the session is stale.
@@ -3842,13 +5243,26 @@ Resume, Fork (#352, `mockup/podium-fork.html`). A cell never moves because anoth
 - **Running for**: wall-clock time.
 - **Agent time**: the orchestrator's time plus every agent's own. It can be longer than running for when
   agents run at once.
+- **Machine** (#427) is `machine.name` from the session's report, in the mono face, with the popup "The machine
+  this session runs on. As its reporter named it." A session that sent no machine (no `userName`, so a
+  settings-hooks session or one in the Admin or Unassigned band) reads "Not reported" in the muted face, and the
+  popup says Podium learns the machine only from a reporter that has a user name, and that installing
+  podium-reporter and setting `userName` in its options fills it in.
+- **System** (#427) is `machine.os` as the reporter sent it, such as `Fedora Linux 44` or `macOS 15.4`, with the
+  icon for its family and the wording My reporters and Admin > Reporters use (`systemKind`, `SystemTag`), so the
+  three never disagree. The text is cut with an ellipsis when it is long, and its popup holds the whole text.
+  When the report has a machine but no OS (a reporter older than the one that sends it, or a command that failed
+  on the machine) it reads "Not reported" in the muted face, never blank or "undefined", and the popup says the
+  reporter did not send the system and that updating podium-reporter fills it in. A session that sent no machine
+  reads "Not reported" with the Machine cell's popup. Both cells are focusable, so the popup opens from the
+  keyboard.
 - **Reporter** (#124):
   - `reporterVersion` as given, such as `0.11.0`.
   - "Settings hooks" when it is null, with the hooks note as its tooltip.
   - When `compat` is `outdated` or `newer`, the card chip's wording without the leading "reporter", for
     example `0.3.0 · update`, in the warning color, with the same tooltip text as the note, taken from the
     same `versionNote` so the card and the bar never disagree.
-- **Blowouts** is always present: "none" when clear, otherwise the count with a warning shape, amber at level 1
+- **Blowouts** (the last cell of row one since #427) is always present: "none" when clear, otherwise the count with a warning shape, amber at level 1
   and red at level 2. A button (`aria-expanded`, `aria-controls`) opens and closes the blowout detail (the
   sentence and each affected loop as a link), closed by default. A level 2 blowout also gives the whole
   surface the card's red top edge.
@@ -3863,6 +5277,8 @@ Resume, Fork (#352, `mockup/podium-fork.html`). A cell never moves because anoth
     or when the pointer or focus leaves. It holds text only, and the cell points to it with
     `aria-describedby`. It opens above the cell, aligned to the cell's right edge, so it must not be clipped
     by the surface.
+  - Machine and System have the same kind of popup, text only, opened by hover and keyboard focus and closed by
+    Escape. In the two-column layout a popup in the left column opens to the right, so it stays on the page.
   - The Resume popup says it continues this same session in a new terminal with the whole conversation, that it
     should be run once the session has ended because resuming one that is still running in another terminal
     writes both into the same conversation, that it starts in the session's working directory and does not
@@ -3904,6 +5320,15 @@ Two columns: the plan section and the agent tree.
 selected first and the choice is not saved). While Files is selected the left column is 400 px wide instead of
 300.
 
+- **Folding (#604).** A button on the column's right edge ("Hide plan and files", `aria-expanded`) folds the whole
+  column to a 28 px rail that holds the same button ("Show plan and files") and the name set sideways, and the agent
+  tree takes the width. The rail is as tall as the open column was. The choice is one flag for every orchestrator's
+  page, kept in `localStorage` under `podium.planFiles.collapsed`; it is open unless a stored `true` says
+  otherwise. The panel stays mounted while folded, so the selected tab, its scroll and the plan's page are there
+  when it opens again, and the Files widening is not applied while folded. Where the two columns stack, the same
+  button hides the panel in the stack and the folded bar is 16 px high across the width. Nothing on the page links
+  into the panel, so no link has to open it first.
+
 - **Plan** is the checklist (active, blocked, pending, done, with owner label), under a progress bar that a
   hairline separates from the first step (#200).
   - **Order (#454).** In progress first, then blocked, then pending in plan order, then done in the order they
@@ -3939,11 +5364,29 @@ selected first and the choice is not saved). While Files is selected the left co
     and the new one on the right, level line for line, with a filler beside a line that has no partner (an
     untracked file has an empty left, a deleted one an empty right). In a modal narrower than 720 px it is one
     column with both line numbers. It is text nodes in a monospace face, line breaks kept; removed and added
-    lines carry a `−`/`+` gutter mark as well as color; hunk headers are set apart; long lines scroll inside
-    the modal, each side on its own with the other following. Each `[redacted]` in it is bold and in the
-    critical color, and a footer counts them ("3 values hidden as possible secrets").
+    lines carry a `−`/`+` gutter mark as well as color; hunk headers are set apart. Long lines wrap at the
+    pane's edge by default (#623, `mockup/podium-file-diff-wrap.html`): a line continues under its own text, its
+    number and mark appear once on its first visual line, and side by side each pair of lines sits on one grid
+    row, so the old and new halves stay level (the panes stay two elements in the same order, so keyboard and
+    screen reader order do not change). A **Wrap lines** switch (the `.sw` on/off switch, with its On or Off
+    word) at the lower right of the modal's bottom row turns wrapping off, and then long lines scroll inside the
+    modal, each side on its own with the other following. The choice is kept in the browser
+    (`podium.diffWrap`), and a failed read means wrapped. The switch shows only where a diff is drawn. The
+    note below (the cut and the count of hidden values) sits between the pager and the switch. Each `[redacted]` in it
+    is bold and in the critical color, and a footer counts them ("3 values hidden as possible secrets").
     It shows a loading state (the word "Loading" at 18px with three dots that fill in on the console's shared
-    beat, all three still when the reader prefers reduced motion), and for `binary`, `withheld`, `too-large`, `unavailable`, a deleted, renamed or
+    beat, all three still when the reader prefers reduced motion). The bottom row always starts at the left with the
+    Files tab's pager (#630, `mockup/podium-file-diff-step.html`): "Showing file 3 of 12" and Previous and Next
+    buttons (`‹` and `›`) that step through every file in `session.files`, in the list's order and not only the
+    page the first one came from, without closing the modal. Each button is named for the file it opens ("Next
+    file: src/b.ts") and has that as its tooltip, and is disabled at the first and last file (no wrap). The
+    modal's content changes in place: the title, counts and diff, the scroll back to the top, the Wrap lines
+    choice kept, and focus on the button used (or on the other one when the used one has just been disabled).
+    Only the file in view is asked for, 120 ms after the last step so that holding a key down asks for the file it stops on and not each one it passes (the server holds four a session), and a reply for a file the person has left is dropped, so the last file's
+    diff is never drawn under the next file's title; a 429 or 504 shows for the file in view and the buttons
+    still step past it. The row shows in loading, failed and binary states too. Below 480 px the switch comes up
+    beside the pager and the note takes a line of its own. Where the diff is
+    drawn, and for `binary`, `withheld`, `too-large`, `unavailable`, a deleted, renamed or
     untracked file, and a cut diff ("Showing the first N lines of M") a plain message. Close, Esc and the dimmed
     area return focus to the row.
   - Otherwise the row is not a button. With the `file-diff` flag off nothing changes, since a flag that is off
@@ -4135,6 +5578,27 @@ the loop's recent tool calls and the text it writes ([6.4](#64-failure-and-excer
   the session."
 - *Finished.* A finished agent (or an ended session) is fetched once more for its last entries, offers no
   dropdown, and says "Agent finished, no more updates".
+- *Stored history (#432).* When the Admin keeps the Activity history and a reply carries `history`, the window
+  changes as follows. Under the default policy none of it applies and the window is as described above.
+  - A viewer who may read it (`canRead`) gets the newest stored page from
+    `GET /api/fleet/respond/sessions/:id/activity-history` ([7.1](#71-endpoints)), and the live entries after it
+    without repeating one the page already holds. The 20-entry cap no longer applies. An ended loop still loads
+    its stored page.
+  - Under the list, while older entries are stored, a row says "Showing the newest N" with a **Show older**
+    button (a small button; the row is as tall as the button). Older entries are prepended without moving what
+    the viewer was reading.
+  - The footer count reads "412 stored entries since 2026-10-12" (one entry: "1 stored entry"), and the time
+    reads as above. The line under it says how long entries stay and who can read them: "Kept until 2026-11-11,
+    then purged." (when the policy is a period), "Kept until the session ends, then removed." or "Kept until the
+    session is removed from Podium.", each followed by "Only the owner and the Admin can open it. Secrets are
+    removed before they leave the session." The modal shows the same line.
+  - A viewer who may not read it sees no entries. The list says "History is kept for this session. Only Ed and
+    the Admin can open it." (or, when not signed in, "Sign in as Ed or an Admin to open it."; for a session owned
+    by `Admin`, "Only an Admin can open it." and "Sign in as an Admin to open it."; on the History page, which does
+    not know whether the viewer is signed in, the plain line is followed by "Sign in if that is you."), the count says
+    "Nothing to show", and the line under says stored activity can hold anything an agent read or ran, so it is
+    not shown to other viewers. A refusal from the history route (401 or 403) shows the same.
+  - A failure to load stored history does not stop the live entries; the next fetch asks again.
 - *Expand* opens the same feed, larger, in the console's modal, with the same blur, Esc, X, click-outside,
   focus trap and focus return as the Report modal (one shared `Modal` component), and the dropdown in its
   header. It shares the panel's fetching.
@@ -4149,6 +5613,25 @@ the loop's recent tool calls and the text it writes ([6.4](#64-failure-and-excer
   - The panel learns it from `StateBody.features` and from the route's `enabled: false`. While the panel is
     open it keeps asking the route on its interval (no lease is taken while the flag is off), so the feed
     starts again by itself, empty, when the flag is turned back on.
+- *Output off (#431).* A Bash row's output block says in words why there is none: "Output is turned off by the Admin."
+  (the `activity-output` flag, with "Someone with Admin access can turn it on in Admin > Settings > Feature
+  flags."), or "Output is turned off for this machine." (naming the `activityOutput` option, "Send a Bash command's
+  output"). An older reporter sends no `command`, so a cut row shows its 300 characters with the note "cut at 300
+  characters; this reporter sends no more" and no chevron. The Expand and Respond modals and the replay follow the
+  same words.
+  - A call that finished before the panel was open has its command and no output, since output is captured only while
+    a viewer has the panel open. The mod still reports that the call finished (`done`, `failed`, `exitCode`, #598), so
+    the row shows its status mark on the line and beside Output, and the block says "Output was not collected." and
+    "Output is only collected while this panel is open." The Admin's flag and the machine's option, when off, are said
+    in place of that, and the status mark still shows. A stored-history row says "Output is not kept in history." and
+    "Only the command is stored. Output is shown while someone is watching the session and is gone after."
+  - A call with no `done` is told by its loop. The newest entry of the feed, a Bash call with no `done` and no output,
+    while the loop is working, says "Running." and "The output appears here when the command finishes.", and its line
+    says "running". Any other call with no `done` (an older call, one a later entry follows, or any call of a loop
+    that has ended) says "Output was not collected." with no status mark. An older reporter sends no `done` without
+    output, so its rows read this way, apart from the newest one while the loop works.
+  - A failed call with no exit code shows a cross and the one word "Failed"; with a code, "Exit N, failed". A call that
+    succeeded shows a bare check with "Succeeded, exit 0" for a screen reader.
 - A settings-hooks session has no mod and shows no Activity section.
 
 **Tools used**
@@ -4191,7 +5674,7 @@ Create these. Split further only if a file passes about 250 lines.
 - **Side panel:** `SidePanel` (with `ActivityList`, `AgentDetail`, `FailureBox`, `BlowoutBox`, `ReportDocs`,
   `ActivityFeed`, `Modal`).
 - **Shared pieces:** `Chips` (`ModelChip`, `EffortMeter`, `StatusChip`, `BlowBadge`, `GitLine`), `Sparkline`,
-  `ResizeHandle`, `PaneTab`.
+  `ResizeHandle`, `EdgeTab`.
 - **Hooks:** `useFleet`, `useActivityFeed`, `useResizable`, `usePanes`, `useHotkeys`, `useIdle`, `useTheme`,
   `usePeoplePrefs`, `useWallColumns`.
 - **Logic modules:**
@@ -4357,6 +5840,7 @@ Phases run in order. Each ends with committed, passing, runnable work. Inside a 
 - **Depends on:** T2.2.
 - **Acceptance:**
   1. Selecting a card or rail item shows the page; Back (the "All orchestrators" rail item) returns to the wall; the selection survives `session` updates and clears with a message if the session is removed.
+     The open orchestrator is in the address (`#/?open=<id>`), so a reload, a shared link and the browser's Back button land on the same page (see "Address" under the orchestrator page).
   2. The header, charts, facts grid and status band match the mockup's layout at 1440 px (`mockup/podium-orchestrator.html`, #165; `mockup/podium-facts-reporter.html` for the Reporter cell, #124); the status band is the last row of the summary surface and **Fork** is the last cell of the facts grid, after Session and **Resume** (`mockup/podium-fork.html`, #352).
   3. Charts: three charts of 60 points from `series`; `peakContext` fixed 0..100%; red markers at `blowoutSecondsAgo`; caption counts markers; hover shows a crosshair and the value and time under the pointer and restores the live value on leave. A pure function converts a series to polyline points and is tested (empty, single point, all zeros, max scaling).
   4. The agent tree builds from `parentId`; guides draw correctly for last and non-last children; sorting by Model/Effort/Context/Tokens/Cost/Time/Status orders siblings and keeps the tree (#101) and clicking the same header again reverses it; "Launch order" clears the sort. Unit-tested.

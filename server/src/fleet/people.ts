@@ -183,8 +183,25 @@ export class PeopleStore {
     return { person: this.getPerson(id)!, token: t.token };
   }
 
+  /** Lifts a revocation without touching the token, as a certificate reissue does. True if the person was revoked. */
+  restore(id: number): boolean {
+    return Number(this.stmt('UPDATE people SET revoked_at = NULL WHERE id = ? AND revoked_at IS NOT NULL').run(id).changes) > 0;
+  }
+
   revoke(id: number, now = Date.now()): boolean {
     return Number(this.stmt('UPDATE people SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now, id).changes) > 0;
+  }
+
+  /**
+   * Throws, changing nothing, when `id` is the only active member of Administrators: revoking their token would leave nobody
+   * who can sign in to Admin with a name and a token (#583). A person outside the group, or already revoked, is fine.
+   */
+  assertNotLastAdministrator(id: number): void {
+    const adminsId = this.administratorsGroupId();
+    const p = this.getPerson(id);
+    if (adminsId === null || !p || p.groupId !== adminsId || p.revokedAt !== null) return;
+    const members = Number((this.stmt('SELECT COUNT(*) AS n FROM people WHERE group_id = ? AND revoked_at IS NULL').get(adminsId) as { n: number }).n);
+    if (members <= 1) throw new PeopleError('invalid', `${p.name} is the last person in ${ADMINISTRATORS_GROUP} who can sign in. Add or move another person into it first.`);
   }
 
   /**

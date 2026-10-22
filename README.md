@@ -2,6 +2,15 @@
   <img src="docs/images/podium-logo.png" alt="Podium" width="480">
 </p>
 
+<p align="center">
+  <a href="https://sonarcloud.io/summary/overall?id=eengelking_podium"><img alt="Quality Gate" height="20" src="https://sonarcloud.io/api/project_badges/measure?project=eengelking_podium&amp;metric=alert_status"></a>
+  <a href="https://sonarcloud.io/summary/overall?id=eengelking_podium"><img alt="Coverage" height="20" src="https://sonarcloud.io/api/project_badges/measure?project=eengelking_podium&amp;metric=coverage"></a>
+  <a href="https://sonarcloud.io/summary/overall?id=eengelking_podium"><img alt="Reliability" height="20" src="https://sonarcloud.io/api/project_badges/measure?project=eengelking_podium&amp;metric=reliability_rating"></a>
+  <a href="https://sonarcloud.io/summary/overall?id=eengelking_podium"><img alt="Security" height="20" src="https://sonarcloud.io/api/project_badges/measure?project=eengelking_podium&amp;metric=security_rating"></a>
+  <a href="https://sonarcloud.io/summary/overall?id=eengelking_podium"><img alt="Maintainability" height="20" src="https://sonarcloud.io/api/project_badges/measure?project=eengelking_podium&amp;metric=sqale_rating"></a>
+  <a href="https://github.com/eengelking/podium/actions/workflows/codeql.yml"><img alt="CodeQL" height="20" src="https://github.com/eengelking/podium/actions/workflows/codeql.yml/badge.svg"></a>
+</p>
+
 **A Claude Code session is waiting on you...**
 
 Run a few sessions at once and it happens fast. One is stopped at a permission prompt. One has filled its
@@ -74,9 +83,10 @@ To serve the built UI and the API without a container, `npm run build` and then 
 | Read | To |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | Set Podium up, read the dashboard and use Admin |
-| [Running the server](docs/SERVER.md) | Run it with `podiumctl`, let a team report to one server, put it [behind a reverse proxy](docs/SERVER.md#behind-a-reverse-proxy), and change its settings |
+| [Running the server](docs/SERVER.md) | Run it with `podiumctl`, let a team report to one server, put it [behind a reverse proxy](docs/SERVER.md#behind-a-reverse-proxy) or turn on [built-in TLS](docs/SERVER.md#built-in-tls), and change its settings |
 | [The reporter mod](docs/REPORTER.md) | Install `podium-reporter`, set its options and see what leaves a session |
 | [Orchestrator messaging](docs/MESSAGING.md) | Let your own orchestrators on different machines message each other through Podium: setup, rights, limits, Traffic, troubleshooting and an end-to-end test |
+| [Session recording and replay](docs/REPLAY.md) | Record a session whole and play it back: the three yes answers, what is and is not captured, the notice, retention, limits and who can read it |
 | [Gotchas](docs/GOTCHAS.md) | Sharp edges that are easy to hit, including [why one machine shows several rows on the Reporters page](docs/GOTCHAS.md#reporters-and-machines) |
 | [UI standards](docs/standards/index.html) | How the UI looks and is built: tokens, themes, every component with its states, patterns, voice and accessibility. Open the page in a browser |
 | [Demo](docs/DEMO.md) | A script and a paste-in prompt for showing Podium to other people |
@@ -87,6 +97,15 @@ To serve the built UI and the API without a container, `npm run build` and then 
 | [Contributing](CONTRIBUTING.md) | How to propose and land a change, and the tests and checks to run (PRs go to `development`, not `main`) |
 | [Security](.github/SECURITY.md) | How to report a vulnerability (privately) |
 | [Code of conduct](.github/CODE_OF_CONDUCT.md) | Community expectations |
+| [Community](docs/COMMUNITY.md) | Join the Discord, and how the server is set up and kept safe |
 | [Third-party notices](docs/THIRD_PARTY_NOTICES.md) | Credits and licenses for the color theme palettes |
+
+## Community
+
+Questions, show-and-tell and release news live in the [Podium Discord server](https://discord.gg/JQhPDdEBk). The
+[Code of conduct](.github/CODE_OF_CONDUCT.md) applies there. Bugs and feature requests go in
+[GitHub Issues](https://github.com/eengelking/podium/issues), and a security problem never goes in Discord: report it
+privately as [described in the security policy](.github/SECURITY.md#reporting-a-vulnerability). How to join and
+how the server is run is in [Community](docs/COMMUNITY.md).
 
 Podium is released under the [MIT License](LICENSE).

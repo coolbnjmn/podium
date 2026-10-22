@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  bootUnitStale, buildId, containerRunArgs, gitBuild, launchdPlist, maskConfig, OWN_KEYS, parseArgs, parseEnvFile, PASSTHROUGH, resolveConfig, serializeEnv, serverEnv, stableNodePath, systemdUnit,
+  bootUnitStale, buildId, containerRunArgs, ENGINES, gitBuild, launchdPlist, maskConfig, OWN_KEYS, parseArgs, parseEnvFile, PASSTHROUGH, resolveConfig, serializeEnv, serverEnv, stableNodePath, systemdUnit, tlsStorageWarning,
 // @ts-expect-error bin/podiumctl has no extension, so tsc cannot find it; vitest loads it as ESM
 } from "../bin/podiumctl";
 
@@ -13,6 +13,17 @@ const BIN = path.join(__dirname, "..", "bin", "podiumctl");
 function ctl(home: string, ...args: string[]) {
   return spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: { ...process.env, PODIUMCTL_HOME: home } });
 }
+
+describe("podiumctl url (#676)", () => {
+  it.each([["0.0.0.0", "http://127.0.0.1:4391"], ["::", "http://127.0.0.1:4391"], ["::1", "http://[::1]:4391"], ["myhost.local", "http://myhost.local:4391"]])("calls a %s bind on %s", (bind, url) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-"));
+    try {
+      expect(ctl(home, "url", "--mode", "standalone", "--bind", bind, "--port", "4391").stdout.trim()).toBe(url);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("podiumctl parsing", () => {
   it("splits command, args and flags", () => {
@@ -31,20 +42,134 @@ describe("podiumctl parsing", () => {
 
 describe("podiumctl config", () => {
   it("applies defaults, then file values, then flags", () => {
-    expect(resolveConfig({}, {}, true)).toMatchObject({ mode: "container", port: 4317, bind: "127.0.0.1" });
-    expect(resolveConfig({}, {}, false).mode).toBe("standalone");
+    expect(resolveConfig({}, {}, ["podman"])).toMatchObject({ mode: "container", port: 4317, bind: "127.0.0.1" });
+    expect(resolveConfig({}, {}, []).mode).toBe("standalone");
     expect(resolveConfig({ PODIUMCTL_PORT: "5000" }, {}).port).toBe(5000);
     expect(resolveConfig({ PODIUMCTL_PORT: "5000" }, { port: "6000" }).port).toBe(6000);
   });
 
-  it("rejects bad mode and port", () => {
+  it("rejects bad mode, engine and port", () => {
     expect(() => resolveConfig({}, { mode: "docker" })).toThrow(/mode/);
+    expect(() => resolveConfig({}, { engine: "nerdctl" })).toThrow(/engine must be podman or docker/);
+    expect(() => resolveConfig({ PODIUMCTL_ENGINE: "lxc" })).toThrow(/engine/);
     expect(() => resolveConfig({}, { port: "99999" })).toThrow(/port/);
   });
 
   it("keeps an empty token (auth off) distinct from no token", () => {
     expect(resolveConfig({ PODIUM_TOKEN: "" }).token).toBe("");
     expect(resolveConfig({}).token).toBeUndefined();
+  });
+});
+
+describe("podiumctl container engine", () => {
+  it("prefers podman, then docker, among the installed engines", () => {
+    expect(ENGINES).toEqual(["podman", "docker"]);
+    expect(resolveConfig({}, {}, ["podman", "docker"]).engine).toBe("podman");
+    expect(resolveConfig({}, {}, ["docker"])).toMatchObject({ mode: "container", engine: "docker" });
+    expect(resolveConfig({}, {}, []).engine).toBeUndefined();
+  });
+
+  it("uses a saved engine over the detected one, and a flag over both", () => {
+    expect(resolveConfig({ PODIUMCTL_ENGINE: "docker" }, {}, ["podman", "docker"]).engine).toBe("docker");
+    expect(resolveConfig({ PODIUMCTL_ENGINE: "docker" }, { engine: "podman" }, ["podman", "docker"]).engine).toBe("podman");
+    expect(resolveConfig({ PODIUMCTL_ENGINE: "" }, {}, ["docker"]).engine).toBe("docker");
+  });
+
+  it("maps host.docker.internal to this machine under docker only", () => {
+    const docker = resolveConfig({}, {}, ["docker"]);
+    const args = containerRunArgs(docker, []);
+    expect(args.slice(args.indexOf("--add-host"), args.indexOf("--add-host") + 2)).toEqual(["--add-host", "host.docker.internal:host-gateway"]);
+    expect(containerRunArgs(resolveConfig({}, {}, ["podman"]), [])).not.toContain("--add-host");
+  });
+
+  it("keeps .dockerignore the same as .containerignore, so a docker build leaves out the same files", () => {
+    const rules = (f: string) => fs.readFileSync(path.join(__dirname, "..", f), "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+    expect(rules(".dockerignore")).toEqual(rules(".containerignore"));
+  });
+
+  it("can be set with `config set` and refuses an unknown one", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-"));
+    try {
+      expect(ctl(home, "config", "set", "PODIUMCTL_ENGINE=docker").status).toBe(0);
+      expect(ctl(home, "config", "--mode", "container").stdout).toContain("engine=docker");
+      const r = ctl(home, "config", "set", "PODIUMCTL_ENGINE=nerdctl");
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/engine must be/);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly in container mode when neither engine is installed", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-"));
+    try {
+      // An empty PATH hides both engines.
+      const r = spawnSync(process.execPath, [BIN, "logs", "--mode", "container"], { encoding: "utf8", env: { ...process.env, PODIUMCTL_HOME: home, PATH: home } });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("neither podman nor docker is installed");
+      const st = spawnSync(process.execPath, [BIN, "status", "--mode", "container"], { encoding: "utf8", env: { ...process.env, PODIUMCTL_HOME: home, PATH: home } });
+      expect(st.status).toBe(3);
+      expect(st.stdout).toContain("engine:   none");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("podiumctl with both engines installed", () => {
+  // Stand-in engines on an otherwise empty PATH: `inspect` says whether each one runs a podium container.
+  function fakeEngines(home: string, engines: Record<string, { running?: boolean; info?: string }>) {
+    for (const [name, { running, info }] of Object.entries(engines)) {
+      const file = path.join(home, name);
+      fs.writeFileSync(file, `#!/bin/sh
+case "$1" in
+  --version) exit 0 ;;
+  info) ${info ? `echo "${info}" >&2; exit 1` : "exit 0"} ;;
+  container) ${running ? 'echo "running healthy"; exit 0' : "exit 1"} ;;
+  *) exit 1 ;;
+esac
+`);
+      fs.chmodSync(file, 0o755);
+    }
+  }
+  const run = (home: string, ...args: string[]) =>
+    spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: { ...process.env, PODIUMCTL_HOME: home, PATH: home } });
+
+  it("refuses a start under one engine while the other runs the container, and names it", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-"));
+    try {
+      fakeEngines(home, { podman: { running: true }, docker: {} });
+      const r = run(home, "start", "--mode", "container", "--engine", "docker");
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("already running under podman");
+      expect(r.stderr).toContain("podiumctl stop --engine podman");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("points a stop at the engine that runs the container", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-"));
+    try {
+      fakeEngines(home, { podman: { running: true }, docker: {} });
+      const r = run(home, "stop", "--mode", "container", "--engine", "docker");
+      expect(r.stdout).toContain("Not running under docker");
+      expect(r.stdout).toContain("podiumctl stop --engine podman");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("shows why `docker info` failed, such as a socket the user cannot open", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-"));
+    try {
+      fakeEngines(home, { docker: { info: "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock" } });
+      const r = run(home, "logs", "--mode", "container");
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("permission denied while trying to connect");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -140,7 +265,7 @@ describe("podiumctl with a retired ANTHROPIC_ADMIN_API_KEY left in the config", 
 describe("podiumctl command construction", () => {
   const cfg = resolveConfig({ PODIUM_TOKEN: "s3cret", STALE_AFTER_MS: "9000" }, { port: "4400" });
 
-  it("never puts the token on the podman command line", () => {
+  it("never puts the token on the container engine's command line", () => {
     const env = serverEnv(cfg, true);
     const args = containerRunArgs(cfg, Object.keys(env));
     expect(args.join(" ")).not.toContain("s3cret");
@@ -241,6 +366,16 @@ describe("podiumctl trust proxy (#305)", () => {
 
   it("documents the setting in the help text", () => {
     expect(fs.readFileSync(path.join(__dirname, "..", "bin", "podiumctl"), "utf8")).toContain("PODIUM_TRUST_PROXY    ");
+  });
+});
+
+describe("podiumctl failed-request limit", () => {
+  it("passes PODIUM_FAILURE_LIMIT through to the server, in both modes, and documents it", () => {
+    expect(PASSTHROUGH).toContain("PODIUM_FAILURE_LIMIT");
+    const cfg = resolveConfig({ PODIUM_FAILURE_LIMIT: "1200" });
+    expect(serverEnv(cfg, true)).toMatchObject({ PODIUM_FAILURE_LIMIT: "1200" });
+    expect(serverEnv(cfg, false)).toMatchObject({ PODIUM_FAILURE_LIMIT: "1200" });
+    expect(fs.readFileSync(path.join(__dirname, "..", "bin", "podiumctl"), "utf8")).toContain("PODIUM_FAILURE_LIMIT  ");
   });
 });
 
@@ -377,7 +512,7 @@ describe("podiumctl CLI", () => {
 
 describe("podiumctl covers every server setting (#157)", () => {
   // Read by the server but not a user setting: podiumctl sets it itself in the container (PODIUM_BUILD comes from the image build, #400).
-  const SET_BY_PODIUMCTL = ["PODIUM_HOST_HOME", "HOST", "PORT", "PODIUM_BUILD"];
+  const SET_BY_PODIUMCTL = ["PODIUM_HOST_HOME", "HOST", "PORT", "PODIUM_BUILD", "PODIUM_TLS_PUBLIC_PORT"];
   const serverSrc = path.join(__dirname, "..", "server", "src");
   function sources(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -435,4 +570,149 @@ describe("podiumctl build identity (#400)", () => {
     expect(text).toMatch(/^ENV PODIUM_BUILD=\$PODIUM_BUILD$/m);
     expect(text.indexOf("ARG PODIUM_BUILD")).toBeGreaterThan(text.indexOf("COPY --from=build /app/frontend/dist"));
   });
+});
+
+describe("podiumctl built-in TLS (#580)", () => {
+  const tlsDir = "/home/me/.podium/tls";
+  const on = resolveConfig({ PODIUM_TLS: "on" }, {}, ["podman"]);
+
+  it("is off unless --tls or PODIUM_TLS=on, and the HTTPS port defaults to 4318", () => {
+    expect(resolveConfig({}, {}, ["podman"])).toMatchObject({ tls: false, tlsPort: 4318 });
+    expect(resolveConfig({ PODIUM_TLS: "off" }).tls).toBe(false);
+    expect(resolveConfig({ PODIUM_TLS: "on" }).tls).toBe(true);
+    expect(resolveConfig({}, { tls: true }).tls).toBe(true);
+    expect(resolveConfig({ PODIUM_TLS: "on", PODIUM_TLS_PORT: "8443" }).tlsPort).toBe(8443);
+  });
+
+  it("rejects a TLS value that is not on or off, a bad HTTPS port, and the HTTP port reused", () => {
+    expect(() => resolveConfig({ PODIUM_TLS: "yes" })).toThrow(/PODIUM_TLS must be on or off/);
+    expect(() => resolveConfig({ PODIUM_TLS_PORT: "0" })).toThrow(/HTTPS port/);
+    expect(() => resolveConfig({ PODIUM_TLS: "on" }, { port: "4318" })).toThrow(/different/);
+  });
+
+  it("reads --tls=off as off, and a saved PODIUM_TLS=on loses to it", () => {
+    expect(resolveConfig({ PODIUM_TLS: "on" }, { tls: "off" }).tls).toBe(false);
+    expect(resolveConfig({}, { tls: "on" }).tls).toBe(true);
+    expect(parseArgs(["start", "--tls=off"]).flags.tls).toBe("off");
+  });
+
+  it("saves --tls and --tls=off in config.env", () => withEngine("[]", (home, run) => {
+    run("build", "--mode", "standalone", "--tls");
+    expect(parseEnvFile(fs.readFileSync(path.join(home, "config.env"), "utf8")).PODIUM_TLS).toBe("on");
+    run("build", "--mode", "standalone", "--tls=off");
+    expect(parseEnvFile(fs.readFileSync(path.join(home, "config.env"), "utf8")).PODIUM_TLS).toBe("off");
+  }));
+
+  it("takes PODIUM_TLS and PODIUM_TLS_PORT with `config set`", () => {
+    expect(OWN_KEYS).toEqual(expect.arrayContaining(["PODIUM_TLS", "PODIUM_TLS_PORT"]));
+  });
+
+  it("publishes the HTTPS port and mounts the TLS folder only with TLS on", () => {
+    const off = containerRunArgs(resolveConfig({}, {}, ["podman"]), [], tlsDir);
+    expect(off.join(" ")).not.toContain("4318");
+    expect(off.join(" ")).not.toContain("/data/tls");
+    const args = containerRunArgs(on, [], tlsDir);
+    expect(args).toContain("127.0.0.1:4317:4317");
+    expect(args).toContain("127.0.0.1:4318:4318");
+    expect(args).toContain(`${tlsDir}:/data/tls:U`);
+  });
+
+  it("maps the host HTTPS port to the inner one, and uses no :U under docker", () => {
+    const docker = resolveConfig({ PODIUM_TLS: "on", PODIUM_TLS_PORT: "8443" }, { bind: "0.0.0.0" }, ["docker"]);
+    const args = containerRunArgs(docker, [], tlsDir);
+    expect(args).toContain("0.0.0.0:8443:4318");
+    expect(args).toContain(`${tlsDir}:/data/tls`);
+    expect(serverEnv(docker, true)).toMatchObject({ PODIUM_TLS: "on", PODIUM_TLS_PORT: "4318" });
+    expect(serverEnv(docker, false)).toMatchObject({ PODIUM_TLS: "on", PODIUM_TLS_PORT: "8443" });
+    // The container listens on 4318, but a person reaches it on the host's port, and that is what a config file must name (#649).
+    expect(serverEnv(docker, true)).toMatchObject({ PODIUM_TLS_PUBLIC_PORT: "8443" });
+    expect(serverEnv(docker, false)).not.toHaveProperty("PODIUM_TLS_PUBLIC_PORT");
+    expect(serverEnv(resolveConfig({}), true)).not.toHaveProperty("PODIUM_TLS");
+  });
+
+  it("warns when a started container has no mount at /data/tls, and only then", () => {
+    expect(tlsStorageWarning([{ Destination: "/data" }, { Destination: "/data/tls" }])).toBeNull();
+    expect(tlsStorageWarning([{ Destination: "/data" }])).toMatch(/lose the CA/);
+    expect(tlsStorageWarning([])).toMatch(/lose the CA/);
+  });
+
+  it("carries openssl and exposes both ports in the image", () => {
+    const text = fs.readFileSync(path.join(__dirname, "..", "Containerfile"), "utf8");
+    const runtime = text.slice(text.lastIndexOf("FROM "));
+    expect(runtime).toMatch(/apt-get install[^\n]*\bopenssl\b/);
+    expect(runtime).toMatch(/^EXPOSE 4317 4318$/m);
+    expect(runtime.indexOf("openssl")).toBeLessThan(runtime.indexOf("USER node"));
+  });
+
+  it("documents --tls and the TLS folder in --help", () => {
+    const r = ctl(fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-")), "--help");
+    expect(r.stdout).toContain("--tls");
+    expect(r.stdout).toContain("--purge-tls");
+    expect(r.stdout).toContain("PODIUM_TLS_PORT");
+  });
+
+  // Stand-in engine: records its arguments, and `container inspect --format {{json .Mounts}}` answers with MOUNTS.
+  function withEngine(mounts: string, fn: (home: string, run: (...a: string[]) => ReturnType<typeof spawnSync>) => void) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "podiumctl-"));
+    try {
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, "podman"), `#!/bin/sh
+echo "$@" >> "${home}/calls"
+case "$1" in
+  --version|info|rm|rmi|volume) exit 0 ;;
+  image) exit 0 ;;
+  container) case "$*" in *Mounts*) echo '${mounts}'; exit 0 ;; *) echo "running healthy"; exit 0 ;; esac ;;
+  run) exit 0 ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+      fn(home, (...a) => spawnSync(process.execPath, [BIN, ...a], { encoding: "utf8", env: { ...process.env, PODIUMCTL_HOME: home, PATH: bin } }));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  it("rm says the CA is kept, and keeps the folder, unless --purge-tls --yes", () => withEngine("[]", (home, run) => {
+    fs.mkdirSync(path.join(home, "tls"));
+    fs.writeFileSync(path.join(home, "tls", "ca.crt"), "x");
+    const kept = run("rm", "--mode", "container", "--engine", "podman");
+    expect(kept.status).toBe(0);
+    expect(kept.stdout).toContain(`${path.join(home, "tls")} is kept`);
+    expect(fs.existsSync(path.join(home, "tls", "ca.crt"))).toBe(true);
+    const refused = run("rm", "--mode", "container", "--engine", "podman", "--purge-tls");
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain("--purge-tls --yes");
+    expect(fs.existsSync(path.join(home, "tls", "ca.crt"))).toBe(true);
+    const purged = run("rm", "--mode", "container", "--engine", "podman", "--purge-tls", "--yes");
+    expect(purged.status).toBe(0);
+    expect(purged.stdout).toContain("every reporter config must be reissued");
+    expect(fs.existsSync(path.join(home, "tls"))).toBe(false);
+  }));
+
+  it("rm --purge says the database goes but the CA stays", () => withEngine("[]", (home, run) => {
+    fs.mkdirSync(path.join(home, "tls"));
+    const r = run("rm", "--mode", "container", "--engine", "podman", "--purge", "--yes");
+    expect(r.stdout).toContain("deletes the database");
+    expect(r.stdout).toContain("is kept");
+    expect(fs.existsSync(path.join(home, "tls"))).toBe(true);
+  }));
+
+  it("rm says nothing about a TLS folder that does not exist", () => withEngine("[]", (_home, run) => {
+    expect(run("rm", "--mode", "container", "--engine", "podman").stdout).not.toContain("tls");
+  }));
+
+  it("rm --purge-tls --yes names `unshare` when the folder cannot be deleted, instead of a stack trace", () => withEngine("[]", (home, run) => {
+    fs.mkdirSync(path.join(home, "tls"));
+    fs.chmodSync(home, 0o500); // the parent is read-only, so the folder cannot be removed from it
+    try {
+      const r = run("rm", "--mode", "container", "--engine", "podman", "--purge-tls", "--yes");
+      if (process.getuid?.() === 0) return; // root deletes it anyway
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("podman unshare rm -rf");
+      expect(r.stderr).not.toContain("at ");
+    } finally {
+      fs.chmodSync(home, 0o700);
+    }
+  }));
 });

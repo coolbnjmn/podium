@@ -14,6 +14,12 @@ export interface RespondContext {
   flagsOn: boolean;
   /** The Admin's file-diff flag (#319). On its own it lets a person sign in, so the Files list can open a diff. */
   diffOn: boolean;
+  /** The Admin's `session-recording` flag (#353). On its own it lets a person sign in, so Record, Open replay and Delete recording work. */
+  recordingOn: boolean;
+  /** Signing in is offered only to read kept Activity history (#432): the sign-in copy then says so. */
+  historyOnly?: boolean;
+  /** Signing in is offered only to choose, open and delete session recordings (#353): the sign-in copy then says so. */
+  recordingOnly?: boolean;
   /** A sign-in ended while the page was open (12 idle hours, a restart, a new token): the next form says so once. */
   expired: boolean;
   signIn: (name: string, token: string) => Promise<SignInResult>;
@@ -37,7 +43,7 @@ export function useRespond(): RespondContext | null {
 /** How often the page checks the sign-in is still there, so an ended one is noticed before the next answer. */
 const CHECK_MS = 60_000;
 
-export function RespondProvider(props: { children: ReactNode; api?: RespondApi; flagsOn: boolean; diffOn?: boolean; peersOn?: boolean }) {
+export function RespondProvider(props: { children: ReactNode; api?: RespondApi; flagsOn: boolean; diffOn?: boolean; peersOn?: boolean; historyOn?: boolean; recordingOn?: boolean }) {
   const api = props.api ?? respondApi;
   const [me, setMe] = useState<RespondMe | null>(null);
   const [expired, setExpired] = useState(false);
@@ -58,16 +64,16 @@ export function RespondProvider(props: { children: ReactNode; api?: RespondApi; 
 
   // Asked again when the Admin's flags flip, and once a minute.
   // With the Admin's flags off nobody can respond, so the server is not even asked. Orchestrator messaging (#415) also
-  // lets a person sign in, for My reporters, even with responding off.
+  // lets a person sign in, for My reporters, even with responding off; so does kept Activity history (#432), to read it.
   useEffect(() => {
-    if (!props.flagsOn && !props.diffOn && !props.peersOn) {
+    if (!props.flagsOn && !props.diffOn && !props.peersOn && !props.historyOn && !props.recordingOn) {
       setMe(null);
       return;
     }
     void refresh();
     const t = setInterval(() => void refresh(), CHECK_MS);
     return () => clearInterval(t);
-  }, [refresh, props.flagsOn, props.diffOn, props.peersOn]);
+  }, [refresh, props.flagsOn, props.diffOn, props.peersOn, props.historyOn, props.recordingOn]);
 
   const signIn = useCallback(
     async (name: string, token: string): Promise<SignInResult> => {
@@ -107,6 +113,10 @@ export function RespondProvider(props: { children: ReactNode; api?: RespondApi; 
 
   const flagsOn = props.flagsOn;
   const diffOn = props.diffOn === true;
-  const value = useMemo<RespondContext>(() => ({ me, flagsOn, diffOn, expired, signIn, signOut, refresh, openFor, open, close, api }), [me, flagsOn, diffOn, expired, signIn, signOut, refresh, openFor, open, close, api]);
+  // True when the sign-in exists only to read kept Activity history: nothing to respond to, no diffs, no peers.
+  const recordingOn = props.recordingOn === true;
+  const historyOnly = props.historyOn === true && !flagsOn && !diffOn && props.peersOn !== true && !recordingOn;
+  const recordingOnly = recordingOn && props.historyOn !== true && !flagsOn && !diffOn && props.peersOn !== true;
+  const value = useMemo<RespondContext>(() => ({ me, flagsOn, diffOn, recordingOn, historyOnly, recordingOnly, expired, signIn, signOut, refresh, openFor, open, close, api }), [me, flagsOn, diffOn, recordingOn, historyOnly, recordingOnly, expired, signIn, signOut, refresh, openFor, open, close, api]);
   return <Ctx.Provider value={value}>{props.children}</Ctx.Provider>;
 }

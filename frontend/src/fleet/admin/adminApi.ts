@@ -19,6 +19,18 @@ export interface PersonRow {
   revokedAt: number | null;
   lastReportAt: number | null;
   machines: string[];
+  /** The person's reporter certificate (#587): null with TLS off, or when they never had one. Never a key. */
+  certificate?: { notAfter: string; revoked: boolean } | null;
+}
+/** What `GET /people` answers: the page, the groups for the Group select, and whether TLS is on (#587). */
+export interface PeopleList extends Paged<PersonRow> {
+  groups: GroupChoice[];
+  tls?: boolean;
+}
+/** The reporter config file the server makes for a person, shown once (SPEC 5.9). */
+export interface ConfigFile {
+  filename: string;
+  content: string;
 }
 export interface GroupRow {
   id: number;
@@ -117,6 +129,23 @@ export interface ModelPricesView {
   models: ModelPriceRow[];
 }
 
+/** Activity history (#432): the shapes the Data and Stored activity pages share with the server's routes. */
+export type {
+  ActivityHistoryPolicy,
+  ActivityHistoryPreview,
+  ActivityHistoryPreviewBody,
+  ActivityHistorySettings,
+  ActivityHistoryState,
+  ActivityHistoryUnit,
+  LastPurge,
+  StoredActivityList,
+  StoredDeleteBody,
+  StoredDeleteResult,
+  StoredFilter,
+  StoredSessionRow,
+  StoredTotals,
+} from "../../../../server/src/fleet/activityHistoryTypes";
+
 export class AdminError extends Error {
   constructor(
     readonly status: number,
@@ -134,6 +163,7 @@ export function makeApi(base = "/api/admin"): AdminApi {
     const res = await fetch(`${base}${path}`, {
       method,
       credentials: "same-origin",
+      cache: "no-store",
       headers: { "X-Podium-Admin": "1", ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });

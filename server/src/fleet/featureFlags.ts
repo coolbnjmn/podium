@@ -10,20 +10,34 @@ export interface FeatureDef {
 }
 
 export const ACTIVITY_FEED = 'activity-feed';
+/** A Bash command's output in the Activity feed (#431): off until the Admin turns it on. Needs `activity-feed` on as well. */
+export const ACTIVITY_OUTPUT = 'activity-output';
 /** Respond from Podium (#206): off until the Admin turns it on. */
 export const RESPOND = 'respond';
 /** A changed file's diff, opened by the session's owner (#319): off until the Admin turns it on. */
 export const FILE_DIFF = 'file-diff';
 /** Orchestrator messaging between one person's own reporters (#347, #412): off until the Admin turns it on. */
 export const PEER_MESSAGING = 'peer-messaging';
+/** The release check (#499): on until the Admin turns it off. Off, the server makes no request to GitHub. */
+export const UPDATE_CHECK = 'update-check';
+
+/** Session recording (#353): a session's owner, or an Admin, records what an orchestrator and its agents do. Off until the Admin turns it on, and never on without a token. */
+export const SESSION_RECORDING = 'session-recording';
 
 export const FEATURES: readonly FeatureDef[] = [
   {
     id: ACTIVITY_FEED,
     name: 'Agent activity feed',
     description:
-      "Shows an agent's recent tool calls and text in its panel while someone watches. Needs the reporter's activityFeed option on the machine as well. Nothing is kept after the panel closes.",
+      "Shows an agent's recent tool calls and text in its panel while someone watches. Needs the reporter's activityFeed option on the machine as well. Nothing is kept after the panel closes unless the Admin chooses to keep activity in Admin > Server > Data. Off, nothing is captured or kept.",
     defaultOn: true,
+  },
+  {
+    id: ACTIVITY_OUTPUT,
+    name: 'Bash output in the activity feed',
+    description:
+      "Lets a person open a Bash row in the Activity feed to see what the command printed and how it exited. Needs the Agent activity feed on, and the reporter's activityOutput option on the machine as well. Output is held in memory while the panel is open and is never stored. Off, no output is captured or sent.",
+    defaultOn: false,
   },
   {
     id: RESPOND,
@@ -44,6 +58,19 @@ export const FEATURES: readonly FeatureDef[] = [
     description:
       "Lets a person's orchestrators find and message each other, on the machines they choose, through this server. Only between one person's own reporters. Each machine must also turn it on in podium-reporter, and the owner gives each pair the right on My reporters.",
     defaultOn: false,
+  },
+  {
+    id: SESSION_RECORDING,
+    name: 'Session recording',
+    description:
+      "Lets a session's owner, or an Admin, record everything an orchestrator and its agents do, so a run can be replayed to see what happened and why. Needs sign-in on the server. Off by default.",
+    defaultOn: false,
+  },
+  {
+    id: UPDATE_CHECK,
+    name: 'Release check',
+    description: 'Asks GitHub once a day for the latest Podium release and says at the bottom of the wall when a newer one is out. Off, this server makes no request to GitHub.',
+    defaultOn: true,
   },
 ];
 

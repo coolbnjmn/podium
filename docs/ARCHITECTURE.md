@@ -26,9 +26,12 @@ with the default view at `#/`. An earlier usage dashboard lived here until it wa
   - [Known reporters](#known-reporters)
   - [Prompt and answer modal](#prompt-and-answer-modal)
   - [Activity feed](#activity-feed)
+  - [Activity history](#activity-history)
+  - [Session recording](#session-recording)
   - [Responding](#responding)
   - [File diff](#file-diff)
   - [Orchestrator messaging](#orchestrator-messaging)
+  - [Built-in TLS](#built-in-tls-577)
   - [People view](#people-view)
   - [Logging](#logging)
   - [Shared contract](#shared-contract)
@@ -138,8 +141,12 @@ DECISIONS 20 and 30.
   (#172), or `Admin` with the admin secret, checked by `fleet/nameToken.ts` as the sign-in to respond is.
 - Sessions have an idle expiry, a per-address lockout, and a required `X-Podium-Admin` header on changes.
 - A restart ends every Admin session, which is also how rotating the admin secret ends them.
-- The Admin page (`frontend/src/fleet/admin/`, route `#/admin`) holds a new token in component state only until
-  the owner says it is saved.
+- The Admin page (`frontend/src/fleet/admin/`, route `#/admin`) holds a new token, and a person's reporter config
+  file, in component state only until the owner says it is saved (`OnceBox.tsx`). Neither is written to browser storage,
+  and the file cannot be fetched again: the server keeps the certificate and never the key.
+- Admin > People (`PeopleTab.tsx`, #587) reads `GET /api/admin/people`, which adds `tls` and each row's
+  `certificate` (`notAfter`, `revoked`) while TLS is on. `peopleCert.ts` turns that into the Reporter certificate badge
+  and its note; `RowMenu.tsx` is the per-row Actions menu (a details disclosure placed from its button).
 
 **Opening Admin from the console sign-in** (#215, #272)
 
@@ -245,8 +252,8 @@ File: `FocusView.tsx`. Issues #165, #197 and #287. Mockup: `mockup/podium-orches
   keep their natural height at the top and bottom.
 - The svg's `preserveAspectRatio="none"` viewBox and `vector-effect: non-scaling-stroke` let the graph stretch
   without changing line widths. `chartsFill.test.ts` reads these rules out of `fleet.css`.
-- `.facts` is a five-column grid (two columns at 640 px and narrower) whose 1 px gap over a `--grid` background draws the hairlines.
-- Blowouts, Session, Resume and Fork are whole-cell controls without button chrome. Resume and Fork are one component, `CopyCell`, with a popup that opens on hover and focus above the cell, or below it when the scrolling page has no room above (`.osum` does not clip). `forkCommand` is built next to `resumeCommand` in `derive.ts`, so the page copies a string and builds nothing (#352). The open state of the blowout detail is
+- `.facts` is a six-column grid, twelve cells (two columns at 640 px and narrower) whose 1 px gap over a `--grid` background draws the hairlines.
+- Blowouts, Session, Resume and Fork are whole-cell controls without button chrome. Resume and Fork are one component, `CopyCell`, and Machine and System are `PopCell`s (#427), both built on `usePopup`: a popup that opens on hover and focus above the cell, or below it when the scrolling page has no room above (`.osum` does not clip). `forkCommand` is built next to `resumeCommand` in `derive.ts`, so the page copies a string and builds nothing (#352). The open state of the blowout detail is
   `FocusView`'s own (kept per session id, closed by default) and reaches the cell as `blow`.
 - The Reporter cell takes its tooltip from `HOOKS_NOTE` and `versionNote`, the same sources as the card chip.
 - The old callout stack, the status chip beside the name and `.alert` are gone. `.callout` remains for the agent
@@ -313,11 +320,12 @@ Files: `components/ReportDocs.tsx`, `components/Markdown.tsx`, `components/Modal
 ### Activity feed
 
 Files: `server/src/fleet/activity.ts`, `featureFlags.ts`, `frontend/src/fleet/useActivityFeed.ts`. Issue #118.
-The reasoning is in DECISIONS 24 and 25; mod option `activityFeed` arrived in mod 0.13.0.
+The reasoning is in DECISIONS 24 and 25; mod option `activityFeed` arrived in mod 0.13.0. Since #432 the Admin can
+also keep the feed durably; that is the *Activity history* below and DECISIONS 39.
 
-The feed is observed only. Nothing about an agent's activity is captured, sent or kept unless a viewer is watching
-that loop. There is no table for the feed, no migration, and no entries in the state or the stream. `ingest.ts`
-never sees the entries, because it copies named fields only.
+The live window is observed only. Under the default policy nothing about an agent's activity is captured, sent or
+kept unless a viewer is watching that loop. There is no table for the live feed, no migration, and no entries in
+the state or the stream. `ingest.ts` never sees the entries, because it copies named fields only.
 
 **Server**
 
@@ -348,6 +356,35 @@ never sees the entries, because it copies named fields only.
   pass (`activityText`). Both go through `addActivity`, which does nothing for a loop that is not watched.
 - `report.ts` sends `session.activityFeed` always, and a loop's `activity` only when the option is on and the
   ring is not empty, within a 60,000-character budget per report.
+- Since #431 an entry may also carry a Bash call's `id`, whole `command` and, with the `activityOutput` option and the
+  reply's `watchOutput` listing the loop, its `output` and exit status. They have a separate 200,000-character budget
+  per report, enforced by `withinActivityBudget` in `protocol.ts`, which also drops output the session's option does
+  not allow. DECISIONS 41 has the reasoning.
+- The mod (#431): `activityDetail.ts` builds the pieces. `tool.call` adds a Bash entry with its `id` and `commandDetail`
+  (control characters stripped, `redactBounded` from `recording.ts`, cut at 20,000 characters with the marker). When the call
+  returns, `finishActivity` adds `done`, `failed` and `exitCode` to the entry with that `id` (#598; the exit line is read from
+  the result and no output is kept), and, only with both options on and the loop in `watchOutput` (`setWatchedOutput`, from the
+  transport's `watchOutput`, never wider than `watch`), `output` and `outputCut` as well, so the next report carries it again. `bashOutput` reads the result record's `stdout` and `stderr`, else the text
+  the model reads; the types have no numeric exit code, so `exitCode` is parsed only from an "Exit code N" in that text.
+  `report.ts` keeps commands and output to 200,000 characters (`withinDetailBudget`) and the body to 480,000 bytes
+  (`withinSize`), output first, then commands, oldest first.
+- The server (#431): `ActivityStore` merges an entry that carries an `id` into the one it already holds, so output that
+  arrives after the entry first went out attaches to it. It holds `output` and `outputCut` on the lease
+  only, takes them only while the `activity-output` and `activity-feed` flags and the session's `activityOutput` option are
+  on, serves them only while the flags are on, and drops them with the lease, the session, a flag turned off, and a
+  restart (`dropOutput`). `done`, `exitCode` and `failed` (`statusOf`) are not output (#598): they are held and served with the
+  entry under `activity-feed` alone, survive `dropOutput`, and are dropped with the lease like the entry. `watchedOutput` is the reply's `watchOutput`: the lease loops, never the loops the history lists.
+  The Activity history (schema version 5) stores `command` and `command_cut`, and has no column for output, status or id.
+- The console (#431): `BashRow.tsx` is the one Bash row, shared by the feed's `Entry` (panel, Expand modal and Respond modal) and the
+  replay's `Row`. Only Bash rows open; the open state is the row's own React state, so it follows the entry's key across the refresh.
+  `useRowAnchor` keeps the list's place when a row opens or closes. `useActivityFeed` takes a changed `output`, `done`, `failed` or
+  `exitCode` on a seq it already has, and lays a live twin's output over a stored row. A row with no `output` says why in order: stored
+  history, the Admin's flag (`ActivityOutputFlag`, from the state's features), the session's `activityOutput`, then "Running." or "not
+  collected" (`missingOutput`). Since #598 the mod sends `done` without output too, so a finished call shows its status mark whatever the
+  reason it has no output, and a call with no `done` is told by the loop: `FeedList` takes `active` and marks running only the newest
+  entry, when it is a Bash call with no `done` and no output and the loop is active. An older mod's earlier calls, a call a later entry
+  follows and every call of a loop that has ended read as not collected, with no mark. The replay knows from the recording whether a call
+  has a result and keeps its own wording, "No output was recorded."; it never says running.
 
 **UI**
 
@@ -366,6 +403,107 @@ never sees the entries, because it copies named fields only.
 
 `scripts/podium-sim.ts` reads `watch` from each reply too and sends a scripted entry a second for each watched
 loop that is still working, so the panel can be seen filling without a real session.
+
+### Activity history
+
+Files: `server/src/fleet/activityHistory.ts` (the store), `activityDb.ts` (the second database file),
+`activityHistorySettings.ts` (the Admin's choice), `activityHistoryTypes.ts` (the shapes shared with the routes and
+the Admin pages), `sweeper.ts` (`purgeActivityHistory`), `frontend/src/fleet/admin/DataPage.tsx` and
+`StoredActivityTab.tsx`, and the window changes in `useActivityFeed.ts` and `ActivityFeed.tsx`. Issue #432; the
+reasoning and the alternatives are DECISIONS 39. The seeder for load tests is `scripts/podium-seed-activity.ts`.
+
+- **A second SQLite file.** `activity.sqlite` sits beside `podium.sqlite` (`activityDbPath`), with its own schema
+  version in `PRAGMA user_version`, WAL, and incremental auto-vacuum (set before the first table exists). Nothing in
+  the main database references it and no foreign key crosses files, so code removes a session's rows. It lives in
+  the same `/data` volume, so the container and `podiumctl` need no change. Nothing is written to it under the
+  default policy.
+- **The policy** is one JSON row in the main `settings` table (`activity_history`), read through
+  `ActivityHistorySettingsStore`. A server without a token reads it as `default` and refuses to save another.
+- **Capture needs no lease.** `Fleet` passes `ActivityStore` a function that lists the orchestrator and every
+  running agent of a session, and `watched()` appends them for a session whose reporter has the option on. The mod
+  already sends whatever `watch` lists, so it is unchanged. `Fleet.ingest` hands each report to
+  `ActivityHistory.ingest`, which stores what is new. The mod resends its last 20 entries every report with no
+  ids, so a loop keeps a small tail in memory (the newest stored time and the entries at it), reloaded from the
+  file after a restart, and skips an entry it already has or one older than that. Each entry gets the next `seq` for
+  its session and loop, and two times: `at` as the feed shows it, and `t` on the server's clock (`at` minus the
+  report's clock skew), which the purge and the filters use. Entries sent from Podium are written through the
+  respond bridge with their ref, sender and note.
+- **Aggregates, so nothing scans the table.** `stored_sessions` also holds each session's `entries`, `bytes` (an
+  estimate: text, a Bash command and labels plus 48 bytes a row) and `oldest_t` (schema version 2), and a `loops` table
+  holds each loop's entry count and its first and last times (schema version 3), kept in step in the same
+  transaction as every insert, Podium-entry change and removal chunk. The live feed's `history` note and a history page
+  therefore cost one indexed read, whatever the loop's size. `totals()` and a `list` that filters only on a
+  session's name, project, owner or state read that small table. A filter that changes which entries count (`loop`,
+  `olderThanDays`, `from`, `to`) counts per session through the covering index `entries_session_t (session_id, t,
+  loop)` in slices of about 20,000 rows with a turn for the event loop between them; its `bytes` is then an estimate
+  from the session's average entry size. Times in `list` are on the server's clock (`t`).
+- **Purge and removal run in chunks.** `startSweeper` runs `purgeActivityHistory` every 5 minutes and once at start;
+  a run that starts while one is still going is skipped. A run applies the policy (`after`: older than the period;
+  `end`: sessions that are not live; the cap: oldest first) a chunk at a time: each chunk is its own transaction
+  that selects some rows, deletes them and takes them off their sessions' aggregates, then yields to the event loop.
+  The chunk size starts at 500 rows and adapts to about 25 ms a chunk (at most 5,000), because rows scattered through a
+  big file cost more to delete than rows that sit together. Compaction is `incremental_vacuum` in steps of 500 pages with
+  a yield between, then a WAL checkpoint. A run writes one `activity_purged` admin log row when it removed something.
+  `Fleet.retain()` (hourly) starts the removal of rows of sessions the main database no longer holds without waiting
+  for it, and `deleteSession` does the same for one session. The Admin's deletes and `preview` (an estimate by index
+  counts, with bytes from the session averages) go through the same queue: a purge, a delete and a preview never
+  interleave their chunks, and capture keeps running between chunks. A delete request answers when its removal has
+  finished, which can take a while for a very large delete.
+- **Reads.** The live route's reply may carry a `history` note (counts only). The entries come from
+  `GET /api/fleet/respond/sessions/:id/activity-history`, which needs a respond sign-in for the session's owner
+  or an Admin. The Admin API (`/api/admin/settings`, `activity-history/preview`, `stored-activity`,
+  `stored-activity/delete`) writes the admin log itself.
+- **UI.** The Data page and Stored activity use the Admin's own rows, warning bar, confirmation box and selection
+  bar. In the window `useActivityFeed` loads the newest stored page when `history.canRead`, merges the live entries
+  after it by (time, kind, text) so none shows twice, and `loadOlder` prepends pages by `seq`.
+- **Measured (#432, `scripts/podium-seed-activity.ts`).** On one machine (macOS, Node 24, local SSD), with 14.4 million
+  rows (100 sessions x 5 loops x 20 entries a minute x 1 day, 3.4 GB at about 223 MiB per million rows): `totals()` and
+  an unfiltered or session-level `list` take 0 to 1 ms; a window-filtered `list` takes 0.5 to 9 s without blocking
+  (longest event-loop lag 18 ms); `preview` 0.5 s; a purge of 1.44 million rows 18.6 s and a delete of 2.46 million rows
+  33 s, each never holding the event loop for more than about 50 ms. The first `page()` on a cold file took about
+  106 ms, then 5 ms. Before the rework the same calls blocked the server for 4 to 18 s. With the server live, `GET
+  /api/fleet/state` p50/p99 was 4.6/23 ms idle and 6.2/37 ms during a purge of 3.7 million rows, and capture was not
+  visible in the console's latency (about 3 MiB of file growth a minute at 50 simulated sessions). The issue's example
+  volume (100 sessions x 20 entries a minute x 30 days, about 86 million rows and 20 GB) was not run: these are one day,
+  and everything about 30 days is an extrapolation. Removal takes proportionally longer at that size, in the
+  background.
+- **Limits.** It is not a complete record: the mod keeps 20 entries per loop and one report carries 60,000
+  characters, so a busy session can lose entries, and nothing is replayed after an outage. The size cap compares an
+  estimate of the entries' bytes, not the file's size, because freed pages stay in the file until vacuum.
+
+### Session recording
+
+Files: `server/src/fleet/recordings.ts` (the store), `recordingRoutes.ts` (the mod's and the browser's routes),
+`recordingSettings.ts` (the Admin's three limits), `sweeper.ts` (`purgeRecordings`), `mod/podium-reporter/hooks/recording.ts`
+(the capture), `frontend/src/fleet/components/ReplayPage.tsx`, `RecordPicker.tsx` and `RecordingLayer.tsx`, and
+`frontend/src/fleet/admin/RecordingAdmin.tsx`. Issue #353; the reasoning is DECISIONS 40, and the feature end to end is
+[REPLAY.md](REPLAY.md). This section keeps only the structure.
+
+- **Tables.** `rec_sessions` (one row per recording: state, limit, who started and stopped it, loops, counters) and
+  `rec_entries` (one row per entry, numbered `n` in the server's order, with the mod's `loop` and `seq` and a stored time
+  `t`) in `activity.sqlite`, added as schema steps of `activityDb.ts`. Indexes are `(session_id, n)` and `t`. Nothing in
+  the main database references them; code removes a session's rows. The Admin's three limits are one JSON row,
+  `recording_settings`, in the main `settings` table.
+- **Capture path.** The mod's `Recorder` redacts, numbers (`seq` per loop), cuts and queues entries, and `register.ts`
+  sends them every 5 seconds (early at 256 KB) to `POST /api/fleet/sessions/:id/recording`. The server validates the
+  batch, drops an entry it holds by `(loop, seq)`, enforces the per-session cap and the disk budget as it stores, and
+  answers with the grant, which the mod reads as its on and off switch. A decision, `clear` or `compact` entry is written
+  by the mod, never the server, which only adds the sender of a delivered message to the mod's prompt entry.
+- **The grant.** Every reply to a report carries `recording.consent` (the Admin's flag, a choice, the reporter's option).
+  The report carries `session.sessionRecording`. An older mod sends none and is read as not allowing; an older server
+  sends none and a newer mod reads that as off (SPEC 6.8).
+- **Purge.** `purgeStored` runs the Activity history's purge and `purgeRecordings` together every 5 minutes. Expiry is per
+  part (each row goes `keepHours` after it was stored), removal runs in short chunks that yield to the event loop and share
+  the Activity history's turn-taking, and the file is compacted afterwards.
+- **`/clear` carry-over.** A `/clear` gives the session a new id. When the first report of the new session names the old
+  one in `clearedFrom`, the server moves the running recording's choice, starter and start time to the new session, for the
+  orchestrator's loop, and stops the old one without a `stopped` row.
+- **Reads.** The wall's `SessionView.recording` carries state and times, never text. The text is read through
+  `GET /api/fleet/respond/sessions/:id/recording` (paged, newest 200 first) by the owner or an Admin. A separate
+  `GET .../recording/consent` exists because `SessionView` goes to everyone and so cannot carry whether the owner allowed
+  recording; the picker reads it on open.
+- **UI.** The History marker and the Recording cell read the session's `recording`; the replay is a route of its own
+  (`#/?open=<id>&replay`, `frontend/src/route.ts`) that pairs each result with its call by `callSeq` (`replayItems.ts`).
 
 ### Responding
 
@@ -534,6 +672,113 @@ with real Claude Code sessions: `up` starts a throwaway server from the checkout
 sessions in tmux that load the mod with `--plugin-dir`; `down` stops them. Its test covers only the help, the argument
 checks and `--dry-run`, since a real run costs model usage ([MESSAGING.md](MESSAGING.md#testing-it-end-to-end)).
 
+### Built-in TLS (#577)
+
+Built (#578 to #590, then #665, #667 and #668). #591, a CA option on `$.http.fetch` that would retire the helper, is
+blocked on the engine. This records the structure so the sub-issues agree. The rules are in
+`SPEC.md` 5.9, 6, 7.1 and 7.7, and the reasoning is in DECISIONS 42.
+
+**Listeners.** `server/src/index.ts` has one `app.listen`. With `PODIUM_TLS=on`, `tlsServer.ts` (`startTls`) also
+starts `https.createServer` on the reporter port (`4318`, `PODIUM_TLS_PORT`) with the same Express app behind
+`reporterPortOnly`, next to the HTTP listener (`4317`), after `tlsCa.ts` (`ensureTls`) has made or read the CA and serving certificate. Any failure there
+(openssl missing, a half-present CA, a bad or busy port) logs `tls.failed` and leaves HTTP running. The Host check
+(`hostCheck.ts`) runs on both (33). The reporter server requires a client certificate (`requestCert: true`,
+`rejectUnauthorized: true`, `ca` set to the Podium CA or CAs), so Node drops a connection without a valid one in the
+handshake (the `tlsClientError` log line is `tls.handshake_failed`). `reporterPortOnly` lets through only the paths
+`isReporterRoute` names and `POST /api/reporter/renew` (`isRenewRoute`), and answers any other path with a `404`, so the
+console and Admin are not reachable on it. Nothing sets `rejectUnauthorized: false`, which is what CodeQL's
+`js/disabling-certificate-validation` flagged before #665. Whether the HTTP listener serves reporter routes is the `tls.allowReportersOverHttp` setting (#589). `tlsHttp.ts`
+has `reporterHttpGate`, mounted in `index.ts` ahead of the routers. It acts only when the HTTPS listener is running, the
+socket is not encrypted (the socket, never a forwarded header), the route is one the mod calls (`isReporterRoute`: report,
+hook, and the peers, asks, deliveries, diffs and recording routes under a session), the setting is off and `req.ip` is not
+loopback (`req.ip` follows `X-Forwarded-For` only from a hop named in `PODIUM_TRUST_PROXY`). It answers `403`, logs
+`tls.http_refused` and adds the source to the Reporters page's refused list. The console is never gated. A missing
+setting row reads as on; `index.ts` writes it once when TLS first runs, on if any reporter has ever reported
+(`ReporterStore.hasAny`). `ReporterTransport` is a memory-only map from reporter key to the transport of its last report
+(set by `/report` and `/hook`), and gives the Admin the count of reporters heard from in the last 2 minutes over HTTP.
+
+**Serving certificate renewal (#582).** `tlsRenew.ts` has `ServingRenewer`, made by `startTls` for the listener it
+starts. It checks at start, before the first connection, and then every day on an unref'd timer; the check renews when
+fewer than `tls.serving.renewBeforeDays` remain. A certificate made less than a day ago is left alone, so a renew-before
+longer than the lifetime renews once a day and not at every check. `renewServing` (`tlsCa.ts`) makes the new pair in a
+`.new-*` folder, copies the old pair to `previous/` (certificate and key, keys 0600, the last 3 kept), then renames the
+new one in; `setSecureContext` puts it on the running server. Only one renewal runs at a time. A failure is logged as
+`tls.renew_failed`, kept as `lastFailure` and retried by the next daily check. The two settings are `settings` rows
+named by their SPEC keys (`TlsSettingsStore`). `adminRouter.ts` serves `GET` and `PUT /api/admin/certificates` and
+`POST /api/admin/certificates/renew`, which answer 404 while TLS is off.
+
+**CA rotation (#588).** `tlsRotation.ts` has `TrustStore`, the one list of trusted CAs: `ca.crt`, and during an overlap
+`previous-ca.crt`, `cross.crt` and `rotation.json`. The listener's `ca`, the renewer's `setSecureContext`, `trustedIssuers`
+(the certificate check on each request and the renewal check) and the CA in a config file all read it, so a certificate
+cannot pass TLS and then be refused for its issuer. It ignores a cross certificate that is not the current CA's key signed
+by the previous CA, which is what a rotation that stopped part-way leaves. `rotateCa` builds the new CA, the cross
+certificate and the serving certificate in a `.new-*` folder and moves them in, the overlap files first and `ca.key` after.
+`ServingRenewer.exclusive` runs a rotation and a serving renewal one at a time. `startTls` keeps the open TLS sockets, since
+narrowing the client `ca` list does not drop one that is already authorized: a hard cutover destroys every socket that held
+a client certificate, and retiring destroys the ones whose certificate the old CA signed. `PersonCertStore.reportersByIssuer`
+counts people for the Admin page's "N of M reporters still use the old CA".
+
+**The CA and `/data/tls`.** The server makes and renews certificates by calling `openssl` with `execFile`.
+`ensureTls` works in a `.new-*` folder inside the directory and renames the finished files in, so a failure leaves no
+half-made CA; a CA that exists is read and checked (key matches certificate, serving certificate signed by it), never
+rewritten. A serving certificate that exists is kept until `ServingRenewer` renews it (below). Dates and fingerprints are
+read from the certificates (`describeCert`) and logged as `tls.listening`, not stored twice.
+`/data/tls` holds `ca.crt`, `ca.key`, `serving.crt`, `serving.key` and `previous/`, keys at mode 0600. In container
+mode `podiumctl` keeps this folder on durable storage, and its remove path leaves it unless asked. Person
+certificates are rows in `podium.sqlite`, found by SHA-256 fingerprint. A serving renewal calls `setSecureContext`
+on the live HTTPS server, so nothing restarts. `setSecureContext` replaces the whole context, so the renewer passes
+`ca` again with every new serving certificate; without it a renewed server would verify client certificates against
+the public roots and refuse every reporter.
+
+**Person certificates (#583).** `tlsPeople.ts` makes a person's key and `clientAuth` certificate with `openssl`
+(`issuePersonCert`) in a `.new-*` work folder that is deleted afterwards, so the key exists on disk only for those
+seconds and Podium never stores it. It builds the config file (`buildReporterConfig`) from the key, the certificate
+and the CA. `PersonCertStore` (`tlsClientAuth.ts`) is the `person_certificates` table (migration 23): fingerprint
+(primary key), serial, issuer fingerprint, person, the certificate PEM, dates and revocation. A reissue stores the
+new row and revokes the earlier live ones in one transaction. The rows go with the person (`ON DELETE CASCADE`).
+
+**Who is calling.** `requireToken` in `routes.ts` turns a request into an identity before it reads a body. With TLS
+the socket's client certificate is checked first, on every request, by `certAuth` (`tlsClientAuth.ts`): the
+connection must be `socket.authorized` (so Node verified it against the Podium CA), the fingerprint must be a stored
+one, not revoked, not past its dates and issued by a CA the server currently trusts. A certificate that was presented
+and fails is a 401 with `client certificate refused` and never falls back to a token; no certificate at all goes on
+to the token check as before. The same `userName` match applies. Revoking only the certificate leaves the token
+(and the console sign-in) working; revoking the token also revokes the certificate. Because the row is read on every request,
+a revoke reaches a keep-alive connection that is still open and no socket has to be destroyed.
+
+**Renewing a person's certificate (#585).** `tlsReporterRenew.ts` serves `POST /api/reporter/renew`, mounted at
+`/api/reporter` in `index.ts` ahead of the token check, because it is answered to a certificate only. `authorizeRenewal`
+takes the certificate's bytes from the socket (`getPeerCertificate().raw`), recomputes the fingerprint from them and looks
+it up. The certificate must be `socket.authorized`, which on the reporter port is always true by the time a route runs.
+Anything else, an expired certificate included, is refused as `NOT_TRUSTED`; there is no grace and no expired-certificate
+branch (#665), so there is nothing to forge. The body is the new public key (EC P-256 only);
+`issueForPublicKey` signs it with `openssl x509 -new -force_pubkey` through `signClientCert` (`tlsPeople.ts`), the one function that makes the work folder, writes the `clientAuth` extension file, picks the serial, signs and reads the dates back for both it and `issuePersonCert`, which differ only in how the public key reaches `openssl x509`, and `PersonCertStore.add` stores it without revoking
+the old row, so both work until the old one expires (`replace`, used by an Admin reissue, still revokes). The helper
+(`helper.mjs`) renews at start, before a request, and on a 10 minute timer, one renewal at a time per process and one at a
+time per file through a numbered lock, `<file>.lock.<n>`: an O_EXCL file naming its owner, held by the highest number and free when there is none or it is older than a minute; a waiter takes it by creating the next number, which only one of several can do, so no stale file is ever removed from under a waiter, and a number is never used twice (a holder lets go by aging its file, not removing it, and only the newest file is kept); a holder refreshes its file's time every 20 s while it runs. While it holds the numbered lock it also takes the plain `<file>.lock` that the first version of the code used (lock scheme 1), and refreshes and releases that too, so a session on the older helper is excluded; only the numbered lock's holder ever removes a stale plain lock. `<file>.lock.scheme` records the scheme (2); a helper that reads a higher number refuses to renew (`LOCK_SCHEME`) instead of ignoring a lock it does not understand. Under the lock it re-reads the file first and takes a
+newer certificate another session wrote instead of renewing again, checks the answer is for its own key and signed by a CA
+the file already holds, and replaces the file with `writeAtomic` (a temporary file in the same folder, fsync, rename, mode
+0600). A refusal is remembered until the file changes; a failure that may pass is retried after a minute. Before it
+connects, the helper compares the certificate's `notAfter` with its clock. An expired certificate is never renewed and
+nothing goes upstream: every request gets `X-Podium-Helper-Error: CERT_EXPIRED` with the date in its message, which
+`tlsLink.ts` words in the status line and in `/podium`, from the config's `expires` line at start too. `authenticate` also limits renewal to once an hour per person (`MIN_RENEW_INTERVAL_MS`): while the newest live certificate was issued less than an hour ago it answers 429 with `Retry-After` and `TOO_SOON` before any signing, with no exception. The helper sets its next try from `Retry-After` (`retryDelayMs`). The one setting, the lifetime, is `TlsSettingsStore.getReporter()`.
+
+**The helper.** `mod/podium-reporter/hooks/helper.mjs` is a Node script that `register.ts` starts with
+`$.process.spawn` once per session. It reads the reporter config file, makes the HTTPS connection, and listens on a
+Unix socket. The seam in the mod is the one `FetchLike` at `register.ts` (`const fetch: FetchLike = ...`): with a
+config file it sends through the helper with `$.http.fetch(url, { ...init, socketPath })`, so `Transport` and its
+callers do not change. The held answer request keeps the engine's 30 second limit, now on the leg to the helper.
+The helper forwards only the calls in `REPORTER_ROUTES`, a copy of `REPORTER_ROUTE_TEMPLATES` in `tlsHttp.ts` that
+`reporterHelper.test.ts` compares. It builds the upstream request from the matched route, and anything else gets `403` with
+`X-Podium-Helper-Error: ROUTE_NOT_ALLOWED` (#668).
+
+**Admin.** New routes under `/api/admin/certificates` and on `people/:id/certificate/...` live in `adminRouter.ts`.
+`POST /people` returns the config file with the token, once; if the certificate cannot be made the person and the
+token are still returned, with a `configError`, since the token is shown once too. Revoking a token, alone or with
+Revoke all, is refused for the last active Administrator (`PeopleStore.assertNotLastAdministrator`); revoking only the
+certificate needs no guard, because the console sign-in does not use it.
+The Certificates page and the header pill, and the reworked People page, are in `frontend/src/fleet/admin/`.
+
 ### People view
 
 Files: `frontend/src/fleet/people.ts`, `components/People.tsx`, `usePeoplePrefs.ts`, `admin/SpendTab.tsx`. Issues
@@ -566,9 +811,32 @@ The server stores nothing new about people. It adds three things:
 
 **Spend**
 
-Spend by person or group is not on the wall. It is Admin > Spend (`admin/SpendTab.tsx`). That page opens its own
-`useFleet` while it is showing, builds its rows with `spendRows` from `people.ts` and pages them in the browser
-with Admin's `Pager`. Its choices are in `podium.adminSpend`.
+Spend by person or group is not on the wall. It is Admin > Reporting > Spend (#484), `admin/SpendPage.tsx`, whose
+first section is `admin/SpendTab.tsx`. That section opens its own `useFleet` while it is showing, builds its rows with
+`spendRows` from `people.ts` and pages them in the browser with Admin's `Pager`. Its choices are in `podium.adminSpend`.
+A person's row opens `SpendBreakdown.tsx` (#482), which reads `reports/spend/today/:owner`; the sections below it are
+`SpendProjection.tsx` (#483) and the shared period report.
+
+**Reporting (#484)**
+
+Files: `server/src/fleet/rollups.ts`, `reports.ts`, `reportRoutes.ts`, `reportDeps.ts`, `frontend/src/fleet/admin/
+reportsApi.ts`, `useReport.ts`, `ReportParts.tsx`, `ReportPages.tsx`, `scripts/podium-seed-history.ts`.
+
+- The reports read daily rollups (`usage_daily`, `sessions_daily`, `failures_daily`, `fleet_daily`, migration 22), not the
+  detail tables, so they reach back past the 30 days sessions and events are kept. `Fleet.retain()` calls
+  `writeRollups` before `db.retain()` deletes anything. A rebuild of a day is one transaction and gives the same rows
+  twice, a day's `peak_live_sessions` only grows, and a day that began before the session retention is not rebuilt,
+  since the sessions left would lower its figures. Rollup rows past `RETAIN_ROLLUP_MS` (395 days) go.
+- Today has no rollup yet. `buildRollups` makes the same rows from the live tables on every request, so a report is
+  rollups for earlier days plus the live day.
+- `reports.ts` holds the queries and the envelope (`from`, `to`, `by`, `tz`, `basedOn`, `oldestDay`, `partial`, `columns`,
+  `rows`, `total`), the projection and the spend breakdown. The breakdown uses `sessionSpendSince` in `db.ts`, the same
+  per-session since-midnight figure that makes `kpis.costTodayByOwner`, so its parts add up to the table row.
+  `reportRoutes.ts` mounts the routes behind the Admin unlock check and turns a reply into CSV.
+- On the page, `useReport` fetches one report for the chosen period and filters, and the export buttons reuse that
+  reply: JSON is the reply, and CSV is the same query with `format=csv`. Choices are in `podium.adminReporting`.
+- `scripts/podium-seed-history.ts` writes about 45 days of seeded rollups into a throwaway database, so the
+  simulator can show a projection and the long-period reports. It refuses the real database path.
 
 **Mod**
 
@@ -593,7 +861,7 @@ mod's logs stay on its machine.
 
 | `PODIUM_LOG_FORMAT` | Output |
 |---|---|
-| `text` (default) | The message alone, which is what the server always printed. The events added in #140 (`quietInText`: `session.*`, `reporter.*`, `admin.*`, `sweep.removed`, `auth.failed`, `report.conflict`, `report.accepted`, `http.request`, `http.aborted`) print only at debug, so the default text output is unchanged. |
+| `text` (default) | The message alone, which is what the server always printed. The events added in #140 (`quietInText`: `session.*`, `reporter.*`, `admin.*`, `sweep.removed`, `report.conflict`, `report.accepted`, `http.request`, `http.aborted`) print only at debug, so the default text output is unchanged. `auth.failed`, and `tls.*` events at warn or error, are the exception (#602): they print at their own level so an Admin sees why a reporter is refused. The info-level `tls.*` lines (`tls.listening`, `tls.ca_created`) stay quiet in text, so the default output has no line for the reporter port. `foldedInText` folds them: the first line for one event, route, source and reason prints, repeats inside 60 seconds do not, and the next line after the window carries `(N more in the last minute not printed)`. The memory is 1000 kinds, oldest dropped first. Folding is for the text output only; `json` and the shipper get every line. |
 | `json` | The whole record as one line, every event at its own level. The shipper always gets this JSON record. |
 
 **Redaction** (`redact.ts`)
@@ -641,7 +909,7 @@ The shipper runs only when `PODIUM_LOG_SHIP_URL` is set. Request paths never awa
 |---|---|
 | `index.ts` | `server.start` (with the settings, never the token), `server.stop` (then up to 1 s to send what is left) |
 | `requestLog.ts` | `http.request` at debug (method, path without query, route pattern, status, duration, source); `http.aborted` the same for a request the client dropped first |
-| `fleet/routes.ts` | `auth.failed`, `report.rejected`, `report.accepted` at debug, `report.conflict`, `hook.rejected`, `ingest.failed`, `request.failed` |
+| `fleet/routes.ts` | `auth.failed` (printed in text, folded), `report.rejected`, `report.accepted` at debug, `report.conflict`, `hook.rejected`, `ingest.failed`, `request.failed` |
 | `admin/adminRouter.ts` | `admin.<kind>` for each Admin Log entry, with the action, source address and ids, never the entry's text |
 | `fleet/fleet.ts` | `session.started`, `session.ended`, `session.deleted`, `reporter.connected` (the first time an owner, machine and reporter kind is heard, or after a silence longer than `STALE_AFTER_MS`), `reporter.silent` (when a session goes stale), `sweep.removed` |
 | `fleet/sweeper.ts` | `sweeper.failed` |
@@ -652,7 +920,7 @@ without a logger is silent.
 ### Shared contract
 
 The Report types live in `server/src/fleet/protocol.ts` and, byte for byte between markers, in
-`mod/podium-reporter/hooks/protocol.ts`. A test compares them (DECISIONS 6). The UI imports the view types from the
+`mod/podium-reporter/hooks/protocol.ts`. A test compares them (DECISIONS 6). `protocol.ts` must also stay free of Node imports, directly or through what it imports, because the UI imports it and the Vite dev server does not tree-shake (#551); a test walks its imports. The UI imports the view types from the
 server's file. `docs/fixtures/report.sample.json` is the shared fixture.
 
 ### Other server parts
@@ -664,16 +932,27 @@ server's file. `docs/fixtures/report.sample.json` is the shared fixture.
 - **Wall notices.** `wallSettings.ts` defines the notices (today, `background-sessions`) and the setting behind
   them. `POST /api/fleet/notices/:id/close` and `PUT /api/fleet/wall/background-sessions` change only how the
   wall looks, so they take no token. `components/NoticeStack.tsx` draws them (DECISIONS 22).
+- **Release check.** `updateCheck.ts` asks GitHub for the latest release once a day (`startUpdateCheck`, started in
+  `index.ts`) and keeps the answer in memory. `Fleet.wallView()` adds it to `StateBody.wall.update` unless it is not
+  newer than the server, the `update-check` flag is off, or the notice was closed for that release
+  (`wall_update_dismissed`, set by `POST /api/fleet/update-notice/close`). The notice is built in `Wall.tsx` and is
+  not an entry in `NOTICES`, because closing it hides one release, not the notice (SPEC 6.8).
 - **Compatibility.** `compat.ts` holds `REPORTER_SUPPORT`, the reporter versions this server reads. Only
   `major.minor` is compared. A mod outside the range gets a version note on its card and a toast in the mod
   (DECISIONS 18). `build.ts` names the server's own build (`PODIUM_BUILD`, else `server/build.json`) for the footers
   and the report reply; the mod finds its own with `hooks/build.ts` and sends it as `reporter.build` (SPEC 6.8, Builds).
 - **The stream.** `sse.ts` sends `snapshot` (on every connect), `session`, `activity`, `removed`, `tick` (every
   2 s) and `wall`, and accepts at most 100 clients.
-- **Admin pages.** `AdminView` lists eight pages in three groups: People, Groups and Reporters (People and
-  access); Settings, Model prices and Reporting and security (Server); Spend and Admin log (Activity). Each has a
-  `*Tab.tsx` file under `frontend/src/fleet/admin/`.
-- **Mounts.** The server mounts `/api/fleet` and `/api/admin`, then `/api/health` and a 404 for any other `/api`
+- **Admin pages.** `AdminView` lists sixteen pages in four groups: People, Groups and Reporters (People and
+  access); Settings, Model prices, Security, Certificates, Data and Stored activity (Server); Usage, Spend, People and groups,
+  Sessions, Failures and Admin activity (Reporting); Admin log (Activity). Most have a `*Tab.tsx` file under
+  `frontend/src/fleet/admin/`, the Reporting pages share `ReportPages.tsx`, and Data and Stored activity are
+  `DataPage.tsx` and `StoredActivityTab.tsx` (#432). Certificates (`CertificatesTab.tsx`, #586) reads
+  `GET /api/admin/certificates`; the header's certificate pill (`CertPill.tsx`) reads the open `GET /api/tls/status` every
+  five minutes (not while the tab is hidden) and links to `#/admin/certificates`. The route answers from memory
+  (`ServingRenewer.statusView()`) and reuses its answer for 30 seconds, never past the moment a certificate ends;
+  its stage is `expired` only once the certificate has ended, and the last day reads critical.
+- **Mounts.** Ahead of the routers, `failureLimiter` covers all of `/api` (#667). The server mounts `/api/fleet`, `/api/reporter` (renewal), `/api/admin` and `/api/tls` (the pill's status), then `/api/health` and a 404 for any other `/api`
   path, then serves the built frontend with `*` falling back to `index.html`.
 
 ## Spec questions
@@ -1049,7 +1328,7 @@ Validating hooks: mod/podium-reporter/hooks/hooks.json
 
 ## Dependencies added
 
-None at run time. `@types/node` in `server/` went from 20 to 24 so `node:sqlite` is declared.
+`express-rate-limit` at run time, for the failure limiter (#667). `@types/node` in `server/` went from 20 to 24 so `node:sqlite` is declared.
 
 ## Phase log
 
@@ -1239,6 +1518,19 @@ Done after Phases 0 to 4 passed.
   - `HistoryView` writes the hash with `pushState` when a session opens and `replaceState` for every other
     change, and re-reads it on `popstate`, so the browser's Back button returns to the same page. `main.tsx`
     listens only to `hashchange`, which neither call fires, so the view is not remounted.
+- **The open orchestrator in the address.** The live console follows History's pattern. `route.ts` reads and
+  writes `#/?open=<id>` (`openIn`, `fleetHash`); `routeFor` already sends that hash to the fleet console.
+  - `FleetViewBody` starts its selection from the address. `open()` is the one place that opens an orchestrator or
+    the wall: from the wall it calls `pushState({ open: true })`, between orchestrators `replaceState`, and closing
+    calls `history.back()` when the entry's state says the console pushed it, else `replaceState` to `#/`. From
+    the board, My reporters or Traffic it sets `location.hash`, since the route changes too.
+  - A `popstate` and `hashchange` listener re-reads the address, which covers Back, Forward and plain links such
+    as the logo. A ref holds the selection the console last wrote, so the listener does not clear the agent an
+    activity event just opened.
+  - A session that leaves the fleet, or an address naming one it never had, clears the selection and replaces
+    the address with `#/`.
+  - Tests start each one at the wall: `setupTests.ts` drops a fleet `open=` after every test, and `atWall()` in
+    `testState.ts` resets it inside a test that renders the console twice.
 
 ### Code review pass (before the PR)
 
@@ -1273,12 +1565,25 @@ two modes, chosen with `--mode` and saved in `~/.podium/config.env`. The reasoni
 
 - `Containerfile` is a two-stage Node 24 build. The build stage runs `npm ci --ignore-scripts` and both builds. The runtime stage
   has production deps for `server`, the two `dist` trees, user `node`, and the `/data` volume.
+- The engine is Podman or Docker (`--engine`, saved as `PODIUMCTL_ENGINE`; default Podman if it is installed, else
+  Docker). Every command takes the same arguments on both, so `podiumctl` only swaps the binary. Three differences
+  are handled: it checks for the image with `image inspect` (Docker has no `image exists`), it starts a stopped
+  Podman machine on macOS and Windows but only reports a stopped Docker daemon, and under Docker it adds
+  `--add-host host.docker.internal:host-gateway` so the container can reach the host on Linux as it can on Docker
+  Desktop. Docker does not read `.containerignore`, so `.dockerignore` holds the same rules and a test keeps them equal.
 - `podiumctl` runs it as `podium` with `--restart unless-stopped`, the port published on the chosen bind address,
   the named volume `podium-data`, and a `--health-cmd` (the `HEALTHCHECK` instruction is dropped by Podman's
   default OCI image format).
 - It also passes the host's time zone as `TZ`, so the day for "Est. cost today" is the host's.
-- Inside, the server binds `0.0.0.0:4317`. The host-side bind is where access is limited.
-- Container mode relies on `podman run` failing when the port is taken.
+- Inside, the server binds `0.0.0.0:4317`. The host-side bind is where access is limited. With built-in TLS on it
+  also binds `0.0.0.0:4318` for reporters (mutual TLS only), published the same way, and the image carries the `openssl` package (#580). `podiumctl`
+  publishes `4318` and mounts the host folder `~/.podium/tls` at `/data/tls` (`:U` under Podman, so the `node` user owns
+  it) only when TLS is on, so the CA outlives the container and the volume. After `run` it reads the container's mounts
+  and warns when `/data/tls` is missing; the server checks `/proc/self/mountinfo` and logs `tls.storage_not_persistent`
+  when `/data/tls` is not on a named volume or bind mount (the anonymous volume the image's `VOLUME /data` makes does not
+  count, since removing the container removes it). `rm` keeps the folder unless `--purge-tls --yes`.
+- Container mode relies on `podman run` or `docker run` failing when the port is taken.
+- A standalone `start` refuses while a `podium` container runs under either engine, not only the saved one.
 
 ### Standalone mode
 
@@ -1293,7 +1598,7 @@ two modes, chosen with `--mode` and saved in `~/.podium/config.env`. The reasoni
 
 ### Secrets, boot and the mod
 
-- Secrets reach the server through the process environment (`podman run -e NAME` with no value), never the
+- Secrets reach the server through the process environment (`podman run -e NAME` or `docker run -e NAME` with no value), never the
   command line. The token is generated on first start. An empty `PODIUM_TOKEN` is the deliberate "auth off"
   setting.
 - `enable` writes a launchd plist (macOS) or systemd user unit (Linux). The unit calls `podiumctl start`
@@ -1309,3 +1614,10 @@ On macOS with Podman 6.1.2: build, start, token enforcement (401 without, accept
 stop, standalone start/stop, `run` plus SIGTERM, launchd enable/disable in both modes, purge, and
 `claude plugin install podium-reporter@eengelking-marketplace` against the live marketplace with a clean config
 directory. The systemd path is covered by a unit test of the generated text only (known issue 12).
+
+On Linux with Docker 29.8.1 and no Podman (2026-10-20): the engine is picked and saved, `build` (and `start` with no
+image), start, status, health, token enforcement, non-root user, dropped capabilities, `host.docker.internal`,
+`logs`, restart, stop, the standalone guard against a running container, `docker run` failing on a taken port, and
+purge. Boot units were not tried with Docker. A systemd user unit cannot wait for the system `docker.service`, so at boot
+`podiumctl start` can run before the daemon is up and fail; the container itself still comes back through
+`--restart unless-stopped` once the daemon starts.

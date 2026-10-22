@@ -54,7 +54,7 @@ async function unlocked(over: Parameters<typeof setup>[0] = {}) {
 describe('unlocking', () => {
   it('refuses every other endpoint until unlocked, and the right secret unlocks with an HttpOnly SameSite=Strict cookie', async () => {
     const { app } = setup();
-    for (const [m, p] of [['get', '/people'], ['post', '/people'], ['get', '/groups'], ['get', '/log'], ['get', '/settings'], ['get', '/reporters'], ['get', '/reporters/x'], ['delete', '/reporters/x']] as const) {
+    for (const [m, p] of [['get', '/people'], ['post', '/people'], ['get', '/groups'], ['get', '/log'], ['get', '/settings'], ['get', '/reporters'], ['get', '/reporters/x'], ['delete', '/reporters/x'], ['put', '/settings'], ['post', '/activity-history/preview'], ['get', '/stored-activity'], ['post', '/stored-activity/delete']] as const) {
       expect((await request(app)[m](`/api/admin${p}`).set(H)).status).toBe(401);
     }
     const res = await request(app).post('/api/admin/unlock').set(H).send({ name: 'Admin', token: SECRET });
@@ -261,6 +261,12 @@ describe('groups and settings', () => {
           on: true,
         },
         {
+          id: 'activity-output',
+          name: 'Bash output in the activity feed',
+          description: expect.stringContaining('Output is held in memory while the panel is open and is never stored.'),
+          on: false,
+        },
+        {
           id: 'respond',
           name: 'Respond from Podium',
           description: 'Lets people answer and message the sessions they own. Each answer is written to the admin log with who sent it.',
@@ -277,6 +283,18 @@ describe('groups and settings', () => {
           name: 'Orchestrator messaging',
           description: expect.stringContaining("Only between one person's own reporters."),
           on: false,
+        },
+        {
+          id: 'session-recording',
+          name: 'Session recording',
+          description: expect.stringContaining('Needs sign-in on the server. Off by default.'),
+          on: false,
+        },
+        {
+          id: 'update-check',
+          name: 'Release check',
+          description: expect.stringContaining('Off, this server makes no request to GitHub.'),
+          on: true,
         },
       ]);
     });
@@ -308,7 +326,7 @@ describe('groups and settings', () => {
       const { agent, features, people } = await unlocked();
       const res = await agent.put('/api/admin/settings').set(H).send({ features: { 'activity-feed': false } });
       expect(res.status).toBe(200);
-      expect(res.body.features).toEqual([expect.objectContaining({ id: 'activity-feed', on: false }), expect.objectContaining({ id: 'respond', on: false }), expect.objectContaining({ id: 'file-diff', on: false }), expect.objectContaining({ id: 'peer-messaging', on: false })]);
+      expect(res.body.features).toEqual([expect.objectContaining({ id: 'activity-feed', on: false }), expect.objectContaining({ id: 'activity-output', on: false }), expect.objectContaining({ id: 'respond', on: false }), expect.objectContaining({ id: 'file-diff', on: false }), expect.objectContaining({ id: 'peer-messaging', on: false }), expect.objectContaining({ id: 'session-recording', on: false }), expect.objectContaining({ id: 'update-check', on: true })]);
       expect(features.featureOn('activity-feed')).toBe(false);
       expect((await agent.get('/api/admin/settings').set(H)).body.features[0].on).toBe(false);
       await agent.put('/api/admin/settings').set(H).send({ features: { 'activity-feed': true } });

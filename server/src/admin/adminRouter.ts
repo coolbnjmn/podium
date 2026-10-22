@@ -17,8 +17,26 @@ import { PRICES_AS_OF, type PriceSet } from '../fleet/pricing.js';
 import { Lockout } from '../fleet/lockout.js';
 import type { PeerService } from '../fleet/peers.js';
 import { messageView, rangeOf } from '../fleet/peerRoutes.js';
+import { createReportRouter } from '../fleet/reportRoutes.js';
+import type { ReportDeps } from '../fleet/reports.js';
 import { PEER_LEVELS, type PeerLevel } from '../fleet/protocol.js';
 import type { Actor, Refusal } from '../fleet/peerTypes.js';
+import { ALLOW_HTTP_KEY, type ServingRenewer, type TlsSettingsStore } from '../tlsRenew.js';
+import type { ReporterTransport } from '../tlsHttp.js';
+import type { PersonCertStore } from '../tlsClientAuth.js';
+import type { CaRotation } from '../tlsServer.js';
+import { TlsError } from '../tlsCa.js';
+import { CROSS_DAYS } from '../tlsRotation.js';
+import { fileSafe, issueConfigFor, type ConfigFile, type PersonIssuer } from '../tlsPeople.js';
+import type { ActivityHistory } from '../fleet/activityHistory.js';
+import { sizeText } from '../fleet/sizeText.js';
+import { capWords, countWords, policyWords } from '../fleet/activityHistoryWords.js';
+import type { ActivityHistorySettingsStore } from '../fleet/activityHistorySettings.js';
+import { ACTIVITY_LOG_KINDS, type ActivityHistorySettings, type ActivityHistoryState, type StoredDeleteBody, type StoredDeleteResult } from '../fleet/activityHistoryTypes.js';
+import { parseDeleteBody, parseFilter, parsePaging, parseSettings } from '../fleet/activityHistoryInput.js';
+import type { SessionRecordings } from '../fleet/recordings.js';
+import type { RecordingSettingsStore } from '../fleet/recordingSettings.js';
+import type { RecordingState } from '../fleet/protocol.js';
 import { createLogger, loggerFromLine, type Fields, type Logger } from '../logging/logger.js';
 
 export interface AdminRouterOptions {
@@ -35,6 +53,23 @@ export interface AdminRouterOptions {
   reporters?: ReporterStore;
   /** Orchestrator messaging (#347): the limits, a reporter's links, proposals, Pause all links and the conversations. */
   peers?: PeerService;
+  /** The Activity history (#432): its store and the Admin's choice. Without it the Activity history routes answer 404. */
+  activityHistory?: { history: ActivityHistory; settings: ActivityHistorySettingsStore };
+  /** Built-in TLS (#577, T4): the serving certificate's settings and its renewer. `renewer()` is null while TLS is off, and the routes then answer 404. */
+  certificates?: {
+    settings: TlsSettingsStore;
+    renewer: () => ServingRenewer | null;
+    /** People's certificates (#583, T5): the store, and what it takes to issue one. `issuer()` is null while TLS is off, and the person routes then answer 404. */
+    people?: { store: PersonCertStore; issuer: () => PersonIssuer | null };
+    /** Rotating and retiring the CA (#588). Null while TLS is off. */
+    rotation?: () => CaRotation | null;
+    /** Which reporters are on HTTP now (#589), for the count the switch names. */
+    transport?: ReporterTransport;
+  };
+  /** Session recording (#353): the store, the Admin's limits and a way to tell open consoles a recording changed. Without it the recording routes answer 404. */
+  recordings?: { service: SessionRecordings; settings: RecordingSettingsStore; changed: (sessionId: string) => void };
+  /** What the Reporting pages read (#484). Without it the report routes are not mounted. */
+  reports?: ReportDeps;
   now?: () => number;
   /** Idle time before a session ends. */
   idleMs?: number;
@@ -47,6 +82,8 @@ export interface AdminRouterOptions {
   respondBridge?: RespondBridge;
   /** Called when the Admin turns Respond from Podium on, for the plain-HTTP warning (#306). */
   onRespondOn?: () => void;
+  /** Called after a successful save of the Activity history setting, so open consoles get a fresh snapshot. */
+  onActivityHistoryChanged?: () => void;
   /** How long the admin log is kept (#303); `GET /log` reports it so the Admin page can say so. */
   logRetainMs?: number;
   /** The server's logger (#140): each Admin change is an `admin.<action>` event with the source address. */
@@ -154,7 +191,10 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
     next();
   });
 
-  router.use(express.json({ limit: '8kb' }));
+  // The Activity history delete takes up to 200 session ids, so its own parser (below) has a larger limit.
+  const STORED_DELETE = '/stored-activity/delete';
+  const smallJson = express.json({ limit: '8kb' });
+  router.use((req, res, next) => (req.path === STORED_DELETE ? next() : smallJson(req, res, next)));
 
   function sessionValid(req: Request): boolean {
     const sid = readCookie(req, COOKIE);
@@ -249,16 +289,39 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
 
   router.get('/people', (req, res) => {
     const q = typeof req.query.q === 'string' ? req.query.q : '';
-    res.json({ ...people.list({ ...paging(req), q }), groups: people.allGroups() });
+    const page = people.list({ ...paging(req), q });
+    // With TLS on each row also says its person's certificate (#587): the expiry the badge needs, never the key. Podium has none.
+    const on = Boolean(certs?.people?.issuer());
+    const rows = page.rows.map((r) => ({ ...r, certificate: on ? certificateOf(r.id) : null }));
+    res.json({ ...page, rows, tls: on, groups: people.allGroups() });
   });
 
-  router.post('/people', (req, res) => {
+  /** The person's live certificate, or the latest revoked one, or null when they never had one. */
+  function certificateOf(personId: number): { notAfter: string; revoked: boolean } | null {
+    const all = certs?.people?.store.listFor(personId) ?? [];
+    const c = all.find((x) => x.revokedAt === null) ?? all[0];
+    return c ? { notAfter: new Date(c.notAfter).toISOString(), revoked: c.revokedAt !== null } : null;
+  }
+
+  router.post('/people', async (req, res) => {
     try {
       const name = typeof req.body?.name === 'string' ? req.body.name : '';
       const groupId = typeof req.body?.groupId === 'number' ? req.body.groupId : null;
       const { person, token } = people.createPerson(name, groupId, now());
       audit(req, 'person_created', `Added ${person.name}`, { person_id: person.id });
-      res.status(201).json({ ok: true, person: publicPerson(person, groupNameOf(person)), token });
+      const body: Record<string, unknown> = { ok: true, person: publicPerson(person, groupNameOf(person)), token };
+      // With TLS on the config file comes back here too, once. A failure to make it must not lose the token, which is also shown once.
+      const issuer = certs?.people?.issuer();
+      if (certs?.people && issuer) {
+        try {
+          body.config = await issueAndLog(req, person, certs.people.store, issuer);
+        } catch (err) {
+          const reason = (err as Error).message;
+          logger.error('tls.issue_failed', `podium: could not issue a certificate to a new person: ${reason}`, { person_id: person.id, reason });
+          body.configError = 'Podium could not make the certificate. Reissue the config from the person once the server log shows why.';
+        }
+      }
+      res.status(201).json(body);
     } catch (err) {
       fail(res, err);
     }
@@ -282,8 +345,94 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
     if (id === null) return void res.status(400).json({ ok: false, error: 'bad id' });
     const p = people.getPerson(id);
     if (!p) return void res.status(404).json({ ok: false, error: 'unknown person' });
-    if (people.revoke(id, now())) audit(req, 'token_revoked', `Revoked the token of ${p.name}`, { person_id: id });
+    try {
+      people.assertNotLastAdministrator(id);
+    } catch (err) {
+      return fail(res, err);
+    }
+    // Revoking the token revokes the person's certificate too, so a reporter cannot go on with the other credential (#583).
+    const certsRevoked = certs?.people?.store.revokeFor(id, 'revoked', now()) ?? 0;
+    if (people.revoke(id, now())) audit(req, 'token_revoked', `Revoked the token of ${p.name}${certsRevoked > 0 ? ' and their certificate' : ''}`, { person_id: id, certificates_revoked: certsRevoked });
     res.json({ ok: true });
+  });
+
+  // ---- people's certificates (#583) ---------------------------------------------------------------
+
+  const certs = opts.certificates;
+  const tlsOff = (res: Response) => void res.status(404).json({ ok: false, error: 'TLS is off' });
+
+  /** Issues the person a certificate and logs it (the file's content never goes in the log). Returns the file for the response. */
+  async function issueAndLog(req: Request, person: PersonRow, store: PersonCertStore, issuer: PersonIssuer): Promise<ConfigFile & { expires: string; fingerprint: string }> {
+    const { file, cert } = await issueConfigFor(person, store, issuer, req.get('host'), now());
+    audit(req, 'certificate_issued', `Issued a certificate to ${person.name}`, { person_id: person.id, fingerprint_sha256: cert.fingerprint, not_after: new Date(cert.notAfter).toISOString() });
+    return { ...file, expires: new Date(cert.notAfter).toISOString(), fingerprint: cert.fingerprint };
+  }
+
+  /** The person and the certificate parts when TLS is on; otherwise it has already answered. */
+  function certTarget(req: Request, res: Response): { person: PersonRow; store: PersonCertStore; issuer: PersonIssuer } | null {
+    const c = certs?.people;
+    const issuer = c?.issuer();
+    if (!c || !issuer) {
+      tlsOff(res);
+      return null;
+    }
+    const id = idParam(req.params.id ?? '');
+    if (id === null) {
+      res.status(400).json({ ok: false, error: 'bad id' });
+      return null;
+    }
+    const person = people.getPerson(id);
+    if (!person) {
+      res.status(404).json({ ok: false, error: 'unknown person' });
+      return null;
+    }
+    return { person, store: c.store, issuer };
+  }
+
+  router.post('/people/:id/certificate/reissue', async (req, res) => {
+    const t = certTarget(req, res);
+    if (!t) return;
+    try {
+      const config = await issueAndLog(req, t.person, t.store, t.issuer);
+      // A reissue brings a revoked person back; without it certAuth would refuse the new certificate.
+      if (people.restore(t.person.id)) audit(req, 'person_restored', `Restored ${t.person.name} by reissuing their certificate`, { person_id: t.person.id });
+      res.json({ ok: true, config });
+    } catch (err) {
+      logger.error('tls.issue_failed', `podium: could not issue a certificate: ${(err as Error).message}`, { person_id: t.person.id, reason: (err as Error).message });
+      res.status(500).json({ ok: false, error: 'Podium could not make the certificate. The earlier one is still valid.' });
+    }
+  });
+
+  // Only the certificate: the person's token and console sign-in are unchanged, so no administrator is locked out by it.
+  router.post('/people/:id/certificate/revoke', (req, res) => {
+    const t = certTarget(req, res);
+    if (!t) return;
+    const n = t.store.revokeFor(t.person.id, 'revoked', now());
+    if (n > 0) audit(req, 'certificate_revoked', `Revoked the certificate of ${t.person.name}`, { person_id: t.person.id });
+    res.json({ ok: true, revoked: n });
+  });
+
+  router.post('/people/:id/revoke-all', (req, res) => {
+    const t = certTarget(req, res);
+    if (!t) return;
+    try {
+      people.assertNotLastAdministrator(t.person.id);
+    } catch (err) {
+      return fail(res, err);
+    }
+    const n = t.store.revokeFor(t.person.id, 'revoked', now());
+    const tokenRevoked = people.revoke(t.person.id, now());
+    if (n > 0 || tokenRevoked) audit(req, 'revoked_all', `Revoked the certificate and the token of ${t.person.name}`, { person_id: t.person.id });
+    res.json({ ok: true, revoked: n, tokenRevoked });
+  });
+
+  // The public half only: the certificate and the CA, as a person could check or hand on. Never a key (Podium has none).
+  router.get('/people/:id/certificate.pem', (req, res) => {
+    const t = certTarget(req, res);
+    if (!t) return;
+    const cert = t.store.current(t.person.id);
+    if (!cert) return void res.status(404).json({ ok: false, error: 'this person has no certificate' });
+    res.type('application/x-pem-file').set('Content-Disposition', `attachment; filename="${fileSafe(t.person.name)}-certificate.pem"`).send(`${cert.certPem}${t.issuer.caCerts().join('')}`);
   });
 
   // One route for one person or many (#243). All or nothing: a refusal deletes nobody.
@@ -509,6 +658,12 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
 
   // ---- settings and log -----------------------------------------------------------------------
 
+  const history = opts.activityHistory;
+  const activityState = (h: NonNullable<typeof history>): ActivityHistoryState => ({ settings: h.settings.get(), totals: h.history.totals(), lastPurge: h.history.lastPurge, authOn: opts.secret !== null });
+
+  const rec = opts.recordings;
+  const recordingState = (r: NonNullable<typeof rec>) => ({ settings: r.settings.get(), totals: r.service.totals(), authOn: opts.secret !== null });
+
   const featureList = () => FEATURES.map(({ defaultOn, ...f }) => ({ ...f, on: features ? features.featureOn(f.id) : defaultOn }));
   const noticeList = () => NOTICES.map((n) => ({ ...n, on: wall ? wall.noticeOn(n.id) : true }));
 
@@ -522,6 +677,8 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
       modelPrices: prices?.view() ?? { asOf: PRICES_AS_OF, models: [] },
       forgetReporters: reporters?.forgetSetting() ?? { enabled: false, days: 30 },
       ...(peers ? { peerMessaging: peers.settings.get() } : {}),
+      ...(history ? { activityHistory: activityState(history) } : {}),
+      ...(rec ? { recording: recordingState(rec) } : {}),
     });
   });
 
@@ -557,6 +714,31 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
       const v = out.settings;
       audit(req, 'peer_limits_changed', `Orchestrator messaging limits: ${v.roundTrips} round trips, ${v.perMinute} a minute, ${v.maxChars} characters, kept ${v.retainDays} days`, { ...v });
       return void res.json({ ok: true, peerMessaging: v });
+    }
+    if ('activityHistory' in body) {
+      const p = body.activityHistory;
+      if (!history || !p || typeof p !== 'object' || Array.isArray(p)) return void res.status(400).json({ ok: false, error: 'activityHistory must give policy, n, unit and capGb' });
+      const out = history.settings.set(p);
+      if (!out.ok) return void res.status(400).json({ ok: false, error: out.error });
+      audit(req, ACTIVITY_LOG_KINDS.changed, `Activity history set to ${policyWords(out.settings)}, ${capWords(out.settings)}`, { ...out.settings });
+      opts.onActivityHistoryChanged?.();
+      return void res.json({ ok: true, activityHistory: activityState(history) });
+    }
+    if ('recording' in body) {
+      const p = body.recording;
+      if (!rec || !p || typeof p !== 'object' || Array.isArray(p)) return void res.status(400).json({ ok: false, error: 'recording must give keepHours, budgetMb and/or sessionMb' });
+      const out = rec.settings.set(p);
+      if (!out.ok) return void res.status(400).json({ ok: false, error: out.error });
+      const { before: b, settings: a } = out;
+      audit(req, 'recording_settings_changed', `Session recording limits: kept ${b.keepHours} to ${a.keepHours} hours, disk budget ${b.budgetMb} to ${a.budgetMb} MB, one session ${b.sessionMb} to ${a.sessionMb} MB`, {
+        keep_hours_before: b.keepHours,
+        keep_hours: a.keepHours,
+        budget_mb_before: b.budgetMb,
+        budget_mb: a.budgetMb,
+        session_mb_before: b.sessionMb,
+        session_mb: a.sessionMb,
+      });
+      return void res.json({ ok: true, recording: recordingState(rec) });
     }
     if ('showBackgroundSessions' in body) {
       const v = body.showBackgroundSessions;
@@ -630,6 +812,200 @@ export function createAdminRouter(opts: AdminRouterOptions): Router {
     }
     res.status(400).json({ ok: false, error: 'no known setting in the request' });
   });
+
+  // ---- Activity history (#432) ----------------------------------------------------------------
+
+  // The store's heavy calls are async (they work in chunks). Express 4 does not catch a rejected promise, so a failure answers here.
+  const storeFailed = (res: Response) => () => void res.status(500).json({ ok: false, error: 'could not reach the stored activity' });
+
+  router.post('/activity-history/preview', (req, res) => {
+    if (!history) return void res.status(404).json({ ok: false, error: 'not available' });
+    const s = parseSettings((req.body as { settings?: unknown } | undefined)?.settings, opts.secret !== null);
+    if (!s.ok) return void res.status(400).json({ ok: false, error: s.error });
+    history.history.preview(s.value).then((out) => void res.json(out), storeFailed(res));
+  });
+
+  router.get('/stored-activity', (req, res) => {
+    const q = req.query as Record<string, unknown>;
+    const paging = parsePaging(q);
+    if (!paging.ok) return void res.status(400).json({ ok: false, error: paging.error });
+    const filter = parseFilter(q);
+    if (!filter.ok) return void res.status(400).json({ ok: false, error: filter.error });
+    // Source = Recordings (#353): the same page over the recordings, in the same file.
+    if (filter.value.source === 'recordings') {
+      if (!rec) return void res.status(404).json({ ok: false, error: 'not available' });
+      const out = rec.service.listStored(filter.value, paging.value.page, paging.value.pageSize);
+      return void res.json({ ...out, totals: { ...out.totals, fileBytes: history?.history.totals().fileBytes ?? 0 } });
+    }
+    if (!history) return void res.status(404).json({ ok: false, error: 'not available' });
+    history.history.list(filter.value, paging.value.page, paging.value.pageSize).then((out) => void res.json(out), storeFailed(res));
+  });
+
+  const how = (b: StoredDeleteBody) => ('ids' in b ? 'ticked sessions' : 'match' in b ? 'a filter' : 'everything');
+  const deletedWords = (r: StoredDeleteResult, b: StoredDeleteBody) => `Deleted ${countWords(r.entries, 'entry', 'entries')} (${sizeText(r.bytes)}) from ${countWords(r.sessions, 'session', 'sessions')}, chosen: ${how(b)}`;
+
+  /** A recording removed by the Admin, written to the Admin log with the Admin as the one who did it and never any text. */
+  const recordingDeleted = (req: Request, g: { sessionId: string; name: string; entries: number; bytes: number }) =>
+    audit(req, 'recording_deleted', `Deleted the recording of ${g.name} (${g.sessionId.slice(0, 8)}): ${countWords(g.entries, 'entry', 'entries')}, ${sizeText(g.bytes)}`, { session_id: g.sessionId, entries: g.entries, bytes: g.bytes });
+  /** Who the mark of a recording the Admin stopped names: the administrator, or `Admin` for the admin secret. */
+  const adminName = (req: Request): string => {
+    const who = actorOf(req);
+    return who === null || who === ADMIN_SECRET_ACTOR ? 'Admin' : who;
+  };
+
+  router.post(STORED_DELETE, express.json({ limit: '64kb' }), (req, res) => {
+    const body = parseDeleteBody(req.body);
+    if (!body.ok) return void res.status(400).json({ ok: false, error: body.error });
+    if (('match' in body.value ? body.value.match.source : body.value.source) === 'recordings') {
+      if (!rec) return void res.status(404).json({ ok: false, error: 'not available' });
+      rec.service.removeMany(rec.service.idsFor(body.value)).then((out) => {
+        for (const g of out.each) {
+          recordingDeleted(req, g);
+          rec.changed(g.sessionId);
+        }
+        res.json({ entries: out.entries, sessions: out.sessions, bytes: out.bytes, freed: out.freed });
+      }).catch(storeFailed(res));
+      return;
+    }
+    if (!history) return void res.status(404).json({ ok: false, error: 'not available' });
+    history.history.deleteBy(body.value).then((out) => {
+      audit(req, ACTIVITY_LOG_KINDS.deleted, deletedWords(out, body.value), { entries: out.entries, sessions: out.sessions, bytes: out.bytes, chosen: how(body.value) });
+      res.json(out);
+    }).catch(storeFailed(res));
+  });
+
+  // ---- certificates (#577) -----------------------------------------------------------------------
+
+  /** Reporters over HTTP (#589): the switch, and how many reporters are on HTTP now out of all that reported lately. */
+  const httpView = () => ({ allow: certs?.settings.allowReportersOverHttp() ?? true, ...(certs?.transport?.count(now()) ?? { overHttp: 0, total: 0 }) });
+
+  /** The renewer's view with the overlap's count of reporters still on the old CA (#588). */
+  const certificatesView = (r: ServingRenewer) => {
+    const v = { ...r.view(), overlapDays: CROSS_DAYS, canOverlap: certs?.rotation?.()?.canOverlap() ?? true, http: httpView() };
+    if (!v.rotation) return v;
+    const oldFp = v.rotation.previousCa.fingerprintSha256;
+    const counts = certs?.people?.store.reportersByIssuer(now());
+    return { ...v, rotation: { ...v.rotation, reporters: { onOldCa: counts?.byIssuer[oldFp] ?? 0, total: counts?.total ?? 0 } } };
+  };
+
+  router.get('/certificates', (_req, res) => {
+    const r = certs?.renewer();
+    if (!r) return tlsOff(res);
+    res.json({ ok: true, ...certificatesView(r), reporter: certs?.settings.getReporter() });
+  });
+
+  // The CA certificate to download, for a browser or a person who wants to check it (T8). It sits behind the unlocked Admin session like the rest of this page; there is no key to send.
+  router.get('/certificates/ca.pem', (_req, res) => {
+    const r = certs?.renewer();
+    if (!r) return tlsOff(res);
+    const pem = r.caPem();
+    if (!pem) return void res.status(404).json({ ok: false, error: 'no CA certificate' });
+    res.type('application/x-pem-file').set('Content-Disposition', 'attachment; filename="podium-ca.pem"').send(pem);
+  });
+
+  // Flat body keyed as in SPEC 6: { "tls.serving.lifetimeDays": 90, "tls.serving.renewBeforeDays": 30 }.
+  router.put('/certificates', (req, res) => {
+    const r = certs?.renewer();
+    if (!certs || !r) return tlsOff(res);
+    const body: unknown = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return void res.status(400).json({ ok: false, error: 'give the settings to change, such as tls.serving.renewBeforeDays' });
+    const wasAllowed = certs.settings.allowReportersOverHttp();
+    const out = certs.settings.set(body as Record<string, unknown>);
+    if (!out.ok) return void res.status(400).json({ ok: false, error: out.error });
+    const s = out.settings;
+    const rep = certs.settings.getReporter();
+    const http = httpView();
+    if (out.changed.includes(ALLOW_HTTP_KEY) && http.allow !== wasAllowed) {
+      audit(req, 'tls_http_changed', http.allow ? 'Allowed reporters to connect over HTTP' : `Stopped allowing reporters over HTTP; ${http.overHttp} reporter${http.overHttp === 1 ? '' : 's'} connected over HTTP ${http.overHttp === 1 ? 'is' : 'are'} refused`, { allow: http.allow, reporters_on_http: http.overHttp });
+    }
+    if (out.changed.some((k) => k !== ALLOW_HTTP_KEY)) audit(req, 'tls_settings_changed', `Certificate settings: serving certificate lifetime ${s.lifetimeDays} days, renewed ${s.renewBeforeDays} days before it expires; a person's certificate lifetime ${rep.lifetimeDays} days; header countdown ${s.headerCountdown ? 'on' : 'off'}`, { changed: out.changed.join(','), lifetime_days: s.lifetimeDays, renew_before_days: s.renewBeforeDays, reporter_lifetime_days: rep.lifetimeDays, header_countdown: s.headerCountdown });
+    res.json({ ok: true, ...r.view(), reporter: rep, http });
+  });
+
+  router.post('/certificates/renew', (req, res) => {
+    const r = certs?.renewer();
+    if (!r) return tlsOff(res);
+    void r.renewNow().then((out) => {
+      if (!out.ok) {
+        audit(req, 'tls_serving_renew_failed', 'Renewing the serving certificate failed', {});
+        return void res.status(500).json({ ok: false, error: out.error, ...r.view() });
+      }
+      audit(req, 'tls_serving_renewed', 'Renewed the serving certificate', { not_after: out.serving.notAfter });
+      res.json({ ok: true, ...r.view() });
+    }).catch(() => void res.status(500).json({ ok: false, error: 'could not renew the serving certificate' }));
+  });
+
+  // Rotate the CA. `{ endOverlap: false }` is the planned rotation with an overlap, `{ endOverlap: true }` the hard cutover after a leaked key (#588).
+  router.post('/certificates/rotate-ca', (req, res) => {
+    const r = certs?.renewer();
+    const rot = certs?.rotation?.();
+    if (!r || !rot) return tlsOff(res);
+    const body: unknown = req.body;
+    const endOverlap = body && typeof body === 'object' ? (body as { endOverlap?: unknown }).endOverlap : undefined;
+    if (typeof endOverlap !== 'boolean') return void res.status(400).json({ ok: false, error: 'say whether to end the overlap now: { "endOverlap": true | false }' });
+    void rot.rotate(endOverlap).then((out) => {
+      audit(req, 'tls_ca_rotated', endOverlap ? 'Rotated the certificate authority and ended the overlap: every reporter needs a reissued config' : 'Rotated the certificate authority; the old one stays trusted until it is retired', { overlap: out.overlap, connections_closed: out.closed, ca_not_after: out.ca.notAfter });
+      res.json({ ok: true, ...certificatesView(r), reporter: certs?.settings.getReporter() });
+    }).catch((err: unknown) => {
+      // A TlsError says what is wrong in words the Admin can use; anything else is not shown.
+      if (err instanceof TlsError) return void res.status(409).json({ ok: false, error: err.message });
+      res.status(500).json({ ok: false, error: 'could not rotate the certificate authority' });
+    });
+  });
+
+  // Retire the old CA once no reporter needs it. The reply names how many were still on it (#588).
+  router.post('/certificates/retire-ca', (req, res) => {
+    const r = certs?.renewer();
+    const rot = certs?.rotation?.();
+    if (!r || !rot) return tlsOff(res);
+    const before = certificatesView(r).rotation;
+    void rot.retire().then((out) => {
+      if (!out || !before) return void res.status(409).json({ ok: false, error: 'there is no old CA to retire' });
+      const refused = 'reporters' in before ? before.reporters.onOldCa : 0;
+      audit(req, 'tls_ca_retired', `Retired the old certificate authority; ${refused} reporter${refused === 1 ? '' : 's'} still used it and now need a reissued config`, { reporters_refused: refused, connections_closed: out.closed });
+      res.json({ ok: true, refused, connectionsClosed: out.closed, ...certificatesView(r), reporter: certs?.settings.getReporter() });
+    }).catch(() => void res.status(500).json({ ok: false, error: 'could not retire the old certificate authority' }));
+  });
+
+  // ---- Session recording (#353) ---------------------------------------------------------------
+
+  const RECORDING_STATES_LISTED = ['recording', 'stopped', 'limit'] as const;
+
+  router.get('/recordings', (req, res) => {
+    if (!rec) return void res.status(404).json({ ok: false, error: 'not available' });
+    const q = req.query as Record<string, unknown>;
+    const paging = parsePaging(q);
+    if (!paging.ok) return void res.status(400).json({ ok: false, error: paging.error });
+    const state = q.state === undefined || q.state === '' ? undefined : (RECORDING_STATES_LISTED as readonly unknown[]).find((s) => s === q.state);
+    if (q.state !== undefined && q.state !== '' && state === undefined) return void res.status(400).json({ ok: false, error: `state must be one of ${RECORDING_STATES_LISTED.join(', ')}` });
+    if (q.q !== undefined && (typeof q.q !== 'string' || q.q.length > 200)) return void res.status(400).json({ ok: false, error: 'q must be text of at most 200 characters' });
+    res.json(rec.service.adminList({ ...paging.value, state: state as Exclude<RecordingState, 'off'> | undefined, q: q.q as string | undefined }));
+  });
+
+  router.post('/recordings/:sessionId/stop', (req, res) => {
+    if (!rec) return void res.status(404).json({ ok: false, error: 'not available' });
+    const sid = req.params.sessionId;
+    const out = rec.service.stop(sid, adminName(req));
+    if (!out) return void res.status(404).json({ ok: false, error: 'this session has no recording' });
+    if (out.changed) {
+      audit(req, 'recording_stopped', `Stopped the recording of ${sid.slice(0, 8)}`, { session_id: sid });
+      rec.changed(sid);
+    }
+    res.json({ ok: true, grant: out.grant });
+  });
+
+  router.delete('/recordings/:sessionId', (req, res) => {
+    if (!rec) return void res.status(404).json({ ok: false, error: 'not available' });
+    const sid = req.params.sessionId;
+    if (!rec.service.has(sid)) return void res.status(404).json({ ok: false, error: 'this session has no recording' });
+    rec.service.removeMany([sid]).then((out) => {
+      for (const g of out.each) recordingDeleted(req, g);
+      rec.changed(sid);
+      res.json({ ok: true, entries: out.entries, bytes: out.bytes });
+    }).catch(storeFailed(res));
+  });
+
+  if (opts.reports) router.use('/reports', createReportRouter(opts.reports));
 
   router.get('/log', (req, res) => {
     res.json({ ...people.listLog(paging(req)), ...(opts.logRetainMs === undefined ? {} : { retainMs: opts.logRetainMs }) });

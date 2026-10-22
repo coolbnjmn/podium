@@ -41,7 +41,7 @@ describe("Admin lock screen", () => {
     expect(screen.queryByRole("navigation", { name: "Admin sections" })).toBeNull();
     expect((screen.getByLabelText("Token") as HTMLInputElement).value).toBe("");
     await unlock();
-    expect(screen.getByRole("button", { name: /People/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: /^People(?! and)/ })).toHaveAttribute("aria-current", "page");
   });
 
   it("puts the cursor in the Name field when the lock screen opens", async () => {
@@ -125,8 +125,8 @@ describe("tokens", () => {
     fireEvent.click(screen.getByRole("button", { name: "I have saved it" }));
     expect(screen.queryByText(/pdm_aaaaaaaaaaaa_/)).toBeNull();
     // After it, the list names the token by its key id, `pdm_<key id>`, with none of the secret.
-    fireEvent.click(screen.getByRole("button", { name: /People/ }));
-    expect(await screen.findByText("pdm_0123456789ab")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^People(?! and)/ }));
+    expect(await screen.findByText(/pdm_0123456789ab/)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("pdm_aaaaaaaaaaaa_");
   });
 
@@ -204,7 +204,7 @@ describe("deleting people (#243)", () => {
     expect(screen.getByText("person-001")).toBeInTheDocument();
     expect(screen.getByText("person-003")).toBeInTheDocument();
     expect(screen.queryByText(/selected/)).toBeNull();
-    expect(within(screen.getByRole("button", { name: /People/ })).getByText("2")).toBeInTheDocument();
+    expect(within(screen.getByRole("button", { name: /^People(?! and)/ })).getByText("2")).toBeInTheDocument();
   });
 
   it("selects every row on the page with the header box, and Clear drops the selection", async () => {
@@ -225,12 +225,12 @@ describe("deleting people (#243)", () => {
     await unlock();
     await screen.findByText("person-001");
     const row = screen.getByText("person-001").closest("tr")!;
-    fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    fireEvent.click(within(row).getByRole("menuitem", { name: "Delete…" }));
     let dialog = screen.getByRole("dialog", { name: "Delete person-001?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(s.deleteBodies).toEqual([]);
-    fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    fireEvent.click(within(row).getByRole("menuitem", { name: "Delete…" }));
     dialog = screen.getByRole("dialog", { name: "Delete person-001?" });
     expect(within(dialog).getByText(/Their reporter is refused at once\. Their past sessions keep their name\./)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
@@ -246,11 +246,11 @@ describe("deleting people (#243)", () => {
     render(<AdminView />);
     await unlock();
     await screen.findByText("person-000");
-    fireEvent.click(within(screen.getByText("person-000").closest("tr")!).getByRole("button", { name: "Delete" }));
+    fireEvent.click(within(screen.getByText("person-000").closest("tr")!).getByRole("menuitem", { name: "Delete…" }));
     expect(within(screen.getByRole("dialog")).getByText(/Their open Admin session locks\./)).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(within(screen.getByText("person-001").closest("tr")!).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(within(screen.getByText("person-001").closest("tr")!).getByRole("menuitem", { name: "Delete…" })).toBeInTheDocument();
   });
 
   it("shows the server's refusal in the dialog and leaves everyone in the list", async () => {
@@ -259,7 +259,7 @@ describe("deleting people (#243)", () => {
     render(<AdminView />);
     await unlock();
     await screen.findByText("person-000");
-    fireEvent.click(within(screen.getByText("person-000").closest("tr")!).getByRole("button", { name: "Delete" }));
+    fireEvent.click(within(screen.getByText("person-000").closest("tr")!).getByRole("menuitem", { name: "Delete…" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
     expect(await within(screen.getByRole("dialog")).findByRole("alert")).toHaveTextContent(/signed in to Admin as this person/);
     expect(screen.getByText("person-000")).toBeInTheDocument();
@@ -317,17 +317,28 @@ describe("side menu", () => {
       expect.stringMatching(/^Reporters/),
       "Settings",
       "Model prices",
-      "Reporting and security",
+      "Security",
+      "Certificates",
+      "Data",
+      "Stored activity",
+      "Usage",
       expect.stringMatching(/^Spend/),
+      "People and groups",
+      "Sessions",
+      "Failures",
+      "Admin activity",
       expect.stringMatching(/^Admin log/),
       "Lock Admin",
     ]);
     expect(within(nav).getByRole("group", { name: "Server" })).toBeInTheDocument();
+    // Reporting is its own group (#484); Activity keeps only the Admin log.
+    expect(within(within(nav).getByRole("group", { name: "Reporting" })).getAllByRole("button")).toHaveLength(6);
+    expect(within(within(nav).getByRole("group", { name: "Activity" })).getAllByRole("button")).toHaveLength(1);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("People");
     fireEvent.click(within(nav).getByRole("button", { name: /Groups/ }));
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Groups");
     expect(within(nav).getByRole("button", { name: /Groups/ })).toHaveAttribute("aria-current", "page");
-    expect(within(nav).getByRole("button", { name: /People/ })).not.toHaveAttribute("aria-current");
+    expect(within(nav).getByRole("button", { name: /^People(?! and)/ })).not.toHaveAttribute("aria-current");
     fireEvent.click(within(nav).getByRole("button", { name: /Admin log/ }));
     expect(within(nav).getByRole("button", { name: /Admin log/ })).toHaveAttribute("aria-current", "page");
     await waitFor(() => expect(screen.getByText("Wrong secret (1)")).toBeInTheDocument());

@@ -26,6 +26,7 @@ export type {
   SessionStatusView,
   SessionView,
   StateBody,
+  UpdateNotice,
   WallSettingsView,
   Ask,
   AskDetail,
@@ -46,8 +47,18 @@ export type {
   PeerLevel,
   PeerRequest,
   ReporterCompat,
+  RecordingAdminRow,
+  RecordingGrant,
+  RecordingKind,
+  RecordingLoopInfo,
+  RecordingPage,
+  RecordingRow,
+  RecordingSettings,
+  RecordingState,
+  RecordingView,
 } from "../../../server/src/fleet/protocol";
 export type { ActivityEntryView, ActivityReply } from "../../../server/src/fleet/activity";
+export type { ActivityHistoryNote, ActivityHistoryPage, ActivityHistoryPolicy } from "../../../server/src/fleet/activityHistoryTypes";
 
 /** The product name, kept in one place so it can change (SPEC 12.10). */
 export const APP_NAME = "Podium";

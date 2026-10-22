@@ -102,24 +102,25 @@ describe("FactsBar Reporter cell (#124)", () => {
     expect(cell.getAttribute("title")).toBe(versionNote(s)!.text);
   });
 
-  it("sits just before Session, Resume and Fork, which end the grid", () => {
+  it("sits just before Session, Resume, Fork and Recording, which end the grid", () => {
     const { cells } = reporter({ reporterVersion: "0.11.0" });
-    expect(cells.slice(-4).map((c) => c.querySelector(".k")!.textContent)).toEqual(["Reporter", "Session", "Resume", "Fork"]);
+    expect(cells.slice(-5).map((c) => c.querySelector(".k")!.textContent)).toEqual(["Reporter", "Session", "Resume", "Fork", "Recording"]);
   });
 });
 
 describe("FactsBar copy cells (#352)", () => {
-  it("has ten cells in fixed places: Agent time ends row one, and Session, Resume and Fork end row two", () => {
+  it("has twelve cells in fixed places, six to a row: Blowouts ends row one, and Machine with System joined, Reporter, Session, Resume, Fork and Recording make row two (#427, #353)", () => {
     const { container } = render(<FactsBar s={makeSession()} now={Date.now()} onAgent={() => {}} />);
     const keys = [...container.querySelectorAll(".facts > .fact")].map((f) => f.querySelector(".k")!.textContent);
-    expect(keys).toEqual(["Agents", "Est. cost", "Tokens", "Running for", "Agent time", "Blowouts", "Reporter", "Session", "Resume", "Fork"]);
+    expect(container.querySelector(".facts")).toHaveClass("six");
+    expect(keys).toEqual(["Agents", "Est. cost", "Tokens", "Running for", "Agent time", "Blowouts", "Machine", "Reporter", "Session", "Resume", "Fork", "Recording"]);
   });
 
   it("gives Resume and Fork their own accessible names and popups", () => {
-    const { container } = render(<FactsBar s={makeSession()} now={Date.now()} onAgent={() => {}} />);
+    render(<FactsBar s={makeSession()} now={Date.now()} onAgent={() => {}} />);
     expect(screen.getByRole("button", { name: "Copy resume command" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy fork command" })).toBeInTheDocument();
-    const tips = [...container.querySelectorAll(".facts .tip")].map((t) => t.textContent);
+    const tips = ["Resume", "Fork"].map((g) => within(screen.getByRole("group", { name: g })).getByRole("tooltip", { hidden: true }).textContent);
     expect(tips[0]).toMatch(/Continues this same session/);
     expect(tips[0]).toMatch(/still running in another terminal/);
     expect(tips[1]).toMatch(/This session is not changed/);
@@ -161,3 +162,74 @@ describe("FactsBar copy cells (#352)", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("FactsBar Machine cell, with the system joined to it (#427, #353)", () => {
+  const MAC = { name: "dana-mbp", id: "m1", os: "macOS 15.4" };
+  const show = (machine: ReturnType<typeof makeSession>["machine"]) => {
+    const { container } = render(<FactsBar s={makeSession({ machine })} now={Date.now()} onAgent={() => {}} />);
+    const cell = () => [...container.querySelectorAll<HTMLElement>(".facts > .fact")].find((f) => f.querySelector(".k")?.textContent === "Machine")!;
+    const tip = () => cell().querySelector<HTMLElement>('[role="tooltip"]')!;
+    return { container, cell, tip };
+  };
+
+  it("shows the machine's name, a bar, and its system with the family's icon, in one cell", () => {
+    const { cell, container } = show(MAC);
+    expect(cell().querySelector(".v")!.textContent).toBe("dana-mbp|macOS 15.4");
+    expect(cell().querySelector(".v .sep")).not.toBeNull();
+    expect(cell().querySelector(".v svg")).not.toBeNull();
+    expect([...container.querySelectorAll(".facts > .fact .k")].some((k) => k.textContent === "System")).toBe(false);
+  });
+
+  it("gives Linux and Windows their own icons from the same table My reporters uses", () => {
+    const icon = (os: string) => show({ ...MAC, os }).cell().querySelector(".v svg")!.innerHTML;
+    expect(new Set([icon("macOS 15.4"), icon("Fedora Linux 44"), icon("Windows 11")]).size).toBe(3);
+  });
+
+  it("says what the cell is in a popup, with the whole system text, in the Resume and Fork popup's design", () => {
+    const { cell, tip } = show({ ...MAC, os: "Fedora Linux 44 (Workstation Edition) · kernel 6.17.4" });
+    expect(tip().textContent).toMatch(/Machine: dana-mbp\./);
+    expect(tip().textContent).toMatch(/System: Fedora Linux 44 \(Workstation Edition\) · kernel 6\.17\.4\./);
+    expect(cell()).toHaveClass("pop", "start");
+    expect(cell()).toHaveAttribute("tabindex", "0");
+    expect(cell().getAttribute("aria-describedby")).toBe(tip().id);
+  });
+
+  it("reads Not reported for the system, with the update tooltip, when the reporter sent a machine but no system", () => {
+    const { cell, tip } = show({ name: "studio-m2", id: "m2", os: null });
+    expect(cell().querySelector(".v")!.textContent).toBe("studio-m2|Not reported");
+    expect(cell().querySelector(".v .soft")!.textContent).toBe("Not reported");
+    expect(tip().textContent).toMatch(/older podium-reporter/);
+    expect(cell().textContent).not.toMatch(/undefined|null/);
+  });
+
+  it("reads Not reported for the machine when only the system is known", () => {
+    const { cell, tip } = show({ name: "", id: "m3", os: "macOS 15.4" });
+    expect(cell().querySelector(".v")!.textContent).toBe("Not reported|macOS 15.4");
+    expect(tip().textContent).toMatch(/machine is not reported/);
+  });
+
+  it("reads Not reported once, with a tooltip that does not point at an update, when no machine was sent", () => {
+    const { cell, tip } = show(null);
+    expect(cell().querySelector(".v")!.textContent).toBe("Not reported");
+    expect(cell().querySelector(".v")).toHaveClass("soft");
+    expect(tip().textContent).toMatch(/user name/i);
+    expect(tip().textContent).toMatch(/userName/);
+    expect(tip().textContent).not.toMatch(/Updating/);
+  });
+
+  it("closes the popup on Escape and brings it back when focus leaves and returns", () => {
+    const { cell } = show(MAC);
+    fireEvent.keyDown(cell(), { key: "Escape" });
+    expect(cell()).toHaveClass("dismissed");
+    fireEvent.blur(cell());
+    expect(cell()).not.toHaveClass("dismissed");
+  });
+
+  it("opens its popup below the cell when the page has no room above it", () => {
+    const { cell } = show(MAC);
+    vi.spyOn(cell(), "getBoundingClientRect").mockReturnValue({ top: 4 } as DOMRect);
+    fireEvent.mouseEnter(cell());
+    expect(cell()).toHaveClass("below");
+  });
+});
+
