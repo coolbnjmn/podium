@@ -291,6 +291,8 @@ const logPath = () => path.join(homeDir(), 'podium.log');
 const pidPath = () => path.join(homeDir(), 'podium.pid');
 
 const say = (m) => console.log(m);
+/** Prints a secret the person asked for (`token`, `config --show-token`). Kept apart from `say` so nothing else can route a secret into the log (CodeQL js/clear-text-logging). */
+const sayRequested = (m) => { process.stdout.write(`${m}\n`); };
 class Fail extends Error {}
 const fail = (m) => { throw new Fail(m); };
 
@@ -328,10 +330,17 @@ function ensureToken(cfg) {
   return { ...cfg, token };
 }
 
-const dashUrl = (cfg) => `http://${cfg.bind === '0.0.0.0' ? '127.0.0.1' : cfg.bind}:${cfg.port}`;
+/** The address this machine calls to reach its own server: a wildcard bind is called on loopback, an IPv6 address is bracketed. */
+const callHost = (bind) => {
+  if (['0.0.0.0', '::', ''].includes(bind)) return '127.0.0.1';
+  return net.isIPv6(bind) ? `[${bind}]` : bind;
+};
+const dashUrl = (cfg) => `http://${callHost(cfg.bind)}:${cfg.port}`;
 
 async function healthy(cfg, timeoutMs = 2000) {
   try {
+    // Only the address the server was told to bind: a wildcard is called on 127.0.0.1, and a bind that is neither an IP address nor a plain host name is refused (CodeQL js/file-access-to-http).
+    if (!net.isIP(cfg.bind.replace(/^\[|\]$/g, '')) && !/^[A-Za-z0-9.-]+$/.test(cfg.bind)) return false;
     const r = await fetch(`${dashUrl(cfg)}/api/fleet/state`, { signal: AbortSignal.timeout(timeoutMs) });
     return r.ok;
   } catch { return false; }
@@ -349,7 +358,7 @@ async function waitHealthy(cfg, seconds = 30, abort = () => false) {
 /** True if something accepts TCP connections on the configured bind address and port. */
 function portInUse(cfg, timeoutMs = 1000) {
   return new Promise((resolve) => {
-    const sock = net.connect({ host: cfg.bind === '0.0.0.0' ? '127.0.0.1' : cfg.bind, port: cfg.port });
+    const sock = net.connect({ host: callHost(cfg.bind).replace(/^\[|\]$/g, ''), port: cfg.port });
     const done = (used) => { sock.destroy(); resolve(used); };
     sock.setTimeout(timeoutMs, () => done(false));
     sock.once('connect', () => done(true));
@@ -596,11 +605,11 @@ function cmdToken(flags) {
   if (flags.rotate) {
     const token = randomBytes(24).toString('hex');
     writeConfigFile({ ...file, PODIUM_TOKEN: token });
-    say(token);
+    sayRequested(token);
     console.error('New admin secret saved. Restart the server (podiumctl restart). Only reporters that send the admin secret need the new value; people\'s own tokens keep working.');
   } else if (file.PODIUM_TOKEN === undefined) fail('no token yet; it is generated on the first `podiumctl start`');
   else if (file.PODIUM_TOKEN === '') fail('auth is off (PODIUM_TOKEN is empty)');
-  else say(file.PODIUM_TOKEN);
+  else sayRequested(file.PODIUM_TOKEN);
 }
 
 function cmdConfig(cfg, args, flags) {
@@ -630,7 +639,9 @@ function cmdConfig(cfg, args, flags) {
   }
   const shown = flags['show-token'] ? { ...file } : maskConfig(file);
   say(`# ${configPath()}\n# resolved: mode=${cfg.mode}${cfg.mode === 'container' ? ` engine=${cfg.engine ?? 'none'}` : ''} port=${cfg.port} bind=${cfg.bind}`);
-  say(Object.entries(shown).map(([k, v]) => `${k}=${v}`).join('\n') || '(no settings saved yet)');
+  const lines = Object.entries(shown).map(([k, v]) => `${k}=${v}`).join('\n') || '(no settings saved yet)';
+  if (flags['show-token']) sayRequested(lines);
+  else say(lines);
 }
 
 function servicePaths() {
