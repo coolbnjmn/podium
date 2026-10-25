@@ -46,8 +46,9 @@ const VIEWS = [
 
 const STATE_WORD: Record<StateKind, string> = {
   running: "running",
-  waiting: "waiting",
-  bg: "idle on background work",
+  waiting: "needs you",
+  idle: "idle",
+  bg: "blocked on background work",
   stale: "heartbeat lost",
   done: "done",
   deleg: "delegating",

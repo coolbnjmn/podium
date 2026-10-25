@@ -2,7 +2,7 @@
 // the activity / agent panel. Data comes from useFleet; everything here is presentation state.
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./fleet.css";
-import { idleOnBackground } from "./waiting";
+import { needsPerson } from "./waiting";
 import { filterSessions, defaultAgentDir, sortSessions, splitDetached, type AgentSortKey, type SortKey, type StatusFilter } from "./logic";
 import { PAGE } from "./components/ActivityList";
 import type { AgentSort } from "./components/AgentTree";
@@ -205,8 +205,8 @@ function FleetViewBody({ state, updateEvery = 2, onUpdateEvery, board = false, m
   const shown = filterSessions(peopleShown, filter);
   const split: Split = {
     running: live.filter((s) => s.status === "running").length,
-    // A session idle on background work is not waiting on the person (#119).
-    waiting: live.filter((s) => s.status === "waiting" && !idleOnBackground(s)).length,
+    // Only a permission prompt or a question counts: a session idle between turns or on background work (#119) is not waiting on the person.
+    waiting: live.filter(needsPerson).length,
     stale: live.filter((s) => s.status === "stale").length,
   };
   const reporters = reportersLive(state.sessions, state.leaving);

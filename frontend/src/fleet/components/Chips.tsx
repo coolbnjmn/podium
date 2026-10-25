@@ -3,7 +3,7 @@ import type { CSSProperties, ReactElement } from "react";
 import { fmtUsd } from "../format";
 import { EFFORTS, familyName, ORCHESTRATOR_ROW, waitingOnByRow } from "../logic";
 import type { AgentView, BackgroundWait, GitInfo, ModelFamily, SessionView } from "../types";
-import { backgroundStatus, backgroundTitle, idleOnBackground } from "../waiting";
+import { backgroundStatus, backgroundTitle, idleOnBackground, idleOnInput } from "../waiting";
 import { IconBranch, IconCheck, IconClock, IconDown, IconMod, IconTree, IconUp, IconWarn, IconX } from "./Icons";
 
 export const FAMILY_COLOR: Record<ModelFamily, string> = {
@@ -49,14 +49,15 @@ export function EffortMeter({ effort }: { effort: string | null }) {
   );
 }
 
-export type StatusKind = "running" | "waiting" | "stale" | "done" | "failed" | "queued" | "aborted";
+export type StatusKind = "running" | "waiting" | "idle" | "stale" | "done" | "failed" | "queued" | "aborted";
 
 export const STATUS_LABEL: Record<StatusKind, string> = {
   running: "running",
   done: "done",
   failed: "failed",
   queued: "queued",
-  waiting: "waiting on you",
+  waiting: "needs you",
+  idle: "idle",
   stale: "heartbeat lost",
   aborted: "aborted",
 };
@@ -66,15 +67,17 @@ export function StatusIcon({ status }: { status: StatusKind }) {
   if (status === "done") return <IconCheck />;
   if (status === "failed" || status === "aborted") return <IconX />;
   if (status === "waiting") return <i className="dot waiting" aria-hidden="true" />;
+  if (status === "idle") return <i className="dot idle" aria-hidden="true" />;
   if (status === "stale") return <IconWarn />;
   return <IconClock />;
 }
 
 /** The state a card shows: its own shape and color, so state is never color alone (#144). */
-export type CardKind = "running" | "waiting" | "bg" | "stale" | "done";
+export type CardKind = "running" | "waiting" | "idle" | "bg" | "stale" | "done";
 
 export function cardKind(s: Pick<SessionView, "status" | "waitReason" | "background">): CardKind {
   if (idleOnBackground(s)) return "bg";
+  if (idleOnInput(s)) return "idle";
   if (s.status === "running" || s.status === "waiting" || s.status === "stale") return s.status;
   return "done";
 }
@@ -105,6 +108,12 @@ const STATE_SHAPE: Record<StateKind, ReactElement> = {
     <>
       <circle cx="8" cy="8" r="6" />
       <path d="M8 4.8v3.8M8 11v.1" strokeWidth="1.9" />
+    </>
+  ),
+  idle: (
+    <>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M6.4 5.6v4.8M9.6 5.6v4.8" />
     </>
   ),
   bg: (
@@ -143,7 +152,13 @@ export function StateIcon({ kind }: { kind: StateKind }) {
 /** The dot class for a session: the pulsing blue ring while it is idle on background work (#119), the still blue ring while it delegates (#287), else its status. */
 export function sessionDot(s: Pick<SessionView, "status" | "waitReason" | "background">, kind: StateKind): string {
   if (idleOnBackground(s)) return "dot ring bgwait";
+  if (idleOnInput(s)) return "dot idle";
   return kind === "deleg" ? "dot ring" : `dot ${s.status}`;
+}
+
+/** The status to hand to StatusChip: a session idle between turns shows "idle", not "needs you". */
+export function chipStatusOf(s: Pick<SessionView, "status" | "waitReason" | "background">): StatusKind {
+  return idleOnInput(s) ? "idle" : s.status;
 }
 
 /** The background wait to hand to StatusChip, or undefined when the session waits on the person or is not waiting. */

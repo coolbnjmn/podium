@@ -1,5 +1,5 @@
 // The kanban board (#346): every session's plan steps sorted into one column per state. Pure, so the page and its tests share it.
-import { idleOnBackground, toolOfNote, waitLead } from "./waiting";
+import { needsPerson, toolOfNote, waitLead } from "./waiting";
 import type { PlanStep, SessionView } from "./types";
 
 export type BoardColumn = "pending" | "active" | "review" | "blocked" | "done";
@@ -37,7 +37,7 @@ export interface BoardCard {
 
 /** Whether the session waits on its person, as the rail and the wall count it: a wait on background work is not one. */
 function waitsOnPerson(s: SessionView): boolean {
-  return s.status === "waiting" && !idleOnBackground(s);
+  return needsPerson(s);
 }
 
 /** Review holds an in-progress step while its session waits on its person; every other step sits in its own state's column. */

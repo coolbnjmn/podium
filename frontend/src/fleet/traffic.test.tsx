@@ -145,7 +145,7 @@ function page(opts: { traffic?: ReturnType<typeof fakeTraffic>; me?: RespondMe; 
   const traffic = opts.traffic ?? fakeTraffic();
   const sessions = [
     makeSession({ id: "s-dev", name: "claude-dashboard", status: "running", lastSeenAt: T0, owner: "Ed", machine: { name: "ed-mbp", id: "m1", os: "macOS 26.1" } }),
-    makeSession({ id: "s-arm", name: "arm64-check", status: "waiting", waitReason: "input", lastSeenAt: T0, owner: "Ed", machine: { name: "build-pi", id: "m3", os: "Debian 12, arm64" } }),
+    makeSession({ id: "s-arm", name: "arm64-check", status: "waiting", waitReason: "permission", lastSeenAt: T0, owner: "Ed", machine: { name: "build-pi", id: "m3", os: "Debian 12, arm64" } }),
     ...(opts.more ?? []),
   ];
   const state = stateFrom({ sessions, features: { "activity-feed": true, "peer-messaging": opts.peersFlag ?? true } });
