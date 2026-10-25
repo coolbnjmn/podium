@@ -110,10 +110,30 @@ It broadcasts the changed `SessionView` (at most one per session per 500 ms) and
 - `scripts/standards-inventory.ts` lists the tokens, classes, components and color literals. `npm test` uses it to fail on
   a hard-coded color not listed in `docs/standards/deferred.json`, and on a custom property nothing defines.
 - A sample draws a `position: fixed` part (the toast, a tip, a modal's backdrop) in place, and an Admin `main` as a `div`.
-  Those are the only differences between a sample and the app.
+  Those are the only differences between a sample and the app. The parity pass fails when a class that `fleet.css` or
+  `admin.css` fixes has no in-place rule under `.s-sample` in `docs/standards/standards.css` (a hand-written file the pages
+  link). The rule for the row Actions menu arrives with the release's standards update (#700).
 
 Two project skills and an agent keep it honest: `podium-standards-check`, `podium-standards-update` and
 `podium-ui-auditor` (`.claude/`).
+
+### The docs site (#688)
+
+`site/` publishes `docs/` at podium.engelking.dev. It is a separate Astro Starlight project with its own `package.json` and
+lockfile, outside the npm workspaces, so the server and UI builds never install it. DECISIONS 43 has the reasons.
+
+- `site/scripts/build.mjs` builds one Starlight site per version and puts them in `site/out/`. The newest release line (from the
+  root `package.json`) is built from the working tree at `/`; each older line from `FIRST_VERSION_LINE` on is built from its newest
+  `vX.Y.Z` tag at `/<line>/`. Before each build `prepareDocs` in `site/scripts/lib.mjs` writes the pages (title, description and
+  last-updated from the doc and git, links rewritten to site addresses or to GitHub at that tag) into the ignored
+  `site/src/content/docs/`, and copies `docs/standards/`, `docs/images/` and the atlas page unchanged. The standards and the atlas
+  are shown in a frame inside a page of the site; the standards load the app's stylesheets by a `../../frontend/src/fleet/` path, so
+  the build serves them at `/docs/standards/` and copies those stylesheets from the same version to `/frontend/src/fleet/`.
+- `site/docs-nav.mjs` is the menu: which docs are published, in which group, at which address.
+- `site/src/styles/theme.css` maps the console's tokens onto Starlight's variables. `site/src/components/` overrides the header,
+  footer, banner (older versions) and page title, and holds the version menu. The header carries Starlight's theme switch, and a page that shows a static page in a frame gives that page the site's theme. `site/src/pages/index.astro` is the homepage.
+- `.github/workflows/docs-site.yml` builds every version on a PR into `main`, and on a PR into `development` that changes `docs/`, `site/`, the tokens or the workflow, and deploys to GitHub Pages on a push to `main`.
+  `scripts/site-lib.test.ts` tests the preparation and the version choice. The `podium-docs-site` skill is the procedure.
 
 ## Components
 
@@ -649,7 +669,7 @@ no live counts) and `disabledLevels: ["none"]` (the server refuses a proposal of
 `POST reporters/:from/peers/propose`. The Admin's `GET reporters/:key/peers` covers every pair of the owner's reporters
 and returns the owner's `trust`, so the Grid needs one read. `components/PeerLimits.tsx` is the limit rows for Admin >
 Settings and My reporters > Defaults: the ranges and error words mirror `peerSettings.ts` (its test imports the server
-file and compares), and the caller supplies each key's maximum, the state line, the Use the Admin's limit action and
+file and compares), and the caller supplies each key's maximum, the state line, the "Use the Admin's limit" action and
 what a typed value means, so the one component draws both.
 
 **Traffic (#417).** The page is a flag on `FleetApp`, like My reporters, with no wall, rail or side panel, and no keys
@@ -684,7 +704,7 @@ blocked on the engine. This records the structure so the sub-issues agree. The r
 starts `https.createServer` on the reporter port (`4318`, `PODIUM_TLS_PORT`) with the same Express app behind
 `reporterPortOnly`, next to the HTTP listener (`4317`), after `tlsCa.ts` (`ensureTls`) has made or read the CA and serving certificate. Any failure there
 (openssl missing, a half-present CA, a bad or busy port) logs `tls.failed` and leaves HTTP running. The Host check
-(`hostCheck.ts`) runs on both (33). The reporter server requires a client certificate (`requestCert: true`,
+(`hostCheck.ts`) runs on both ([DECISIONS 33](DECISIONS.md#33-refusing-a-host-the-server-does-not-expect-256)). The reporter server requires a client certificate (`requestCert: true`,
 `rejectUnauthorized: true`, `ca` set to the Podium CA or CAs), so Node drops a connection without a valid one in the
 handshake (the `tlsClientError` log line is `tls.handshake_failed`). `reporterPortOnly` lets through only the paths
 `isReporterRoute` names and `POST /api/reporter/renew` (`isRenewRoute`), and answers any other path with a `404`, so the
@@ -712,8 +732,8 @@ named by their SPEC keys (`TlsSettingsStore`). `adminRouter.ts` serves `GET` and
 **CA rotation (#588).** `tlsRotation.ts` has `TrustStore`, the one list of trusted CAs: `ca.crt`, and during an overlap
 `previous-ca.crt`, `cross.crt` and `rotation.json`. The listener's `ca`, the renewer's `setSecureContext`, `trustedIssuers`
 (the certificate check on each request and the renewal check) and the CA in a config file all read it, so a certificate
-cannot pass TLS and then be refused for its issuer. It ignores a cross certificate that is not the current CA's key signed
-by the previous CA, which is what a rotation that stopped part-way leaves. `rotateCa` builds the new CA, the cross
+cannot pass TLS and then be refused for its issuer. It ignores a cross certificate unless the previous CA signed it for the
+current CA's key, which is what a rotation that stopped part-way leaves. `rotateCa` builds the new CA, the cross
 certificate and the serving certificate in a `.new-*` folder and moves them in, the overlap files first and `ca.key` after.
 `ServingRenewer.exclusive` runs a rotation and a serving renewal one at a time. `startTls` keeps the open TLS sockets, since
 narrowing the client `ca` list does not drop one that is already authorized: a hard cutover destroys every socket that held
@@ -821,8 +841,7 @@ A person's row opens `SpendBreakdown.tsx` (#482), which reads `reports/spend/tod
 
 **Reporting (#484)**
 
-Files: `server/src/fleet/rollups.ts`, `reports.ts`, `reportRoutes.ts`, `reportDeps.ts`, `frontend/src/fleet/admin/
-reportsApi.ts`, `useReport.ts`, `ReportParts.tsx`, `ReportPages.tsx`, `scripts/podium-seed-history.ts`.
+Files: `server/src/fleet/rollups.ts`, `reports.ts`, `reportRoutes.ts`, `reportDeps.ts`, `frontend/src/fleet/admin/reportsApi.ts`, `useReport.ts`, `ReportParts.tsx`, `ReportPages.tsx`, `scripts/podium-seed-history.ts`.
 
 - The reports read daily rollups (`usage_daily`, `sessions_daily`, `failures_daily`, `fleet_daily`, migration 22), not the
   detail tables, so they reach back past the 30 days sessions and events are kept. `Fleet.retain()` calls
@@ -872,8 +891,8 @@ mod's logs stay on its machine.
 
 - Callers pass named fields and never a body. A field whose name contains a word such as token, secret,
   authorization, cookie, prompt, answer, activity, text or body is dropped.
-- Every string has person tokens (`pdm_...`), the admin secret, the ship header values and a ship URL's password
-  replaced with `[redacted]`, control characters removed and a 500-character cap.
+- In every string, person tokens (`pdm_...`), the admin secret, the ship header values and a ship URL's password
+  are replaced with `[redacted]`, control characters are removed, and a 500-character cap applies.
 - After the exact-match replacement, `scrubPatterns` replaces common secret shapes in every string, the message
   and event included:
   - `Bearer` and `Basic` credentials.
@@ -1272,7 +1291,7 @@ the findings comment on #411.
 | Windows: 200,000 for haiku, 1,000,000 for others | **Wrong for the current Haiku.** Haiku 5.5 has a 1M window; only Haiku 4.5 (and older) has 200K. `windowOf` uses 200K only for `haiku-4`, `haiku-3`, `claude-3` ids. | `claude-api` skill, model table cached 2026-10-06 |
 | Bash exit code in an error result | No field: `tool.call` error results carry `text` ("Exit code 1 ..."); the reporter parses it. | `BuiltinToolResults.Bash` has no exit code |
 | #206: plan text and path on ExitPlanMode's `tool.call` | **Yes.** The input carries `plan` and `planFilePath`, though the declared type lists only `allowedPrompts`; `classic.PermissionRequest`'s `tool_input` has the same two. | recorded hook inputs |
-| #206: Esc told apart from plan feedback | **Yes, by the text.** Both are `isError`; feedback reads "... To tell you how to proceed, the user said:\n<feedback>", Esc "... STOP what you are doing ...". | recorded results |
+| #206: Esc told apart from plan feedback | **Yes, by the text.** Both are `isError`; feedback reads "... To tell you how to proceed, the user said:\n`<feedback>`", Esc "... STOP what you are doing ...". | recorded results |
 | #206: the engine ends a waiting PermissionRequest hook when the terminal answers first | **No.** `next.signal` never aborted; the hook held on for 60 s, past the command's end. The only signal is the call's `tool.call` resolving, so a tool ask stays open while a terminal-allowed command runs. | two Bash prompts answered "Yes" in the terminal |
 | #206: `$.http.fetch` time limit | **30 s**: "no complete answer within 30000ms". Held requests wait 20 s at most. | recorded rejection |
 | #206: `tool.check` before a prompt | Carries `tool_use_id`; resolves to `ask` 3 to 11 ms before `classic.PermissionRequest` fires (Bash and ExitPlanMode). The managed-setup case, where no PermissionRequest fires, is **unverified**. | recorded timings |
@@ -1332,6 +1351,8 @@ Validating hooks: mod/podium-reporter/hooks/hooks.json
 
 `express-rate-limit` at run time, for the failure limiter (#667). `@types/node` in `server/` went from 20 to 24 so `node:sqlite` is declared.
 
+`astro`, `@astrojs/starlight` and `starlight-links-validator` in `site/`, for the docs site (#688). They are build tools for the site only and are not part of the server, the UI or the mod.
+
 ## Phase log
 
 ### Phase 0: contract and scaffolding
@@ -1348,7 +1369,6 @@ and then cannot resolve `sqlite`). `process.getBuiltinModule('node:sqlite')` wor
 plain `node`, and is typed by `@types/node` 24, so `db.ts` uses it. No fallback to `better-sqlite3` was
 needed.
 
-Not verified yet: the SSE proxy through Vite (T4.1 checks it).
 
 ### Phase 1: server
 
@@ -1438,7 +1458,6 @@ Found and fixed while running in the browser:
 - A pointer event without a usable `clientX` produced a NaN width (fixed test-first).
 - The "now" caption of the peak chart was red with no blowouts.
 
-Not verified: real touch input; screen reader output (roles and names are asserted in tests only).
 
 ### Phase 3: the reporter mod
 
@@ -1462,8 +1481,6 @@ cross-check that a scripted mod Report passes the server's validator unchanged. 
    general-purpose and effort low, asking it to reply with the word hello. Then reply done.": worktree
    detected, effort `low` at spawn.
 
-Not verified for real: a subagent's own compaction, a teammate, `classic.Notification`, a `/clear` (the
-id switch is covered by tests), and the status line (both runs were headless).
 
 ### Phase 4: integration and hardening
 
@@ -1537,7 +1554,7 @@ Done after Phases 0 to 4 passed.
 ### Code review pass (before the PR)
 
 One `/code-review` pass over the branch found ten issues. Nine are fixed, each with a test written first
-that failed for the reason described; one part is deliberately left as is.
+that failed for the reason described; the tenth (a `tz` parameter for `GET /history`) is deliberately left for later.
 
 - **SubagentStop flipped a working session to waiting** (`hookIngest.ts`). Only `Stop` means the main loop
   is idle now.

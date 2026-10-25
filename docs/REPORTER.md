@@ -32,8 +32,8 @@ If the server uses a token (`podiumctl start` generates one), enter it with
   name as `userName`.
 - The `token` option is secret, so it has no row in the `/config` menu.
 
-Without a token the server accepts, or with a token that does not belong to your name, the reporter gets
-HTTP 401, logs it once, and tries again about once a minute. `/podium` and the status line say so.
+If the server needs a token and you send none, or send one that does not belong to your name, the reporter
+gets HTTP 401, logs it once, and tries again about once a minute. `/podium` and the status line say so.
 
 To work on the mod itself, load it from a checkout for one session instead:
 
@@ -210,7 +210,7 @@ nothing the server sends is taken.
 
 ## What leaves the session
 
-Data goes only to the server URL above, and only the items below. Podium never reads transcripts or files.
+Data goes only to the server URL above, and only the items below. Podium does not read whole conversations or send whole files: text is cut to short excerpts, and the options below that send more are opt-in.
 
 **Always:**
 
