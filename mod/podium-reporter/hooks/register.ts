@@ -10,6 +10,7 @@
 import { modBuild } from './build.ts';
 import type { EngineInterface, Register } from 'claude-code';
 import { lastSegment, readChanges, readGit } from './git.ts';
+import { chooseFallback, MAX_HANDOFF_BYTES, parseBeads, parseHandoff, type FallbackPlan } from './handoffPlan.ts';
 import { readFileDiff } from './fileDiff.ts';
 import { follow } from './place.ts';
 import { shortName } from './models.ts';
@@ -32,6 +33,7 @@ import {
   sessionEnd,
   NO_FILES,
   setAttached,
+  setFallback,
   setFiles,
   setGit,
   setExplanation,
@@ -608,6 +610,48 @@ async function pollGit($: Engine, r: Runtime): Promise<void> {
     r.state = setFiles(r.state, changes.files, base);
   } catch (err) {
     record($, 'git', err);
+  }
+}
+
+/** Where `bd` looks for a tracker: the folder of the session's HANDOFF.md, then the folder it runs in. */
+function beadsDirs(handoffPath: string | null, cwd: string): string[] {
+  const dirs = [handoffPath ? handoffPath.slice(0, handoffPath.lastIndexOf('/')) || '/' : null, cwd];
+  return dirs.filter((d, i): d is string => !!d && dirs.indexOf(d) === i);
+}
+
+/**
+ * The plan for a session that has none of its own: the open items of its HANDOFF.md, else its open beads.
+ * Read-only, bounded (one capped read, one capped `bd list`), and a missing file or tracker just means no plan.
+ */
+async function pollPlan($: Engine, r: Runtime): Promise<void> {
+  try {
+    const id = r.state.id;
+    if (r.state.plan.tasks.length) {
+      r.state = setFallback(r.state, null);
+      return;
+    }
+    const run = async (argv: string[], cwd?: string): Promise<string | null> => {
+      try {
+        const res = await $.process.run(argv, { ...(cwd ? { cwd } : {}), timeoutMs: 5000 });
+        return res.exitCode === 0 ? res.stdout : null;
+      } catch {
+        return null;
+      }
+    };
+    const path = r.state.handoffPath;
+    const text = path ? await run(['head', '-c', String(MAX_HANDOFF_BYTES), path]) : null;
+    const handoff = text === null ? null : parseHandoff(text);
+    let beads: FallbackPlan | null = null;
+    if (!handoff) {
+      for (const dir of beadsDirs(path, r.state.cwd)) {
+        beads = parseBeads((await run(['bd', 'list', '--json', '--brief', '-n', '50'], dir)) ?? '');
+        if (beads) break;
+      }
+    }
+    if (r.state.id !== id || r.state.plan.tasks.length) return;
+    r.state = setFallback(r.state, chooseFallback(handoff, beads));
+  } catch (err) {
+    record($, 'plan', err);
   }
 }
 
@@ -1713,7 +1757,9 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
   }
   r.timers.push($.clock.every(opts.flushIntervalMs, () => void flush($)));
   r.timers.push($.clock.every(GIT_POLL_MS, () => void pollGit($, r)));
+  r.timers.push($.clock.every(GIT_POLL_MS, () => void pollPlan($, r)));
   void pollGit($, r);
+  void pollPlan($, r);
   showStatus($, r);
 }
 
@@ -2099,7 +2145,10 @@ export const register: Register = (on, rawOptions) => {
       });
     }
     safe('tool.call.result', (r) => {
+      const handoffBefore = r.state.handoffPath;
       r.state = toolResult(r.state, { agentId: e.agentId, tool, input, result: (res ?? {}) as { deny?: string; isError?: boolean; text?: string } }, nowMs());
+      // A session that just read or wrote its HANDOFF.md shows its open items now, not at the next poll.
+      if (r.state.handoffPath !== handoffBefore) void pollPlan($, r);
       if (e.tool_use_id) settleToolAsk(e.tool_use_id, res as ToolResult | undefined);
       // How a finished call ended goes with the feed alone (#598); its output only with the option on and a viewer on the loop.
       if (tool === 'Bash' && e.tool_use_id && opts.activityFeed) {

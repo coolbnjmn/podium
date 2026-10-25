@@ -13,6 +13,7 @@ import {
   type FailureCandidate,
 } from './failures.ts';
 import { costOf, shortName, windowOf } from './models.ts';
+import { isHandoffPath, type FallbackPlan } from './handoffPlan.ts';
 import { assignOwners, emptyPlan, setTitle, taskCreate, taskUpdate, todoWrite, type PlanState } from './plan.ts';
 import { backgroundSummary, MAIN_LOOP, type ActivityEntry, type ActivityEvent, type AgentStatus, type BackgroundKind, type BackgroundTask, type BackgroundWait, type Effort, type Failure, type FilesReport, type GitInfo, type ModelUsage, type RateLimit } from './protocol.ts';
 
@@ -187,6 +188,10 @@ export interface SessionState {
   costUsd: number | null;
   rateLimits: RateLimit[];
   plan: PlanState;
+  /** The HANDOFF.md this session last read or wrote; where the plan fallback looks first. */
+  handoffPath: string | null;
+  /** A plan read from that file or from beads, shown only while the session has no plan of its own. */
+  fallback: FallbackPlan | null;
   agents: Record<string, AgentState>;
   /** Agent ids in spawn order. */
   order: string[];
@@ -249,6 +254,8 @@ export function newSession(i: { id: string; cwd: string; startedAt: number; mode
     costUsd: null,
     rateLimits: [],
     plan: emptyPlan,
+    handoffPath: null,
+    fallback: null,
     agents: {},
     order: [],
     pending: {},
@@ -375,6 +382,12 @@ export function setIdentity(
 export function setGit(s: SessionState, git: GitInfo | null): SessionState {
   if (JSON.stringify(git) === JSON.stringify(s.git)) return s;
   return { ...s, git, dirty: true };
+}
+
+/** The plan read from a HANDOFF.md or beads; a report is due only when it differs from the last one. */
+export function setFallback(s: SessionState, fallback: FallbackPlan | null): SessionState {
+  if (JSON.stringify(fallback) === JSON.stringify(s.fallback)) return s;
+  return { ...s, fallback, dirty: true };
 }
 
 /** The changed-files list; a report is due only when it differs from the last one. */
@@ -765,6 +778,7 @@ export function toolResult(s0: SessionState, i: ToolResultInput, now: number): S
     s = putLoop(s, i.agentId, next);
   }
   if (s.waitReason === 'permission' && !i.agentId) s = withStatus({ ...s, waitReason: null, waitNote: null });
+  if (!i.agentId && ['Read', 'Write', 'Edit', 'MultiEdit'].includes(i.tool) && isHandoffPath(i.input.file_path) && i.input.file_path !== s.handoffPath) s = { ...s, handoffPath: i.input.file_path, dirty: true };
   const ok = typeof i.result.deny !== 'string' && i.result.isError !== true;
   if (!ok) return s;
   if (i.tool === 'Skill' && typeof i.input.skill === 'string') s = skillLoaded(s, i.agentId, i.input.skill, now);
