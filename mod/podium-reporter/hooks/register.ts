@@ -11,6 +11,7 @@ import { modBuild } from './build.ts';
 import type { EngineInterface, Register } from 'claude-code';
 import { lastSegment, readChanges, readGit } from './git.ts';
 import { chooseFallback, MAX_HANDOFF_BYTES, parseBeads, parseHandoff, type FallbackPlan } from './handoffPlan.ts';
+import { dirsOfCall } from './workRepo.ts';
 import { readFileDiff } from './fileDiff.ts';
 import { follow } from './place.ts';
 import { shortName } from './models.ts';
@@ -34,8 +35,12 @@ import {
   NO_FILES,
   setAttached,
   setFallback,
+  dropWorkRoot,
+  gitCwdOf,
+  noteWorkRoot,
   setFiles,
   setGit,
+  setRootBase,
   setExplanation,
   markTextSent,
   type SentTexts,
@@ -589,7 +594,9 @@ async function findBuild($: Engine): Promise<string | null> {
 async function pollGit($: Engine, r: Runtime): Promise<void> {
   try {
     await movePlace($, r);
-    const cwd = r.state.cwd;
+    const cwd = gitCwdOf(r.state);
+    // The repository the session works in, when it is not where it started; null reads the starting folder as before.
+    const root = r.state.workRoots[0] ?? null;
     const run = async (argv: string[]) => {
       const res = await $.process.run(argv, { cwd, timeoutMs: 5000 });
       return { exitCode: res.exitCode, stdout: res.stdout };
@@ -597,17 +604,19 @@ async function pollGit($: Engine, r: Runtime): Promise<void> {
     const git = await readGit(run, cwd);
     r.state = setGit(r.state, git);
     const id = r.state.id;
-    let base = r.state.gitBase ?? (await loadBase($, id));
+    let base = root ? r.state.rootBases[root] ?? (await loadBase($, id, root)) : r.state.gitBase ?? (await loadBase($, id));
     // Tried even when readGit gave null: a repository with no commits yet fails that (no HEAD) but has files to list.
     const changes = await readChanges(run, cwd, base);
     if (!changes) {
-      if (!git) r.state = setFiles(r.state, NO_FILES, r.state.gitBase);
+      // A work repository that cannot be read any more (a removed worktree) is forgotten, and the starting folder is read next.
+      if (!git && root) r.state = dropWorkRoot(r.state, root);
+      else if (!git) r.state = setFiles(r.state, NO_FILES, r.state.gitBase);
       return;
     }
     if (r.state.id !== id) return;
-    if (changes.base !== base) await attempt(() => $.store.set(`base:${id}`, changes.base), undefined);
+    if (changes.base !== base) await attempt(() => $.store.set(baseKey(id, root), changes.base), undefined);
     base = changes.base;
-    r.state = setFiles(r.state, changes.files, base);
+    r.state = setFiles(root ? setRootBase(r.state, root, base) : r.state, changes.files, base);
   } catch (err) {
     record($, 'git', err);
   }
@@ -655,10 +664,51 @@ async function pollPlan($: Engine, r: Runtime): Promise<void> {
   }
 }
 
-/** The starting commit saved by an earlier run of this session (a hot reload keeps the process, a restart does not). */
-async function loadBase($: Engine, id: string): Promise<string | null> {
+/** Repositories already resolved from a directory; only found ones are kept, so a folder that becomes a repository later is found. */
+const repoRoots = new Map<string, string>();
+const REPO_ROOT_CACHE = 200;
+
+async function repoRootOf($: Engine, dir: string): Promise<string | null> {
+  const hit = repoRoots.get(dir);
+  if (hit) return hit;
   try {
-    const v = await $.store.get(`base:${id}`);
+    const res = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd: dir, timeoutMs: 3000 });
+    const top = res.exitCode === 0 ? res.stdout.trim() : '';
+    if (!top.startsWith('/')) return null;
+    if (repoRoots.size >= REPO_ROOT_CACHE) repoRoots.clear();
+    repoRoots.set(dir, top);
+    return top;
+  } catch {
+    return null;
+  }
+}
+
+/** A finished call changed files or ran git in these directories: the repository of the last one that has one is where the session works now. */
+async function noteWorkDirs($: Engine, r: Runtime, dirs: string[]): Promise<void> {
+  try {
+    const id = r.state.id;
+    let moved = false;
+    for (const dir of dirs) {
+      const top = await repoRootOf($, dir);
+      if (top && r.state.id === id && r.state.workRoots[0] !== top) {
+        r.state = noteWorkRoot(r.state, top);
+        moved = true;
+      }
+    }
+    if (moved) void pollGit($, r);
+  } catch (err) {
+    record($, 'work-repo', err);
+  }
+}
+
+/** The starting commit saved by an earlier run of this session (a hot reload keeps the process, a restart does not). */
+function baseKey(id: string, root: string | null): string {
+  return root ? `base:${id}:${root}` : `base:${id}`;
+}
+
+async function loadBase($: Engine, id: string, root: string | null = null): Promise<string | null> {
+  try {
+    const v = await $.store.get(baseKey(id, root));
     return typeof v === 'string' && v ? v : null;
   } catch {
     return null;
@@ -1272,7 +1322,7 @@ function handleDiffs($: Engine, r: Runtime): void {
 
 async function answerDiff($: Engine, r: Runtime, sid: string, req: { id: string; path: string }): Promise<void> {
   try {
-    const cwd = r.state.cwd;
+    const cwd = gitCwdOf(r.state);
     const run = async (argv: string[]) => {
       const res = await $.process.run(argv, { cwd, timeoutMs: 15_000 });
       return { exitCode: res.exitCode, stdout: res.stdout };
@@ -2149,6 +2199,9 @@ export const register: Register = (on, rawOptions) => {
       r.state = toolResult(r.state, { agentId: e.agentId, tool, input, result: (res ?? {}) as { deny?: string; isError?: boolean; text?: string } }, nowMs());
       // A session that just read or wrote its HANDOFF.md shows its open items now, not at the next poll.
       if (r.state.handoffPath !== handoffBefore) void pollPlan($, r);
+      // A call that changed files or ran git somewhere says which repository the session works in (a subagent's counts too).
+      const dirs = dirsOfCall(tool, input);
+      if (dirs.length) void noteWorkDirs($, r, dirs);
       if (e.tool_use_id) settleToolAsk(e.tool_use_id, res as ToolResult | undefined);
       // How a finished call ended goes with the feed alone (#598); its output only with the option on and a viewer on the loop.
       if (tool === 'Bash' && e.tool_use_id && opts.activityFeed) {
