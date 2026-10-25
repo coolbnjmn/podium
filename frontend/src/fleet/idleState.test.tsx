@@ -85,6 +85,36 @@ describe("the rail", () => {
   });
 });
 
+describe("idle versus done", () => {
+  const step = (id: string, state: "pending" | "active" | "done" | "blocked") => ({ id, text: `step ${id}`, state, activeText: null, ownerAgentId: null, ownerLabel: null });
+  const planOf = (...states: ("pending" | "active" | "done" | "blocked")[]) => ({ title: "t", source: "handoff" as const, steps: states.map((st, i) => step(String(i), st)) });
+
+  it("is done when every plan step is, and idle while any is left or there is no plan", () => {
+    expect(chipStatusOf(idle({ plan: planOf("done", "done") }))).toBe("done");
+    expect(chipStatusOf(idle({ plan: planOf("done", "pending") }))).toBe("idle");
+    expect(chipStatusOf(idle({ plan: null }))).toBe("idle");
+  });
+
+  it("shows a done session as Done, with the done icon, and still not as needing the person", () => {
+    const s = idle({ plan: planOf("done") });
+    const { container } = card(s);
+    expect(container.querySelector(".band")!.textContent).toBe("Done");
+    expect(container.querySelector(".card .sd .si-done")).not.toBeNull();
+    expect(needsPerson(s)).toBe(false);
+  });
+
+  it("sorts done after idle, and a session that asks stays ahead of both", () => {
+    const list = [idle({ id: "d", name: "a-done", plan: planOf("done") }), idle({ id: "i", name: "b-idle", plan: planOf("pending") }), asks({ id: "q", name: "z-asks" })];
+    expect(sortSessions(list, "status").map((s) => s.id)).toEqual(["q", "i", "d"]);
+  });
+
+  it("names the rail row done for a screen reader", () => {
+    const { container } = render(<FleetView state={stateFrom({ sessions: [idle({ id: "d", name: "finished", plan: planOf("done") })] })} />);
+    const row = [...container.querySelectorAll(".rail .ritem")].find((r) => r.querySelector(".nm")?.textContent === "finished")!;
+    expect(row.querySelector(".vh")!.textContent).toBe("done");
+  });
+});
+
 describe("the Waiting filter", () => {
   it("lists the sessions the Waiting count counts", () => {
     const list = [idle({ id: "i" }), asks({ id: "q" }), onShell(), makeSession({ id: "r", status: "running" })];

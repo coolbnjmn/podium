@@ -31,9 +31,9 @@ export const MODEL_ORDER: readonly ModelFamily[] = ["fable", "haiku", "opus", "s
 
 const STATUS_ORDER: Record<SessionView["status"], number> = { running: 0, waiting: 1, stale: 2, done: 3 };
 
-/** Status order within waiting: a session that needs the person, then one blocked on background work, then one only idle between turns. */
+/** Status order within waiting: a session that needs the person, then one blocked on background work, then one idle with work left, then one idle with its plan done. */
 function statusRank(s: SessionView): number {
-  if (idleOnInput(s)) return STATUS_ORDER.waiting + 0.5;
+  if (idleOnInput(s)) return STATUS_ORDER.waiting + (planComplete(s.plan) ? 0.75 : 0.5);
   if (s.status === "waiting" && !needsPerson(s)) return STATUS_ORDER.waiting + 0.25;
   return STATUS_ORDER[s.status];
 }
