@@ -636,6 +636,25 @@ describe('podium-reporter end to end', () => {
     expect(w.posts.at(-1)!.session).toMatchObject({ name: 'notes', cwd: '/Users/dev/notes', projectRoot: '/Users/dev/notes', repoName: 'notes', git: null })
   })
 
+  test('a session that edits a file in another repository reports that repository, and forgets it once it is gone', async ($, on) => {
+    const w = world(on)
+    const OTHER = '/Users/dev/web/other'
+    w.gitAt[CWD] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': CWD, 'rev-parse --abbrev-ref HEAD': 'feat/x', 'status --porcelain=v1 -b': '## feat/x\n' }
+    w.gitAt[`${OTHER}/src`] = { 'rev-parse --show-toplevel': OTHER }
+    w.gitAt[OTHER] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': OTHER, 'rev-parse --abbrev-ref HEAD': 'ben/other-work', 'status --porcelain=v1 -b': '## ben/other-work\n' }
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'feat/x' } })
+    await $.tool.call({ tool: 'Edit', file_path: `${OTHER}/src/a.ts`, old_string: 'a', new_string: 'b' })
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'ben/other-work' } })
+    // the worktree is removed: git there fails, and the card goes back to the folder the session started in
+    w.gitAt[OTHER] = null
+    await w.clock.advance(10_000)
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'feat/x' } })
+  })
+
   test('reports whether any client is attached, from the roster', async ($, on) => {
     const w = world(on)
     await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
