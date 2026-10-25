@@ -72,7 +72,8 @@ export type RespondGate = { show: "none" } | { show: "live"; count: string } | {
 export function respondGate(s: SessionView, me: RespondMe | null, flagsOn: boolean): RespondGate {
   if (!flagsOn || !me?.enabled) return { show: "none" };
   // Only while the session waits on its person: not on a blue band (background work), and not while it runs.
-  if (cardKind(s) !== "waiting") return { show: "none" };
+  const kind = cardKind(s);
+  if (kind !== "waiting" && kind !== "idle") return { show: "none" };
   const ask = openAsk(s);
   if (canAnswer(s, ask?.kind ?? null) !== "ok") return { show: "none" };
   const count = ask?.kind === "question" && ask.count > 0 ? String(ask.count) : "";

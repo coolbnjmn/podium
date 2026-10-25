@@ -57,8 +57,8 @@ describe("the card", () => {
   });
 
   it("a session that waits on the person still reads as before", () => {
-    const { container } = renderCard(makeSession({ status: "waiting", waitReason: "input" }));
-    expect(container.querySelector(".band")!.textContent).toBe("Waiting for your input.");
+    const { container } = renderCard(makeSession({ status: "waiting", waitReason: "permission" }));
+    expect(container.querySelector(".band")!.textContent).toBe("Waiting for your approval.");
     expect(container.querySelector(".band")!.className).toContain("waiting");
     expect(container.querySelector(".band")!.className).toContain("hot");
     expect(container.querySelector(".card .sd .si-waiting")).not.toBeNull();
@@ -91,7 +91,7 @@ describe("the orchestrator page", () => {
 
 describe("the counts", () => {
   it("do not count a session idle on background work as waiting on you", () => {
-    const sessions = [makeSession({ id: "a", name: "needs-you", status: "waiting", waitReason: "input" }), { ...idleOn([task("shell")]), id: "b", name: "on-shell" }];
+    const sessions = [makeSession({ id: "a", name: "needs-you", status: "waiting", waitReason: "permission" }), { ...idleOn([task("shell")]), id: "b", name: "on-shell" }];
     const { container } = render(<FleetView state={stateFrom({ sessions })} />);
     expect(container.textContent).toContain("0 running · 1 waiting · 0 stale");
   });
@@ -99,7 +99,7 @@ describe("the counts", () => {
   it("the rail row says what it waits on", () => {
     const { container } = render(<FleetView state={stateFrom({ sessions: [idleOn([task("shell")])] })} />);
     const row = [...container.querySelectorAll(".rail .ritem")].find((r) => r.textContent?.includes("api-refactor"))!;
-    expect(row.textContent).toContain("waiting on shell");
+    expect(row.textContent).toContain("blocked on shell");
     expect(row.querySelector(".dot.ring")).not.toBeNull();
   });
 });

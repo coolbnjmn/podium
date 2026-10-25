@@ -2,7 +2,7 @@
 // group. Pure functions; the components only draw what these return. People come from live sessions:
 // nothing about a person is kept once their last session leaves the wall.
 import type { OwnerSpend, SessionView } from "./types";
-import { idleOnBackground } from "./waiting";
+import { needsPerson } from "./waiting";
 
 /** The owner of a session reported with the admin secret (the server's ADMIN_OWNER). */
 export const ADMIN = "Admin";
@@ -97,7 +97,7 @@ function spendOf(rows: readonly OwnerSpend[], match: (r: OwnerSpend) => boolean)
 
 const counted = (sessions: SessionView[]) => ({
   live: sessions.filter((s) => s.status !== "done").length,
-  waiting: sessions.filter((s) => s.status === "waiting" && !idleOnBackground(s)).length,
+  waiting: sessions.filter(needsPerson).length,
   stale: sessions.filter((s) => s.status === "stale").length,
 });
 

@@ -102,8 +102,8 @@ describe("the status band", () => {
   });
 
   it("a waiting session with no note still says where to answer", () => {
-    const { band } = page({ status: "waiting", waitReason: "input" });
-    expect(band.querySelector(".bl")!.textContent).toBe("Waiting for your input.");
+    const { band } = page({ status: "waiting", waitReason: "permission" });
+    expect(band.querySelector(".bl")!.textContent).toBe("Waiting for your approval.");
     expect(band.querySelector(".bd")!.textContent).toBe("Answer in its terminal.");
   });
 
@@ -165,7 +165,7 @@ describe("the status band", () => {
   });
 
   it("the session's own waiting status wins over delegating", () => {
-    const { band } = page({ status: "waiting", waitReason: "input", agents: nested });
+    const { band } = page({ status: "waiting", waitReason: "permission", agents: nested });
     expect(band).toHaveClass("waiting");
     expect(band.textContent).not.toContain("Delegating");
   });

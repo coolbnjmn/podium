@@ -1,5 +1,6 @@
 import { readJson, writeJson } from "./storage";
 import type { FleetState } from "./store";
+import { needsPerson } from "./waiting";
 
 // How often the fleet page redraws from new data and moves its clock (#138). The server's events still arrive as
 // they do; the page just shows the newest state once per interval to keep the GPU load down.
@@ -29,7 +30,8 @@ export function isUrgentChange(held: FleetState, next: FleetState): boolean {
   if (held.wall !== next.wall || held.features !== next.features || Object.keys(held.gone).length !== Object.keys(next.gone).length) return true;
   for (const s of Object.values(next.sessions)) {
     const before = held.sessions[s.id];
-    if ((s.status === "waiting" || s.status === "stale") && before?.status !== s.status) return true;
+    if (needsPerson(s) && !(before && needsPerson(before))) return true;
+    if (s.status === "stale" && before?.status !== s.status) return true;
     for (const a of s.agents) {
       if (a.failure && !before?.agents.find((b) => b.id === a.id)?.failure) return true;
     }

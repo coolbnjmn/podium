@@ -46,7 +46,7 @@ describe("delegating on the fleet card, the rail and the wall (#287)", () => {
   });
 
   it("a session waiting on the person keeps its own state while an agent runs", () => {
-    const s = makeSession({ status: "waiting", waitReason: "input", agents: [makeAgent()] });
+    const s = makeSession({ status: "waiting", waitReason: "permission", agents: [makeAgent()] });
     const { container } = render(<FleetView state={stateFrom({ sessions: [s] })} />);
     expect(container.querySelector(".wall .card .band")!.className).toContain("waiting");
   });

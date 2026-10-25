@@ -1,5 +1,5 @@
 // Pure presentation logic: sorting, filtering, plan progress, agent counts and the agent tree.
-import { MAIN_LOOP } from "../../../server/src/fleet/protocol";
+import { idleOnInput, MAIN_LOOP, needsPerson } from "../../../server/src/fleet/protocol";
 import type { AgentView, Effort, ModelFamily, Plan, PlanStep, PlanStepView, PlanView, SessionView } from "./types";
 
 export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -31,8 +31,15 @@ export const MODEL_ORDER: readonly ModelFamily[] = ["fable", "haiku", "opus", "s
 
 const STATUS_ORDER: Record<SessionView["status"], number> = { running: 0, waiting: 1, stale: 2, done: 3 };
 
+/** Status order within waiting: a session that needs the person, then one blocked on background work, then one only idle between turns. */
+function statusRank(s: SessionView): number {
+  if (idleOnInput(s)) return STATUS_ORDER.waiting + 0.5;
+  if (s.status === "waiting" && !needsPerson(s)) return STATUS_ORDER.waiting + 0.25;
+  return STATUS_ORDER[s.status];
+}
+
 function byStatus(a: SessionView, b: SessionView): number {
-  return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+  return statusRank(a) - statusRank(b);
 }
 
 function byName(a: SessionView, b: SessionView): number {
@@ -57,6 +64,9 @@ export function filterSessions(list: readonly SessionView[], filter: { status: S
   return list.filter((s) => {
     if (filter.status === "blow") {
       if (!s.blowouts.total) return false;
+    } else if (filter.status === "waiting") {
+      // The same sessions the Waiting count counts: one that needs the person, not one idle between turns or on background work.
+      if (!needsPerson(s)) return false;
     } else if (filter.status !== "all" && s.status !== filter.status) return false;
     if (q) {
       const hay = `${s.name}\n${s.project}\n${s.git?.branch ?? ""}`.toLowerCase();

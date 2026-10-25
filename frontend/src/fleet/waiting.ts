@@ -37,7 +37,7 @@ export function parseWaitEvent(text: string): { reason: "permission" | "input"; 
 // ---- Idle on background work (#119, mockup/podium-background-wait.html) ----------------------------------------------
 
 // One definition for the mod, the server and the UI: the same function the reporter and the server use (protocol.ts).
-export { idleOnBackground } from "../../../server/src/fleet/protocol";
+export { idleOnBackground, idleOnInput, needsPerson } from "../../../server/src/fleet/protocol";
 
 /** The reporter writes this prefix plus counts ("1 shell, 1 agent") for the activity row of a background wait. */
 const WAIT_BG_PREFIX = "waiting on background: ";
@@ -75,13 +75,13 @@ export function backgroundLead(b: BackgroundWait): string {
   return sentence(countsOf(b), false, b.wakeAt);
 }
 
-/** The short status beside the dot: "waiting on shell", "waiting on 2 tasks", "wakes at 14:30". */
+/** The short status beside the dot: "blocked on shell", "blocked on 2 tasks", "wakes at 14:30". */
 export function backgroundStatus(b: BackgroundWait): string {
   const c = countsOf(b);
   const tasks = c.filter(([k]) => k !== "wakeup");
-  if (!tasks.length) return b.wakeAt === null ? "waiting on wake-up" : `wakes at ${fmtClock(b.wakeAt).slice(0, 5)}`;
-  if (c.length === 1 && c[0]![1] === 1) return `waiting on ${c[0]![0]}`;
-  return `waiting on ${b.tasks.length} tasks`;
+  if (!tasks.length) return b.wakeAt === null ? "blocked on wake-up" : `wakes at ${fmtClock(b.wakeAt).slice(0, 5)}`;
+  if (c.length === 1 && c[0]![1] === 1) return `blocked on ${c[0]![0]}`;
+  return `blocked on ${b.tasks.length} tasks`;
 }
 
 /** At most this many characters of a task description; the callout cuts there and ends with " ...". */
