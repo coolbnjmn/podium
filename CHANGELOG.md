@@ -22,7 +22,7 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ### Changed
 
-- **A session idle between turns reads "idle", not "waiting on you".** Every session that had finished its turn showed as waiting for the person, even when nothing asked for anything. Now only a permission prompt or a question counts as "needs you": the Waiting count, the Waiting filter, the board's Review column and the update interval's urgent changes follow it. A session idle between turns shows a calm "Idle" band with its own icon and sorts after one that needs you and one blocked on background work, and a session idle on background work reads "blocked on shell" (or the task's kind) beside its dot. The wire is unchanged: `waitReason: "input"` is the idle case.
+- **A session idle between turns reads "idle", not "waiting on you".** Every session that had finished its turn showed as waiting for the person, even when nothing asked for anything. Now only a permission prompt or a question counts as "needs you": the Waiting count, the Waiting filter, the board's Review column and the update interval's urgent changes follow it. A session idle between turns shows a calm "Idle" band with its own icon and sorts after one that needs you and one blocked on background work, and a session idle on background work reads "blocked on shell" (or the task's kind) beside its dot. The wire is unchanged: `waitReason: "input"` is the idle case. A session idle between turns whose plan has steps, every one done, reads "Done" instead of "Idle" and sorts after the idle ones.
   Standards: the status chip, the card band and the state icons gain an `idle` state, and the waiting chip's word is "needs you" (approved by the maintainer).
 
 ## [1.3.0] - 2026-10-22
