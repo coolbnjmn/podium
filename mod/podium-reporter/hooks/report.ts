@@ -4,6 +4,7 @@ import { DETAIL_CHARS_PER_REPORT } from './activityDetail.ts';
 import { clip, excerpt, LIMITS } from './failures.ts';
 import { lastSegment } from './git.ts';
 import { family, windowOf } from './models.ts';
+import { fallbackToPlan } from './handoffPlan.ts';
 import { toPlan } from './plan.ts';
 import type { ActivityEntry, ActivityEvent, AgentReport, Ask, Failure, LoopReport, MachineInfo, ModelUsage, Report, RespondInfo } from './protocol.ts';
 import { utf8Bytes } from './recording.ts';
@@ -280,7 +281,7 @@ export function buildReport(s0: SessionState, events: readonly ActivityEvent[], 
       usageByModel: usageRows(mergeUsage(s.main.usage, ...s.order.map((id) => s.agents[id]?.usage))),
       rateLimits: s.rateLimits.slice(0, 10),
       blowouts: s.main.blowouts,
-      plan: toPlan(s.plan),
+      plan: toPlan(s.plan) ?? fallbackToPlan(s.fallback),
       loop: loopFields(s.main),
       attached: s.attached,
       ...(s.status === 'waiting' && s.background ? { background: s.background } : {}),

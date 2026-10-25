@@ -97,6 +97,18 @@ describe('protocol', () => {
     }
   });
 
+  it('accepts a plan read from a HANDOFF.md or beads, and refuses an unknown plan source', () => {
+    const f = loadFixture() as { session: { plan: { source: string } } };
+    for (const source of ['handoff', 'beads']) {
+      const g = structuredClone(f);
+      g.session.plan.source = source;
+      expect(validateReport(g)).toMatchObject({ ok: true });
+    }
+    const bad = structuredClone(f);
+    bad.session.plan.source = 'whiteboard';
+    expect(validateReport(bad)).toMatchObject({ ok: false, path: '$.session.plan.source' });
+  });
+
   it('rejects more than 100 events and 100 plan steps', () => {
     const f = loadFixture() as { events: Record<string, unknown>[]; session: { plan: { steps: Record<string, unknown>[] } } };
     const e = f.events[0]!;

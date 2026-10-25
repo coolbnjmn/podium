@@ -99,7 +99,7 @@ export interface PlanStep {
 
 export interface Plan {
   title: string | null;
-  source: 'TaskCreate' | 'TodoWrite' | 'podium_plan';
+  source: 'TaskCreate' | 'TodoWrite' | 'podium_plan' | 'handoff' | 'beads';
   steps: PlanStep[];
 }
 
@@ -343,6 +343,16 @@ export function backgroundSummary(b: BackgroundWait): string {
 /** A waiting session whose only wait is on background work or a wake-up, not on the person (#119). */
 export function idleOnBackground<T extends { status: string; waitReason: string | null; background?: BackgroundWait | null }>(s: T): s is T & { background: BackgroundWait } {
   return s.status === 'waiting' && s.waitReason === null && !!s.background;
+}
+
+/** A waiting session that only sits between turns: nothing asks the person for anything (no permission prompt, no question) and no background work holds it. */
+export function idleOnInput(s: { status: string; waitReason: string | null; background?: BackgroundWait | null }): boolean {
+  return s.status === 'waiting' && s.waitReason === 'input' && !s.background;
+}
+
+/** A session that needs the person: a permission prompt or a question is open. Idle between turns and idle on background work are not. */
+export function needsPerson(s: { status: string; waitReason: string | null; background?: BackgroundWait | null }): boolean {
+  return s.status === 'waiting' && !idleOnInput(s) && !(s.waitReason === null && !!s.background);
 }
 
 // ---- Responding (#206, SPEC 5.3, 6.2, 7.1) --------------------------------------------------

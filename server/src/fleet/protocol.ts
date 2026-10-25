@@ -104,7 +104,7 @@ export interface PlanStep {
 
 export interface Plan {
   title: string | null;
-  source: 'TaskCreate' | 'TodoWrite' | 'podium_plan';
+  source: 'TaskCreate' | 'TodoWrite' | 'podium_plan' | 'handoff' | 'beads';
   steps: PlanStep[];
 }
 
@@ -1376,7 +1376,7 @@ function plan(v: unknown, path: string): Plan | null {
   });
   return {
     title: strOrNull(o.title, `${path}.title`, LIMITS.text),
-    source: oneOf(o.source, `${path}.source`, ['TaskCreate', 'TodoWrite', 'podium_plan'] as const),
+    source: oneOf(o.source, `${path}.source`, ['TaskCreate', 'TodoWrite', 'podium_plan', 'handoff', 'beads'] as const),
     steps,
   };
 }
