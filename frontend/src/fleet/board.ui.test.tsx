@@ -49,9 +49,9 @@ describe("kanban board", () => {
   });
 
   it("puts the in-progress step of a session that waits on its person in Review", () => {
-    board([planned({ status: "waiting", waitReason: "input" }, step("1", "active", "Pick the OS"))]);
+    board([planned({ status: "waiting", waitReason: "permission" }, step("1", "active", "Pick the OS"))]);
     expect(within(column("Review")).getByText("Pick the OS")).toBeInTheDocument();
-    expect(within(column("Review")).getByText("Waiting for your input")).toBeInTheDocument();
+    expect(within(column("Review")).getByText("Waiting for your approval")).toBeInTheDocument();
     expect(within(column("In progress")).queryByText("Pick the OS")).toBeNull();
   });
 
@@ -148,7 +148,7 @@ describe("kanban board", () => {
     fireEvent.click(within(strip).getByRole("button", { name: "How to get steps here" }));
     expect(screen.getByRole("note")).toBeVisible();
     expect(screen.getByRole("note")).toHaveTextContent("CLAUDE_CODE_ENABLE_TODO_TOOLS=1");
-    expect(within(strip).getByRole("link", { name: "A session shows no plan" })).toHaveAttribute("href", expect.stringContaining("docs/GOTCHAS.md"));
+    expect(within(strip).getByRole("link", { name: "A session shows no plan" })).toHaveAttribute("href", expect.stringContaining("docs/gotchas/"));
   });
 
   it("pins the strip as the last thing on the page, and Escape closes its note (#359)", () => {
@@ -275,7 +275,7 @@ describe("kanban board", () => {
     });
 
     it("shows a no-plan session that waits on its person in Review on All only", () => {
-      board([makeSession({ id: "q", name: "asker", status: "waiting", waitReason: "input", plan: null })]);
+      board([makeSession({ id: "q", name: "asker", status: "waiting", waitReason: "permission", plan: null })]);
       expect(within(column("Review")).getByRole("link", { name: /asker/ })).toBeInTheDocument();
       expect(strip()).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Plans" }));
@@ -286,7 +286,7 @@ describe("kanban board", () => {
     });
 
     it("keeps a waiting session that has a plan in Review on Plans", () => {
-      board([planned({ id: "p", name: "planner", status: "waiting", waitReason: "input" }, step("1", "pending"))]);
+      board([planned({ id: "p", name: "planner", status: "waiting", waitReason: "permission" }, step("1", "pending"))]);
       fireEvent.click(screen.getByRole("button", { name: "Plans" }));
       expect(within(column("Review")).getByRole("link", { name: /planner/ })).toBeInTheDocument();
     });

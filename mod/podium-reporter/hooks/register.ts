@@ -10,6 +10,8 @@
 import { modBuild } from './build.ts';
 import type { EngineInterface, Register } from 'claude-code';
 import { lastSegment, readChanges, readGit } from './git.ts';
+import { chooseFallback, MAX_HANDOFF_BYTES, parseBeads, parseHandoff, type FallbackPlan } from './handoffPlan.ts';
+import { dirsOfCall } from './workRepo.ts';
 import { readFileDiff } from './fileDiff.ts';
 import { follow } from './place.ts';
 import { shortName } from './models.ts';
@@ -32,8 +34,13 @@ import {
   sessionEnd,
   NO_FILES,
   setAttached,
+  setFallback,
+  dropWorkRoot,
+  gitCwdOf,
+  noteWorkRoot,
   setFiles,
   setGit,
+  setRootBase,
   setExplanation,
   markTextSent,
   type SentTexts,
@@ -59,7 +66,7 @@ import { findConfig, startLink, unusableLink, type Link } from './tlsLink.ts';
 import { activityCall, activityText, explainPrompt } from './failures.ts';
 import { activityEntry, finishedCall, type BashResult } from './activityDetail.ts';
 import { nameArg, pickIdentity, worthHolding, type Identity } from './identity.ts';
-import { hostOf, isMachineId, MACHINE_ID_KEY, machineIdPath, machineInfo, newMachineId, platformRandom, type RandomSource, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile, trimTrailingSlashes } from './machine.ts';
+import { hostOf, isMachineId, MACHINE_ID_KEY, machineIdPath, machineNamePath, localHostNameOf, parseMachineNameFile, machineInfo, newMachineId, platformRandom, type RandomSource, osFromOsRelease, osFromSwVers, osFromVer, parseMachineIdFile, trimTrailingSlashes } from './machine.ts';
 import { MAIN_LOOP, RECORDING_LIMITS, type Ask, type Delivery, type DeliveryResult, type MachineInfo, type PeerDelivery, type PeerRequest, type PeerResult, type RecordingGrant, type RespondInfo, type RespondKind, type RespondLevel } from './protocol.ts';
 import { isRecordingGrant } from './transport.ts';
 import { limitLine, Recorder, refusedLine, startLine, stoppedLine, unframeSent } from './recording.ts';
@@ -109,7 +116,7 @@ import {
   toolDenied,
 } from './respond.ts';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.1';
 const GIT_POLL_MS = 10_000;
 /** session.end has one ~1.5 s bound for every hook and core together; stay well inside it. */
 const END_FLUSH_MS = 1000;
@@ -587,7 +594,9 @@ async function findBuild($: Engine): Promise<string | null> {
 async function pollGit($: Engine, r: Runtime): Promise<void> {
   try {
     await movePlace($, r);
-    const cwd = r.state.cwd;
+    const cwd = gitCwdOf(r.state);
+    // The repository the session works in, when it is not where it started; null reads the starting folder as before.
+    const root = r.state.workRoots[0] ?? null;
     const run = async (argv: string[]) => {
       const res = await $.process.run(argv, { cwd, timeoutMs: 5000 });
       return { exitCode: res.exitCode, stdout: res.stdout };
@@ -595,26 +604,111 @@ async function pollGit($: Engine, r: Runtime): Promise<void> {
     const git = await readGit(run, cwd);
     r.state = setGit(r.state, git);
     const id = r.state.id;
-    let base = r.state.gitBase ?? (await loadBase($, id));
+    let base = root ? r.state.rootBases[root] ?? (await loadBase($, id, root)) : r.state.gitBase ?? (await loadBase($, id));
     // Tried even when readGit gave null: a repository with no commits yet fails that (no HEAD) but has files to list.
     const changes = await readChanges(run, cwd, base);
     if (!changes) {
-      if (!git) r.state = setFiles(r.state, NO_FILES, r.state.gitBase);
+      // A work repository that cannot be read any more (a removed worktree) is forgotten, and the starting folder is read next.
+      if (!git && root) r.state = dropWorkRoot(r.state, root);
+      else if (!git) r.state = setFiles(r.state, NO_FILES, r.state.gitBase);
       return;
     }
     if (r.state.id !== id) return;
-    if (changes.base !== base) await attempt(() => $.store.set(`base:${id}`, changes.base), undefined);
+    if (changes.base !== base) await attempt(() => $.store.set(baseKey(id, root), changes.base), undefined);
     base = changes.base;
-    r.state = setFiles(r.state, changes.files, base);
+    r.state = setFiles(root ? setRootBase(r.state, root, base) : r.state, changes.files, base);
   } catch (err) {
     record($, 'git', err);
   }
 }
 
-/** The starting commit saved by an earlier run of this session (a hot reload keeps the process, a restart does not). */
-async function loadBase($: Engine, id: string): Promise<string | null> {
+/** Where `bd` looks for a tracker: the folder of the session's HANDOFF.md, then the folder it runs in. */
+function beadsDirs(handoffPath: string | null, cwd: string): string[] {
+  const dirs = [handoffPath ? handoffPath.slice(0, handoffPath.lastIndexOf('/')) || '/' : null, cwd];
+  return dirs.filter((d, i): d is string => !!d && dirs.indexOf(d) === i);
+}
+
+/**
+ * The plan for a session that has none of its own: the open items of its HANDOFF.md, else its open beads.
+ * Read-only, bounded (one capped read, one capped `bd list`), and a missing file or tracker just means no plan.
+ */
+async function pollPlan($: Engine, r: Runtime): Promise<void> {
   try {
-    const v = await $.store.get(`base:${id}`);
+    const id = r.state.id;
+    if (r.state.plan.tasks.length) {
+      r.state = setFallback(r.state, null);
+      return;
+    }
+    const run = async (argv: string[], cwd?: string): Promise<string | null> => {
+      try {
+        const res = await $.process.run(argv, { ...(cwd ? { cwd } : {}), timeoutMs: 5000 });
+        return res.exitCode === 0 ? res.stdout : null;
+      } catch {
+        return null;
+      }
+    };
+    const path = r.state.handoffPath;
+    const text = path ? await run(['head', '-c', String(MAX_HANDOFF_BYTES), path]) : null;
+    const handoff = text === null ? null : parseHandoff(text);
+    let beads: FallbackPlan | null = null;
+    if (!handoff) {
+      for (const dir of beadsDirs(path, r.state.cwd)) {
+        beads = parseBeads((await run(['bd', 'list', '--json', '--brief', '-n', '50'], dir)) ?? '');
+        if (beads) break;
+      }
+    }
+    if (r.state.id !== id || r.state.plan.tasks.length) return;
+    r.state = setFallback(r.state, chooseFallback(handoff, beads));
+  } catch (err) {
+    record($, 'plan', err);
+  }
+}
+
+/** Repositories already resolved from a directory; only found ones are kept, so a folder that becomes a repository later is found. */
+const repoRoots = new Map<string, string>();
+const REPO_ROOT_CACHE = 200;
+
+async function repoRootOf($: Engine, dir: string): Promise<string | null> {
+  const hit = repoRoots.get(dir);
+  if (hit) return hit;
+  try {
+    const res = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd: dir, timeoutMs: 3000 });
+    const top = res.exitCode === 0 ? res.stdout.trim() : '';
+    if (!top.startsWith('/')) return null;
+    if (repoRoots.size >= REPO_ROOT_CACHE) repoRoots.clear();
+    repoRoots.set(dir, top);
+    return top;
+  } catch {
+    return null;
+  }
+}
+
+/** A finished call changed files or ran git in these directories: the repository of the last one that has one is where the session works now. */
+async function noteWorkDirs($: Engine, r: Runtime, dirs: string[]): Promise<void> {
+  try {
+    const id = r.state.id;
+    let moved = false;
+    for (const dir of dirs) {
+      const top = await repoRootOf($, dir);
+      if (top && r.state.id === id && r.state.workRoots[0] !== top) {
+        r.state = noteWorkRoot(r.state, top);
+        moved = true;
+      }
+    }
+    if (moved) void pollGit($, r);
+  } catch (err) {
+    record($, 'work-repo', err);
+  }
+}
+
+/** The starting commit saved by an earlier run of this session (a hot reload keeps the process, a restart does not). */
+function baseKey(id: string, root: string | null): string {
+  return root ? `base:${id}:${root}` : `base:${id}`;
+}
+
+async function loadBase($: Engine, id: string, root: string | null = null): Promise<string | null> {
+  try {
+    const v = await $.store.get(baseKey(id, root));
     return typeof v === 'string' && v ? v : null;
   } catch {
     return null;
@@ -784,6 +878,35 @@ async function machineId($: Engine): Promise<string> {
 }
 
 /**
+ * The machine's short host name, pinned (#715). `hostname` follows the network on a Mac with no `HostName` set (a
+ * DHCP or reverse-DNS answer such as `Mac`, or the stable `LocalHostName`), and can change on Linux with a DHCP
+ * hostname or a recreated container, so one machine showed two names. The first name read is kept in
+ * `podium-machine-name` beside the id file and every later load reports it. Where the file cannot be used, the live
+ * name is reported as before. Delete the file to take a new name.
+ */
+async function machineName($: Engine): Promise<string | null> {
+  const path = machineNamePath(
+    await attempt(() => $.env.get('CLAUDE_CONFIG_DIR'), undefined),
+    await attempt(() => $.env.get('HOME'), undefined),
+  );
+  const pinnedName = async () => (path ? parseMachineNameFile(await attempt(async () => (await $.fs.read(path)) as string, null)) : null);
+  const pinned = await pinnedName();
+  if (pinned) return pinned;
+  const run = async (argv: string[]) => {
+    const res = await $.process.run(argv, { timeoutMs: 2000 });
+    return res.exitCode === 0 ? res.stdout : null;
+  };
+  // macOS first: LocalHostName is the Sharing name and does not follow the network. A missing `scutil` rejects.
+  const live =
+    (await attempt(async () => localHostNameOf(await run(['scutil', '--get', 'LocalHostName'])), null)) ??
+    (await attempt(async () => hostOf(await run(['hostname'])), null));
+  if (!live || !path) return live;
+  await attempt(() => $.fs.write(path, `${live}\n`), undefined);
+  // Two loads starting together both write; each reports whichever name the file ended with, as machineId does.
+  return (await pinnedName()) ?? live;
+}
+
+/**
  * This machine's short host name and the random id the mod keeps for it in its own store (made on first
  * use). Read only when a userName is set: an unnamed reporter sends nothing that identifies the machine.
  */
@@ -792,13 +915,7 @@ async function readMachine($: Engine): Promise<MachineInfo | null> {
   try {
     const id = await machineId($);
     // The host name and the OS at once: session.start waits on both, and each can take a process's timeout.
-    const [host, os] = await Promise.all([
-      attempt(async () => {
-        const res = await $.process.run(['hostname'], { timeoutMs: 2000 });
-        return res.exitCode === 0 ? hostOf(res.stdout) : null;
-      }, null),
-      readOs($),
-    ]);
+    const [host, os] = await Promise.all([machineName($), readOs($)]);
     return machineInfo(host, id, os);
   } catch (err) {
     record($, 'machine', err);
@@ -1228,7 +1345,7 @@ function handleDiffs($: Engine, r: Runtime): void {
 
 async function answerDiff($: Engine, r: Runtime, sid: string, req: { id: string; path: string }): Promise<void> {
   try {
-    const cwd = r.state.cwd;
+    const cwd = gitCwdOf(r.state);
     const run = async (argv: string[]) => {
       const res = await $.process.run(argv, { cwd, timeoutMs: 15_000 });
       return { exitCode: res.exitCode, stdout: res.stdout };
@@ -1713,7 +1830,9 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
   }
   r.timers.push($.clock.every(opts.flushIntervalMs, () => void flush($)));
   r.timers.push($.clock.every(GIT_POLL_MS, () => void pollGit($, r)));
+  r.timers.push($.clock.every(GIT_POLL_MS, () => void pollPlan($, r)));
   void pollGit($, r);
+  void pollPlan($, r);
   showStatus($, r);
 }
 
@@ -2099,7 +2218,13 @@ export const register: Register = (on, rawOptions) => {
       });
     }
     safe('tool.call.result', (r) => {
+      const handoffBefore = r.state.handoffPath;
       r.state = toolResult(r.state, { agentId: e.agentId, tool, input, result: (res ?? {}) as { deny?: string; isError?: boolean; text?: string } }, nowMs());
+      // A session that just read or wrote its HANDOFF.md shows its open items now, not at the next poll.
+      if (r.state.handoffPath !== handoffBefore) void pollPlan($, r);
+      // A call that changed files or ran git somewhere says which repository the session works in (a subagent's counts too).
+      const dirs = dirsOfCall(tool, input);
+      if (dirs.length) void noteWorkDirs($, r, dirs);
       if (e.tool_use_id) settleToolAsk(e.tool_use_id, res as ToolResult | undefined);
       // How a finished call ended goes with the feed alone (#598); its output only with the option on and a viewer on the loop.
       if (tool === 'Bash' && e.tool_use_id && opts.activityFeed) {

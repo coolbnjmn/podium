@@ -108,7 +108,7 @@ export function Rail(props: {
           <div className="l1">
             <i className={sessionDot(s, kind)} aria-hidden="true" />
             <span className="nm">{s.name}</span>
-            <span className="vh">{backgroundOf(s) ? backgroundStatus(s.background!) : kind === "deleg" ? "delegating" : s.status}</span>
+            <span className="vh">{backgroundOf(s) ? backgroundStatus(s.background!) : kind === "deleg" ? "delegating" : kind === "idle" ? "idle" : kind === "done" ? "done" : s.status === "waiting" ? "needs you" : s.status}</span>
             {showOwner && (
               <span title={owner}>
                 <Monogram name={owner} kind={s.owner === null ? "unassigned" : s.owner === ADMIN ? "admin" : "person"} size="sm" />

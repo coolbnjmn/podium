@@ -97,6 +97,18 @@ describe('protocol', () => {
     }
   });
 
+  it('accepts a plan read from a HANDOFF.md or beads, and refuses an unknown plan source', () => {
+    const f = loadFixture() as { session: { plan: { source: string } } };
+    for (const source of ['handoff', 'beads']) {
+      const g = structuredClone(f);
+      g.session.plan.source = source;
+      expect(validateReport(g)).toMatchObject({ ok: true });
+    }
+    const bad = structuredClone(f);
+    bad.session.plan.source = 'whiteboard';
+    expect(validateReport(bad)).toMatchObject({ ok: false, path: '$.session.plan.source' });
+  });
+
   it('rejects more than 100 events and 100 plan steps', () => {
     const f = loadFixture() as { events: Record<string, unknown>[]; session: { plan: { steps: Record<string, unknown>[] } } };
     const e = f.events[0]!;
@@ -507,7 +519,7 @@ describe('protocol', () => {
   });
 
   describe('activity feed (#118)', () => {
-    const entry = { at: 1_800_000_000_000, kind: 'tool', text: 'Read docs/SPEC.md' };
+    const entry = { at: 1_800_000_000_000, kind: 'tool', text: 'Read docs/spec/README.md' };
     const withActivity = (session: Record<string, unknown>, agent: Record<string, unknown> = {}) => {
       const f = loadFixture() as { session: Record<string, unknown>; agents: Record<string, unknown>[] };
       Object.assign(f.session, session);

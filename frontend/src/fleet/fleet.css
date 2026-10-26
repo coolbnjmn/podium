@@ -104,6 +104,7 @@ body.podium-resizing .podium .cols { transition: none; }
 .podium[data-beat="1"] .step.active .mk .pdot, .podium[data-beat="3"] .step.active .mk .pdot { opacity: .775; }
 .podium[data-beat="2"] .crew .a.running, .podium[data-beat="2"] .step.active .mk .pdot { opacity: .55; }
 .podium .dot.waiting { background: transparent; border: 2px solid var(--warn); }
+.podium .dot.idle { background: transparent; border: 2px solid var(--axis); }
 .podium .dot.ring { background: transparent; border: 1.5px solid var(--deleg); }
 .podium .dot.ring.bgwait { position: relative; }
 /* The blue ring pulses like the running dot, on the same shared beat (data-beat), so it adds no animation of its own. */
@@ -117,7 +118,7 @@ body.podium-resizing .podium .cols { transition: none; }
 .podium .dot.failed { background: var(--crit); }
 .podium .dot.bad { background: var(--crit); }
 .podium .st { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; }
-.podium .st.running { color: var(--good-text); } .podium .st.done { color: var(--muted); } .podium .st.failed, .podium .st.aborted { color: var(--crit-text); }
+.podium .st.running { color: var(--good-text); } .podium .st.done, .podium .st.idle { color: var(--muted); } .podium .st.failed, .podium .st.aborted { color: var(--crit-text); }
 .podium .st.aborted { color: var(--muted); }
 .podium .st.deleg, .podium .st.bg { color: var(--deleg-text); }
 .podium .st.queued, .podium .st.waiting { color: var(--warn); } .podium .st.stale { color: var(--serious); }
@@ -298,7 +299,7 @@ body.podium-resizing .podium .cols { transition: none; }
 .podium .band.waiting { --c: var(--warn); --c-text: color-mix(in srgb, var(--warn) 60%, var(--ink)); }
 .podium .band.bg { --c: var(--deleg); --c-text: var(--deleg-text); }
 .podium .band.stale { --c: var(--serious); --c-text: color-mix(in srgb, var(--serious) 60%, var(--ink)); }
-.podium .band.done { --c: var(--muted); --c-text: var(--muted); }
+.podium .band.done, .podium .band.idle { --c: var(--muted); --c-text: var(--muted); }
 .podium .band.deleg { --c: var(--deleg); --c-text: var(--deleg-text); }
 .podium .band.crit { --c: var(--crit); --c-text: var(--crit-text); }
 .podium .card.sc .sd .si-waiting { color: color-mix(in srgb, var(--warn) 60%, var(--ink)); }

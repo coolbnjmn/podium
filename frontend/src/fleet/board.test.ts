@@ -22,7 +22,7 @@ describe("columnOf", () => {
   });
 
   it("moves an in-progress step to Review while its session waits on its person", () => {
-    const waiting = makeSession({ status: "waiting", waitReason: "input" });
+    const waiting = makeSession({ status: "waiting", waitReason: "permission" });
     expect(columnOf(waiting, step("1", "active"))).toBe("review");
     expect(columnOf(waiting, step("2", "pending"))).toBe("pending");
     expect(columnOf(waiting, step("3", "blocked"))).toBe("blocked");
@@ -98,10 +98,10 @@ describe("buildBoard", () => {
   });
 
   it("adds a waiting card beside the steps of a waiting session that has none in progress, and none when a step is", () => {
-    const idle = withSteps({ id: "i", status: "waiting", waitReason: "input" }, step("1", "pending"), step("2", "done"));
+    const idle = withSteps({ id: "i", status: "waiting", waitReason: "permission" }, step("1", "pending"), step("2", "done"));
     expect(buildBoard([idle]).columns.review.map((c) => c.key)).toEqual(["i:waiting"]);
     expect(buildBoard([idle]).columns.pending.map((c) => c.key)).toEqual(["i:1"]);
-    const busy = withSteps({ id: "b", status: "waiting", waitReason: "input" }, step("1", "active"));
+    const busy = withSteps({ id: "b", status: "waiting", waitReason: "permission" }, step("1", "active"));
     expect(buildBoard([busy]).columns.review.map((c) => c.key)).toEqual(["b:1"]);
   });
 
@@ -145,7 +145,7 @@ describe("planFigures", () => {
   it("counts the sessions with a plan, their steps and the done ones, and leaves out a no-plan session that only waits", () => {
     const a = withSteps({ id: "a" }, step("1", "pending"), step("2", "done"), step("3", "done"));
     const b = withSteps({ id: "b" }, step("1", "active"));
-    const asker = makeSession({ id: "q", status: "waiting", waitReason: "input", plan: null });
+    const asker = makeSession({ id: "q", status: "waiting", waitReason: "permission", plan: null });
     expect(buildBoard([a, b, asker]).columns.review).toHaveLength(1);
     expect(planFigures(buildBoard([a, b, asker]))).toEqual({ orchestrators: 2, steps: 4, done: 2 });
   });
@@ -174,14 +174,14 @@ describe("buildBoard with plansOnly (#443)", () => {
   }
 
   it("lists a waiting session with no plan in Review when plansOnly is off", () => {
-    const s = makeSession({ id: "p", status: "waiting", waitReason: "input", plan: null });
+    const s = makeSession({ id: "p", status: "waiting", waitReason: "permission", plan: null });
     expect(buildBoard([s]).columns.review.map((c) => c.key)).toEqual(["p:waiting"]);
     expect(buildBoard([s], false).columns.review).toHaveLength(1);
   });
 
   it("keeps a waiting session that has a plan in Review, and fills the other columns, under plansOnly", () => {
-    const pendingOnly = withSteps({ id: "a", status: "waiting", waitReason: "input" }, step("1", "pending"));
-    const mixed = withSteps({ id: "b", status: "waiting", waitReason: "input" }, step("1", "active"), step("2", "blocked"), step("3", "done"));
+    const pendingOnly = withSteps({ id: "a", status: "waiting", waitReason: "permission" }, step("1", "pending"));
+    const mixed = withSteps({ id: "b", status: "waiting", waitReason: "permission" }, step("1", "active"), step("2", "blocked"), step("3", "done"));
     const b = buildBoard([pendingOnly, mixed], true);
     expect(b.columns.pending.map((c) => c.key)).toEqual(["a:1"]);
     expect(b.columns.review.map((c) => c.key)).toEqual(["a:waiting", "b:1"]);

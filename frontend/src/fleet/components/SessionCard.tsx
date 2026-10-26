@@ -137,7 +137,7 @@ export function bandLine(s: SessionView, kind: StateKind, sinceSeen: number, now
       </span>
     );
   }
-  return <span className="bl">{kind === "running" ? "Running" : "Done"}</span>;
+  return <span className="bl">{kind === "running" ? "Running" : kind === "idle" ? "Idle" : "Done"}</span>;
 }
 
 export function SessionCard(props: { s: SessionView; machineTitle?: boolean; now: number; config: LifecycleConfig; entering: boolean; leaving: boolean; onOpen: () => void; onRemove?: () => void; owner?: CardOwner; pin?: CardPin }) {

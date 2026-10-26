@@ -1,7 +1,7 @@
 // What the console shows for responding to a waiting session (#206, mockup/podium-respond.html), worked out from one
 // SessionView, the Admin's flags and who is signed in. Pure: the components draw what these say.
 import { cardKind } from "./components/Chips";
-import { LEVEL_KINDS } from "../../../server/src/fleet/protocol";
+import { idleOnInput, LEVEL_KINDS } from "../../../server/src/fleet/protocol";
 import type { AskDetail, AskKind, AskSummary, Delivery, QuestionAnswer, RespondKind, RespondMe, SessionView } from "./types";
 
 /** The ask the band and the modal are about: the newest open one, the main loop's first. */
@@ -72,7 +72,7 @@ export type RespondGate = { show: "none" } | { show: "live"; count: string } | {
 export function respondGate(s: SessionView, me: RespondMe | null, flagsOn: boolean): RespondGate {
   if (!flagsOn || !me?.enabled) return { show: "none" };
   // Only while the session waits on its person: not on a blue band (background work), and not while it runs.
-  if (cardKind(s) !== "waiting") return { show: "none" };
+  if (cardKind(s) !== "waiting" && !idleOnInput(s)) return { show: "none" };
   const ask = openAsk(s);
   if (canAnswer(s, ask?.kind ?? null) !== "ok") return { show: "none" };
   const count = ask?.kind === "question" && ask.count > 0 ? String(ask.count) : "";

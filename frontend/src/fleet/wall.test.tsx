@@ -159,8 +159,8 @@ describe("session card", () => {
     const ask = renderCard(makeSession({ status: "waiting", waitReason: "permission", waitNote: 'AskUserQuestion([{"question":"Which?"}])' }));
     expect(ask.container.querySelector(".band")!.textContent).toBe("Waiting for your input.");
     cleanup();
-    const q = renderCard(makeSession({ status: "waiting", waitReason: "input", waitNote: "Which branch should I use?" }));
-    expect(q.container.querySelector(".band")!.textContent).toBe("Waiting for your input.");
+    const q = renderCard(makeSession({ status: "waiting", waitReason: "permission", waitNote: "Which branch should I use?" }));
+    expect(q.container.querySelector(".band")!.textContent).toBe("Waiting for your approval.");
     expect(q.container.textContent).not.toContain("Which branch should I use?");
     cleanup();
     const s = renderCard(makeSession({ status: "stale", lastSeenAt: 2_000_000 - 38_000, dropAt: 2_000_000 + 37_000 }));
@@ -189,7 +189,7 @@ describe("session card", () => {
     const cases = [
       makeSession({ status: "running" }),
       makeSession({ status: "running", plan: null, agents: [] }),
-      makeSession({ status: "waiting", waitReason: "input" }),
+      makeSession({ status: "waiting", waitReason: "permission" }),
       makeSession({ status: "stale", dropAt: 2_037_000 }),
       makeSession({ status: "done" }),
       makeSession({ status: "running", blowouts: blow(0, 2, 2), attached: false, hideAt: 2_100_000, reporter: "hooks" }),
@@ -302,13 +302,13 @@ describe("a waiting session", () => {
   });
 
   it("shows a short question as the detail under a plain input message", () => {
-    const { callout } = pageFor({ waitReason: "input", waitNote: "Which branch should I use?" });
-    expect(callout.querySelector(".bl")!.textContent).toBe("Waiting for your input.");
+    const { callout } = pageFor({ waitReason: "permission", waitNote: "Which branch should I use?" });
+    expect(callout.querySelector(".bl")!.textContent).toBe("Waiting for your approval.");
     expect(callout.querySelector(".bd")!.textContent).toBe("Answer in its terminal. Which branch should I use?");
   });
 
   it("leaves out a note clipped at the 160-character limit instead of presenting it as whole", () => {
-    const { callout } = pageFor({ waitReason: "input", waitNote: "x".repeat(160) });
+    const { callout } = pageFor({ waitReason: "permission", waitNote: "x".repeat(160) });
     expect(callout.querySelector(".bd")!.textContent).toBe("Answer in its terminal.");
   });
 

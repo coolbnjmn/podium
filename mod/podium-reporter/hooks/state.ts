@@ -13,6 +13,8 @@ import {
   type FailureCandidate,
 } from './failures.ts';
 import { costOf, shortName, windowOf } from './models.ts';
+import { isHandoffPath, type FallbackPlan } from './handoffPlan.ts';
+import { promoteRoot } from './workRepo.ts';
 import { assignOwners, emptyPlan, setTitle, taskCreate, taskUpdate, todoWrite, type PlanState } from './plan.ts';
 import { backgroundSummary, MAIN_LOOP, type ActivityEntry, type ActivityEvent, type AgentStatus, type BackgroundKind, type BackgroundTask, type BackgroundWait, type Effort, type Failure, type FilesReport, type GitInfo, type ModelUsage, type RateLimit } from './protocol.ts';
 
@@ -168,6 +170,10 @@ export interface SessionState {
   git: GitInfo | null;
   /** The commit HEAD was at when the session began; the files list is the diff against it. */
   gitBase: string | null;
+  /** The repositories the session changed files or ran git in, most recent first; git is read in the first, else in `cwd`. */
+  workRoots: string[];
+  /** The commit HEAD was at when the session first touched each of those repositories; their Files lists diff against it. */
+  rootBases: Record<string, string>;
   files: FilesReport;
   /** Whether any client is attached; null until the roster has been read. */
   attached: boolean | null;
@@ -187,6 +193,10 @@ export interface SessionState {
   costUsd: number | null;
   rateLimits: RateLimit[];
   plan: PlanState;
+  /** The HANDOFF.md this session last read or wrote; where the plan fallback looks first. */
+  handoffPath: string | null;
+  /** A plan read from that file or from beads, shown only while the session has no plan of its own. */
+  fallback: FallbackPlan | null;
   agents: Record<string, AgentState>;
   /** Agent ids in spawn order. */
   order: string[];
@@ -234,6 +244,8 @@ export function newSession(i: { id: string; cwd: string; startedAt: number; mode
     repoName: null,
     git: null,
     gitBase: null,
+    workRoots: [],
+    rootBases: {},
     files: NO_FILES,
     attached: null,
     status: 'waiting',
@@ -249,6 +261,8 @@ export function newSession(i: { id: string; cwd: string; startedAt: number; mode
     costUsd: null,
     rateLimits: [],
     plan: emptyPlan,
+    handoffPath: null,
+    fallback: null,
     agents: {},
     order: [],
     pending: {},
@@ -375,6 +389,38 @@ export function setIdentity(
 export function setGit(s: SessionState, git: GitInfo | null): SessionState {
   if (JSON.stringify(git) === JSON.stringify(s.git)) return s;
   return { ...s, git, dirty: true };
+}
+
+/** The plan read from a HANDOFF.md or beads; a report is due only when it differs from the last one. */
+export function setFallback(s: SessionState, fallback: FallbackPlan | null): SessionState {
+  if (JSON.stringify(fallback) === JSON.stringify(s.fallback)) return s;
+  return { ...s, fallback, dirty: true };
+}
+
+/** A repository the session works in: it moves to the front, and git is read there from now on. */
+export function noteWorkRoot(s: SessionState, root: string): SessionState {
+  if (s.workRoots[0] === root) return s;
+  return { ...s, workRoots: promoteRoot(s.workRoots, root), dirty: true };
+}
+
+/** A repository that cannot be read any more (a removed worktree) leaves the list. */
+export function dropWorkRoot(s: SessionState, root: string): SessionState {
+  if (!s.workRoots.includes(root)) return s;
+  const { [root]: _gone, ...rootBases } = s.rootBases;
+  // The Files list's base belonged to the repository that was read first; the next one finds its own.
+  return { ...s, workRoots: s.workRoots.filter((r) => r !== root), rootBases, gitBase: s.workRoots[0] === root ? null : s.gitBase, dirty: true };
+}
+
+/** The first commit seen in `root`; only the repositories still listed (and this one) are kept, so the map stays small. */
+export function setRootBase(s: SessionState, root: string, base: string): SessionState {
+  if (s.rootBases[root] === base) return s;
+  const kept = Object.fromEntries(Object.entries(s.rootBases).filter(([r]) => s.workRoots.includes(r)));
+  return { ...s, rootBases: { ...kept, [root]: base } };
+}
+
+/** The folder git is read in: the repository the session last worked in, else where it started. */
+export function gitCwdOf(s: Pick<SessionState, 'workRoots' | 'cwd'>): string {
+  return s.workRoots[0] ?? s.cwd;
 }
 
 /** The changed-files list; a report is due only when it differs from the last one. */
@@ -765,6 +811,7 @@ export function toolResult(s0: SessionState, i: ToolResultInput, now: number): S
     s = putLoop(s, i.agentId, next);
   }
   if (s.waitReason === 'permission' && !i.agentId) s = withStatus({ ...s, waitReason: null, waitNote: null });
+  if (!i.agentId && ['Read', 'Write', 'Edit', 'MultiEdit'].includes(i.tool) && isHandoffPath(i.input.file_path) && i.input.file_path !== s.handoffPath) s = { ...s, handoffPath: i.input.file_path, dirty: true };
   const ok = typeof i.result.deny !== 'string' && i.result.isError !== true;
   if (!ok) return s;
   if (i.tool === 'Skill' && typeof i.input.skill === 'string') s = skillLoaded(s, i.agentId, i.input.skill, now);

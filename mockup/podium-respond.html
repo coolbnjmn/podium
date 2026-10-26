@@ -560,7 +560,7 @@ const KIND = {
 };
 
 const FEED_BASE = [
-  ["11:02", "tool", "Read", "docs/SPEC.md (lines 410-470)"],
+  ["11:02", "tool", "Read", "docs/spec/README.md (lines 410-470)"],
   ["11:20", "tool", "Grep", "\"Pager\" frontend/src/fleet"],
   ["11:41", "tool", "Read", "frontend/src/fleet/admin/Reporters.tsx"],
   ["12:03", "text", "", "The Admin > Reporters page already has a Pager with 25/50/100 rows. I can reuse it for History."]
@@ -751,7 +751,7 @@ function permissionParts(st, r) {
   const cmd = st.cut ? "for f in $(git ls-files 'src/**/*.ts'); do npx prettier --check \"$f\" &amp;&amp; ... [cut off at 20,000 characters]" : "git push -u origin issue/195-history-pages";
   // A tool other than Bash: its name leads, and its input shows as it came, with no description line.
   const other = st.tool && st.tool !== "Bash";
-  const head = other ? `<p class="qh">${esc(st.tool)} wants your permission</p><div class="cmd">${esc(JSON.stringify({ file_path: "/Users/dev/claude-dashboard/docs/USER_GUIDE.md", content: "# User guide\n..." }, null, 2))}</div>`
+  const head = other ? `<p class="qh">${esc(st.tool)} wants your permission</p><div class="cmd">${esc(JSON.stringify({ file_path: "/Users/dev/claude-dashboard/docs/user-guide/README.md", content: "# User guide\n..." }, null, 2))}</div>`
     : `<p class="qh">Bash wants to run a command</p><div class="cmd">${cmd}</div><p class="cmdd">${st.cut ? "Check formatting file by file" : "Push the branch to GitHub"}</p>`;
   r.body = `${head}
     ${st.cut ? `<p class="signnote">This command is too long to show in full here, so it can only be allowed in the terminal. You can still deny it from here.</p>` : ""}
@@ -877,7 +877,7 @@ function renderGallery() {
 function renderTerms() {
   const k = S.kind;
   const open = {
-    question: `<span class="dim">Planning: /Users/eengelking/.claude/plans/wise-beaming-token.md</span>\n\n<span class="dim">←</span> <span class="hl"> ☐ Page size </span> ☐ Day selector  ☐ Back state  ✔ Submit <span class="dim">→</span>\n\n<b>How many History rows per page, and can the user change it?</b>\n\n<span class="bl">❯ 1. 25/50/100, default 50 (Recommended)</span>\n     <span class="dim">Same Pager and choices as Admin > Reporters (#167)</span>\n  2. Fixed 50, no choice\n  3. Type something.\n\n  4. Chat about this\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
+    question: `<span class="dim">Planning: /Users/dev/.claude/plans/wise-beaming-token.md</span>\n\n<span class="dim">←</span> <span class="hl"> ☐ Page size </span> ☐ Day selector  ☐ Back state  ✔ Submit <span class="dim">→</span>\n\n<b>How many History rows per page, and can the user change it?</b>\n\n<span class="bl">❯ 1. 25/50/100, default 50 (Recommended)</span>\n     <span class="dim">Same Pager and choices as Admin > Reporters (#167)</span>\n  2. Fixed 50, no choice\n  3. Type something.\n\n  4. Chat about this\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
     plan: `<b>Ready to code?</b>\n\n<span class="dim">Here is Claude's plan:</span>\n Paginate the History page (#195)\n ...\n\n<span class="bl">❯ 1. Yes, and use auto mode</span>\n  2. Yes, manually approve edits\n  3. Tell Claude what to change\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
     permission: `<b>Bash command</b>\n\n  git push -u origin issue/195-history-pages\n  <span class="dim">Push the branch to GitHub</span>\n\nDo you want to proceed?\n<span class="bl">❯ 1. Yes</span>\n  2. Yes, and don't ask again for git push\n  3. No, and tell Claude what to do differently\n\n<span class="am">▌ podium-reporter: also open in Podium. Answer here or there.</span>`,
     idle: `<span class="gr">●</span> PR #204 is open: feat: paginate the History page.\n  CI is running. Merging is your call.\n\n<span class="dim">───────────────────────────────────────────</span>\n<span class="bl">❯</span> \n<span class="dim">───────────────────────────────────────────</span>\n<span class="am">▌ podium-reporter: messages from Podium are on.</span>`

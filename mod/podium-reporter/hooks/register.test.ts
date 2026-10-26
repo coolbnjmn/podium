@@ -1,6 +1,7 @@
 import { describe, test, expect, mock, type Engine } from 'claude-code/testing'
 import type { AgentSpawnInput, CommandRunInput, On, TurnStepChunk } from 'claude-code'
 import { MAIN_LOOP, type Report } from './protocol.ts'
+import { VERSION } from './register.ts'
 
 // The test runner has a console; the hooks sandbox's declarations do not.
 declare const console: { log: (...args: unknown[]) => void }
@@ -49,6 +50,8 @@ interface World {
   gitAt: Record<string, Record<string, string> | null>
   /** The commit the mod's own folder is a dev checkout at (#400); null is an installed copy, which has no repository. */
   devBuild: { value: string | null }
+  /** What `hostname` and macOS's `scutil --get LocalHostName` print; `local` null is a machine with no `scutil` (it exits 1). */
+  hosts: { hostname: string; local: string | null }
   /** Every status line the plugin set. */
   statuses: (string | undefined)[]
   /** What the server's reply says about itself: its build (#400). */
@@ -91,6 +94,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   const place: World['place'] = { cwd: CWD, root: CWD, repo: { root: '/Users/dev/app', remote: 'git@github.com:acme/app.git', internal: false, name: null } }
   const gitAt: World['gitAt'] = {}
   const devBuild: World['devBuild'] = { value: null }
+  const hosts: World['hosts'] = { hostname: 'Devs-MBP.local\n', local: null }
   const statuses: World['statuses'] = []
   const serverBuild: World['serverBuild'] = { value: null }
   const fetched: World['fetched'] = []
@@ -141,7 +145,8 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
       const out = here?.[e.argv.slice(1).join(' ')]
       return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
-    if (e.argv[0] === 'hostname') return { value: { exitCode: 0, stdout: 'Devs-MBP.local\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv[0] === 'hostname') return { value: { exitCode: 0, stdout: hosts.hostname, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv[0] === 'scutil') return { value: { exitCode: hosts.local === null ? 1 : 0, stdout: hosts.local ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     return { value: { exitCode: e.argv[1] === 'rev-parse' || e.argv[1] === 'status' ? 0 : 1, stdout: GIT[e.argv.slice(1).join(' ')] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('http.fetch', (_$, e) => {
@@ -189,7 +194,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('classic.Notification', () => ({}))
   on('classic.SessionStart', () => ({}))
   on('classic.UserPromptSubmit', () => ({}))
-  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, place, gitAt, devBuild, statuses, serverBuild, fetched, toasts }
+  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, place, gitAt, devBuild, hosts, statuses, serverBuild, fetched, toasts }
 }
 
 type StepArgs = Parameters<Engine['turn']['step']>[0]
@@ -524,9 +529,9 @@ describe('podium-reporter end to end', () => {
     await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
     await w.clock.advance(1000)
     expect(w.posts[0]!.reporter.build).toBe('a1b2c3d4')
-    expect(w.statuses.at(-1)).toBe('podium v1.2.2 | dev: a1b2c3d4 ● 3 live')
+    expect(w.statuses.at(-1)).toBe(`podium v${VERSION} | dev: a1b2c3d4 ● 3 live`)
     const info = await $.command.run(podium(''))
-    expect(info.text).toContain('Versions: reporter 1.2.2 · Dev: a1b2c3d4, server 1.1.0 · Dev: 9f8e7d6c')
+    expect(info.text).toContain(`Versions: reporter ${VERSION} · Dev: a1b2c3d4, server 1.1.0 · Dev: 9f8e7d6c`)
     expect(w.ran.filter((a) => a[1] === '-C').length).toBeGreaterThan(0)
   })
 
@@ -535,9 +540,9 @@ describe('podium-reporter end to end', () => {
     await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
     await w.clock.advance(1000)
     expect(w.posts[0]!.reporter).not.toHaveProperty('build')
-    expect(w.statuses.at(-1)).toBe('podium v1.2.2 ● 3 live')
+    expect(w.statuses.at(-1)).toBe(`podium v${VERSION} ● 3 live`)
     const info = await $.command.run(podium(''))
-    expect(info.text).toContain('Versions: reporter 1.2.2, server 1.1.0')
+    expect(info.text).toContain(`Versions: reporter ${VERSION}, server 1.1.0`)
   })
 
   test("Claude Code's own session name is the display name once a hook carries it (#322)", async ($, on) => {
@@ -634,6 +639,25 @@ describe('podium-reporter end to end', () => {
     await $.classic.SessionStart({ source: 'startup', cwd: '/Users/dev/notes' })
     await w.clock.advance(10_000)
     expect(w.posts.at(-1)!.session).toMatchObject({ name: 'notes', cwd: '/Users/dev/notes', projectRoot: '/Users/dev/notes', repoName: 'notes', git: null })
+  })
+
+  test('a session that edits a file in another repository reports that repository, and forgets it once it is gone', async ($, on) => {
+    const w = world(on)
+    const OTHER = '/Users/dev/web/other'
+    w.gitAt[CWD] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': CWD, 'rev-parse --abbrev-ref HEAD': 'feat/x', 'status --porcelain=v1 -b': '## feat/x\n' }
+    w.gitAt[`${OTHER}/src`] = { 'rev-parse --show-toplevel': OTHER }
+    w.gitAt[OTHER] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': OTHER, 'rev-parse --abbrev-ref HEAD': 'ben/other-work', 'status --porcelain=v1 -b': '## ben/other-work\n' }
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'feat/x' } })
+    await $.tool.call({ tool: 'Edit', file_path: `${OTHER}/src/a.ts`, old_string: 'a', new_string: 'b' })
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'ben/other-work' } })
+    // the worktree is removed: git there fails, and the card goes back to the folder the session started in
+    w.gitAt[OTHER] = null
+    await w.clock.advance(10_000)
+    await w.clock.advance(10_000)
+    expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'feat/x' } })
   })
 
   test('reports whether any client is attached, from the roster', async ($, on) => {
@@ -807,6 +831,55 @@ describe('podium-reporter end to end', () => {
     await $.session.start({ cwd: CWD, surface: null, isInteractive: false })
     await w.clock.advance(1000)
     expect(w.posts[0]!.machine!.id).toMatch(/^[0-9a-f]{12}$/)
+  })
+
+  const NAME_FILE = '/Users/dev/.claude/podium-machine-name'
+
+  test('on a Mac the name is LocalHostName, not `hostname`, which follows the network and can read "Mac" (#715)', { options: { userName: 'Dana' } }, async ($, on) => {
+    const w = world(on)
+    mock.env(on, { HOME: '/Users/dev' })
+    w.hosts.hostname = 'Mac\n'
+    w.hosts.local = 'Dana-MacBook-Pro\n'
+    await $.session.start({ cwd: CWD, surface: null, isInteractive: false })
+    await w.clock.advance(1000)
+    expect(w.posts[0]!.machine!.name).toBe('Dana-MacBook-Pro')
+  })
+
+  test('the name is kept in a shared file, so a load started after the host name changed reports the first name (#715)', { options: { userName: 'Dana' } }, async ($, on) => {
+    const w = world(on, {}, { [NAME_FILE]: 'Dana-MacBook-Pro\n' })
+    mock.env(on, { HOME: '/Users/dev' })
+    w.hosts.hostname = 'Mac\n'
+    await $.session.start({ cwd: CWD, surface: null, isInteractive: false })
+    await w.clock.advance(1000)
+    expect(w.posts[0]!.machine!.name).toBe('Dana-MacBook-Pro')
+    expect(w.ran.some((argv) => argv[0] === 'hostname')).toBe(false)
+  })
+
+  test('the first name read is written to the shared file beside the id file, under CLAUDE_CONFIG_DIR when set (#715)', { options: { userName: 'Dana' } }, async ($, on) => {
+    const w = world(on)
+    mock.env(on, { HOME: '/Users/dev', CLAUDE_CONFIG_DIR: '/cfg' })
+    await $.session.start({ cwd: CWD, surface: null, isInteractive: false })
+    await w.clock.advance(1000)
+    expect(w.posts[0]!.machine!.name).toBe('Devs-MBP')
+    expect(w.files.text['/cfg/podium-machine-name']!.trim()).toBe('Devs-MBP')
+  })
+
+  test('a junk name file is ignored and the live name is used and written over it (#715)', { options: { userName: 'Dana' } }, async ($, on) => {
+    const w = world(on, {}, { [NAME_FILE]: '   \n' })
+    mock.env(on, { HOME: '/Users/dev' })
+    await $.session.start({ cwd: CWD, surface: null, isInteractive: false })
+    await w.clock.advance(1000)
+    expect(w.posts[0]!.machine!.name).toBe('Devs-MBP')
+    expect(w.files.text[NAME_FILE]!.trim()).toBe('Devs-MBP')
+  })
+
+  test('where the name file cannot be used the live name is reported as before (#715)', { options: { userName: 'Dana' } }, async ($, on) => {
+    const w = world(on, { machineId: 'abcdef012345' })
+    mock.env(on, { HOME: '/Users/dev' })
+    w.files.broken = true
+    await $.session.start({ cwd: CWD, surface: null, isInteractive: false })
+    await w.clock.advance(1000)
+    expect(w.posts[0]!.machine).toEqual({ name: 'Devs-MBP', id: 'abcdef012345' })
   })
 
   test('without a userName nothing about the machine is read or sent', async ($, on) => {
@@ -1073,7 +1146,7 @@ describe('podium-reporter end to end', () => {
       w.chunks.value = [text('Two failures. '), { kind: 'thinking', index: 1, text: 'private thoughts' }, text(`The key ${SECRET} works.`)]
       await stepOnce($, { turnId: 'ta', index: 0, model: 'claude-sonnet-5-5', messageCount: 2, agentId: 'a-sub' })
       w.chunks.value = []
-      await $.tool.call({ tool: 'Read', file_path: 'docs/SPEC.md' })
+      await $.tool.call({ tool: 'Read', file_path: 'docs/spec/README.md' })
       await w.clock.advance(1000)
     }
     const sent = (w: World) => JSON.stringify(w.posts)
@@ -1103,7 +1176,7 @@ describe('podium-reporter end to end', () => {
       expect(sub.activity!.map((e) => e.kind)).toEqual(['tool', 'text'])
       expect(sub.activity![0]!.text).toMatch(/^Bash curl -H "x-api-key: \[redacted\]/)
       expect(sub.activity![1]!.text).toBe('Two failures. The key [redacted] works.')
-      expect(r.session.activity!.map((e) => e.text)).toEqual(['Read docs/SPEC.md'])
+      expect(r.session.activity!.map((e) => e.text)).toEqual(['Read docs/spec/README.md'])
       expect(sent(w)).not.toContain(SECRET)
       expect(sent(w)).not.toContain('private thoughts')
     })

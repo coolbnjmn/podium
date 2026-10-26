@@ -661,7 +661,7 @@ describe("delegating (#98)", () => {
 
   it("leaves the session's own waiting status alone, and the fleet card says delegating like the page (#287)", () => {
     const waiting = openFocus({ status: "waiting", waitReason: "permission", agents: nested });
-    expect(chip(waiting.container, ".trow.root").textContent).toBe("waiting on you");
+    expect(chip(waiting.container, ".trow.root").textContent).toBe("needs you");
     cleanup();
     atWall();
     const st = stateFrom({ sessions: [makeSession({ agents: nested })] });

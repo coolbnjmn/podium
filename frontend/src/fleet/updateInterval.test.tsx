@@ -47,7 +47,7 @@ describe("isUrgentChange", () => {
 
   it("is true when a session starts waiting for you", () => {
     const held = base();
-    const next = fleetReducer(held, { type: "session", view: makeSession({ id: "a", status: "waiting", waitReason: "input" }) });
+    const next = fleetReducer(held, { type: "session", view: makeSession({ id: "a", status: "waiting", waitReason: "permission" }) });
     expect(isUrgentChange(held, next)).toBe(true);
   });
 
@@ -60,8 +60,8 @@ describe("isUrgentChange", () => {
   });
 
   it("is false for a session that was already waiting", () => {
-    const held = stateFrom({ sessions: [makeSession({ id: "a", status: "waiting", waitReason: "input" })] });
-    const next = fleetReducer(held, { type: "session", view: makeSession({ id: "a", status: "waiting", waitReason: "input", costUsd: 3 }) });
+    const held = stateFrom({ sessions: [makeSession({ id: "a", status: "waiting", waitReason: "permission" })] });
+    const next = fleetReducer(held, { type: "session", view: makeSession({ id: "a", status: "waiting", waitReason: "permission", costUsd: 3 }) });
     expect(isUrgentChange(held, next)).toBe(false);
   });
 
