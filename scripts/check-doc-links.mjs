@@ -1,19 +1,18 @@
 #!/usr/bin/env node
 // Check relative links and #anchors in the repo's markdown docs.
 // Usage: node scripts/check-doc-links.mjs [file.md ...]
-// With no files, checks README.md, CONTRIBUTING.md, CHANGELOG.md and docs/*.md.
+// With no files, checks README.md, CONTRIBUTING.md, CHANGELOG.md and every .md under docs/ (not the generated standards, the templates, the fixtures or the images).
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { slug, stripLinks, trimClosing } from "./docLinks.mjs";
+import { markdownUnder } from "./docTopics.mjs";
 
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
   console.log("Usage: node scripts/check-doc-links.mjs [file.md ...]\nChecks relative links and #anchors; exits 1 if any is broken.");
   process.exit(0);
 }
-const files = args.length
-  ? args
-  : ["README.md", "CONTRIBUTING.md", "CHANGELOG.md", ...readdirSync("docs").filter((f) => f.endsWith(".md")).map((f) => join("docs", f))].filter((f) => existsSync(f));
+const files = args.length ? args : ["README.md", "CONTRIBUTING.md", "CHANGELOG.md", ...(existsSync("docs") ? markdownUnder("docs") : [])].filter((f) => existsSync(f));
 
 const anchors = (path) => {
   const seen = new Map();

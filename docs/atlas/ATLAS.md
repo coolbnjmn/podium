@@ -1,10 +1,16 @@
+---
+title: "Atlas tables"
+description: "A table of every part of Podium and every reporter hook, the key functions, the flows between them and where data lives."
+group: Reference
+---
+
 # Atlas
 
 A short reference to every part of Podium, for someone who wants the map before the detail. It is the text
 companion to the interactive page [`docs/atlas/podium-atlas.html`](podium-atlas.html) (open it in a browser):
 the first section lists the thirty parts on that page's system map, the second lists the reporter's hooks and
-timers one by one, then the key functions, the flows between them, the four ways to run it and where data lives. The detail behind each row is in [Architecture](../ARCHITECTURE.md), [Server](../SERVER.md) and
-[Reporter](../REPORTER.md); intended behavior is in [Spec](../SPEC.md).
+timers one by one, then the key functions, the flows between them, the four ways to run it and where data lives. The detail behind each row is in [Architecture](../architecture/README.md), [Server](../SERVER.md) and
+[Reporter](../REPORTER.md); intended behavior is in [Spec](../spec/README.md).
 
 Contents:
 
@@ -268,5 +274,5 @@ Six operations the atlas page walks step by step. Each row gives the steps in or
 | Server | Memory only: open asks and answers, the live activity feed, diff requests, the messaging directory, Admin sessions, the update notice | The most sensitive live data. Gone on restart, on purpose. |
 | Storage | `podium.sqlite` | The main database in WAL mode: the live fleet, people and certificates, reporters, messaging, daily rollups, plans and short text excerpts, settings and the Admin log. |
 | Storage | `activity.sqlite` | Opt-in activity history and session recordings. The file exists from startup, but no rows are written unless an Admin turns one of them on. |
-| Storage | Certificates and config | The CA and serving keys in `/data/tls`, podiumctl settings in `~/.podium/config.env`, a person's config file, and the reporter's machine id. |
+| Storage | Certificates and config | The CA and serving keys in `/data/tls`, podiumctl settings in `~/.podium/config.env`, a person's config file, and the reporter's machine id and pinned machine name. |
 | Console | Preferences and cookies | Convenience only: theme, pins and collapsed panes. The respond and Admin cookies are `HttpOnly` and `SameSite=Strict`. Tokens are never written to storage. |

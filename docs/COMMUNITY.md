@@ -1,3 +1,9 @@
+---
+title: "Community"
+description: "How to join the Podium Discord server, and how the maintainer sets the server up and keeps it safe."
+group: Project internals
+---
+
 # Community
 
 Podium has a Discord server for questions, show-and-tell and release news. This page says how to join it and how
@@ -12,6 +18,7 @@ Contents:
   - [Secure configuration](#secure-configuration)
   - [If the invite is abused](#if-the-invite-is-abused)
   - [Checking that it works](#checking-that-it-works)
+- [The docs site's domain](#the-docs-sites-domain)
 
 ## Joining the Discord
 
@@ -68,7 +75,7 @@ curl -s 'https://discord.com/api/v10/invites/<code>?with_expiration=true'
 
 Read `expires_at` in the reply. `null` means it never expires, and a dead invite answers with an error message instead.
 
-About a week before the date:
+About a week before the date (2026-11-11 for the current link):
 
 1. Create a new invite with the settings above.
 2. Open it in a private window and check that it lands in `welcome-and-rules`.
@@ -127,3 +134,21 @@ Open the invite in a private window and join with a test account.
 - The link still works after a day and does not hit a use limit.
 
 If a step does not match what Discord shows, correct this page.
+
+## The docs site's domain
+
+The docs site (`site/`) is served at [podium.engelking.dev](https://podium.engelking.dev). DECISIONS 44 has the reasons. The
+maintainer owns `engelking.dev` and keeps its DNS on Cloudflare.
+
+| Type | Name | Value | TTL | Proxy |
+|---|---|---|---|---|
+| `CNAME` | `podium` | `eengelking.github.io` | Auto | DNS only |
+
+- **Pages.** Settings > Pages has the custom domain `podium.engelking.dev`. "Enforce HTTPS" is turned on after the first deploy from `main`, because GitHub issues the certificate only once the site is served (#709). `site/public/CNAME` carries the
+  domain in every build, so a deploy does not clear it. GitHub issues and renews the certificate; keep the record DNS only.
+- **Verified domain.** Verify `engelking.dev` for the account under the account's Settings > Pages, so no one else can claim a
+  subdomain of it.
+- **Renewal.** The registration is the maintainer's. Keep auto-renew on at the registrar, and keep the registrar account's contact
+  email current. If the domain lapses the docs go dark, though the same pages remain at `eengelking.github.io/podium` once the custom
+  domain is removed.
+- **If it breaks.** Check the record above, then the Pages settings, then the `Docs site` run on `main`.

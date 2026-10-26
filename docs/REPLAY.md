@@ -1,3 +1,9 @@
+---
+title: "Session recording and replay"
+description: "Record a session whole and play it back: the three yes answers, what is and is not captured, retention, limits and who can read it."
+group: Running it
+---
+
 # Session recording and replay
 
 Podium can record one session whole, orchestrator and agents together, and play it back later: every prompt, what the
@@ -8,12 +14,12 @@ limits, who can read it, how to stop and delete a recording, the replay view, wh
 It is the most Podium ever keeps of a conversation, so read [What is captured](#what-is-captured) and
 [What redaction does not cover](#what-redaction-does-not-cover) before you switch it on.
 
-The exact rules are in [SPEC.md](SPEC.md): what is recorded and kept in
-[6.4](SPEC.md#session-recording-opt-in-353), the reporter's side in
-[5.3](SPEC.md#session-recording-from-the-reporter-353) and [5.9](SPEC.md#59-mod-configuration-userconfig), who may read
-it in [7.7](SPEC.md#session-recording-353), the routes in [7.1](SPEC.md#71-endpoints), and the screens and the notice in
-[8.1](SPEC.md#session-recording-353-mockuppodium-recordinghtml). Where this page and the spec differ, the spec wins. Why
-it was built this way is [DECISIONS 40](DECISIONS.md#40-a-session-can-be-recorded-whole-with-three-yes-answers-353).
+The exact rules are in [docs/spec/](spec/README.md): what is recorded and kept in
+[6.4](spec/06-reporter-protocol/06-04-failure-and-excerpt-rules.md#session-recording-opt-in-353), the reporter's side in
+[5.3](spec/05-mod-api/05-03-events-the-reporter-hooks.md#session-recording-from-the-reporter-353) and [5.9](spec/05-mod-api/05-09-mod-configuration-userconfig.md), who may read
+it in [7.7](spec/07-server/07-07-hardening.md#session-recording-353), the routes in [7.1](spec/07-server/07-01-endpoints.md), and the screens and the notice in
+[8.1](spec/08-ui/08-01-what-the-ui-must-do.md#session-recording-353-mockuppodium-recordinghtml). Where this page and the spec differ, the spec wins. Why
+it was built this way is [DECISIONS 40](decisions/40-a-session-can-be-recorded-whole-with-three-yes.md).
 
 ## Contents
 
@@ -70,7 +76,7 @@ stops every recording, and what was recorded stays until it expires. The option 
 
 1. Open the session's orchestrator page. The **Recording** cell is the last in the facts panel, after Fork.
 2. Press **Record**. The picker lists the orchestrator, its agents and its forks, each with a box. It tells you before
-   you start if the owner has not allowed recording, how long a recording is kept, and which of the five states applies.
+   you start if the owner has not allowed recording, how long a recording is kept, and which of its five states applies: you may record, recording has just started, the owner has not allowed it, the feature is off, or you are not the owner or an Admin.
 3. Press **Start recording**. Nothing before that moment is kept, and a short delay before capture begins is normal.
    A loop that starts later is not recorded unless you add it by choosing again.
 
@@ -78,11 +84,11 @@ The owner and an Admin can both start, stop and delete, and an Admin can do it w
 the notice cannot be hidden and the owner's terminal is told every time. Everyone else sees the state and no button.
 
 The Admin sets the limits in Admin > Settings > Session recording and sees every recording in the Recordings table
-there. Both are covered in the [user guide](USER_GUIDE.md#session-recording) and [SERVER.md](SERVER.md#session-recording).
+there. Both are covered in the [user guide](user-guide/04-reading-the-console/13-session-recording.md) and [SERVER.md](SERVER.md#session-recording).
 
 ## What is captured
 
-For each recorded loop, in the order things happened ([6.4](SPEC.md#session-recording-opt-in-353) is the contract):
+For each recorded loop, in the order things happened ([6.4](spec/06-reporter-protocol/06-04-failure-and-excerpt-rules.md#session-recording-opt-in-353) is the contract):
 
 | Entry | What it holds |
 |---|---|
@@ -102,11 +108,10 @@ settings and the environment. Cost, tokens and the plan are already in the sessi
 
 ### Thinking text is not available
 
-The mod receives the model's thinking as chunks that arrive with empty text. It was tested on `claude-sonnet-5-5` at
-medium effort, in the main loop and in a subagent (the research is on [#353](https://github.com/eengelking/podium/issues/353)).
+The mod receives the model's thinking as chunks that arrive with empty text, on every model tried (haiku and
+`claude-sonnet-5-5`, in the main loop and in a subagent; the research is in [issue #353](https://github.com/eengelking/podium/issues/353)).
 The recording therefore keeps a mark for each block and no text, and the replay says "Thinking: text is not available"
-so it never reads as if the agent did not think. Other models, other efforts and forks were not tested
-([open follow-ups](#open-follow-ups)).
+so it never reads as if the agent did not think.
 
 ### What is not marked
 
@@ -135,7 +140,7 @@ so it never reads as if the agent did not think. Other models, other efforts and
 Before anything leaves the machine, the mod replaces what looks like a secret with `[redacted]`, using the same rules as
 the file diff: provider tokens, JWTs, private key blocks, credentials in URLs, authorization headers, values of keys
 whose name says they are secret, and long random-looking values. A `Read`, `Edit` or `Write` of a file on the never-send
-list (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc` and the others in [6.4](SPEC.md#session-recording-opt-in-353)) keeps
+list (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc` and the others in [6.4](spec/06-reporter-protocol/06-04-failure-and-excerpt-rules.md#session-recording-opt-in-353)) keeps
 the path and withholds the contents. The server adds no second pass.
 
 That is best effort. It does not catch:
@@ -161,7 +166,7 @@ A recorded session says so, to everyone who can open the console, for as long as
   recorded, and when it is deleted, with **Stop recording**, **Open replay** and **Delete recording** for the owner and
   an Admin.
 - In the owner's terminal, the mod writes the same words when capture starts, again after `/clear` and after a
-  compaction, and when it stops or hits a limit ([5.3](SPEC.md#session-recording-from-the-reporter-353) has the text).
+  compaction, and when it stops or hits a limit ([5.3](spec/05-mod-api/05-03-events-the-reporter-hooks.md#session-recording-from-the-reporter-353) has the text).
 
 **It cannot be dismissed.** It is not a wall notice. There is no X and no switch, on the wall or in Admin. A wall
 notice is an informational note that someone may close for everyone. Consent is not that: the people whose work is being
@@ -174,7 +179,7 @@ shows state only and never any content. The approved exception to the wall-notic
 Recordings live in the Activity history's second file, `activity.sqlite`, beside `podium.sqlite`, in their own tables
 (`rec_sessions` and `rec_entries`), so the main database's backups, vacuum and retention are not slowed by them. They
 appear in Admin > Server > Stored activity with Source set to Recordings. The data path and the tables are in
-[ARCHITECTURE.md](ARCHITECTURE.md#session-recording).
+[docs/architecture/](architecture/02-components/10-session-recording.md).
 
 **Retention** is the Admin's, in Admin > Settings > Session recording:
 
@@ -210,17 +215,17 @@ All three numbers are the Admin's, saved in one row, and enforced by the server,
   dropped on the server and an entry is stored once.
 - Sizes are the stored text's bytes. The Admin's usage line counts recordings, bytes and the budget.
 
-The defaults come from a measurement ([below](#what-was-measured)) made with simulated traffic, so they may change when
+The defaults come from the measurement in [What was measured](#what-was-measured), made with simulated traffic, so they may change when
 real sessions are measured.
 
 ## Who can read it
 
 Only the session's owner and an Admin can read, choose, stop, delete or open the replay of a recording, with the same
-sign-in and the same owner test as the Activity history ([7.7](SPEC.md#session-recording-353)). Everyone else gets `403`,
+sign-in and the same owner test as the Activity history ([7.7](spec/07-server/07-07-hardening.md#session-recording-353)). Everyone else gets `403`,
 or `404` while the flag is off.
 
 Everyone sees that a session is recorded, who started it, which loops and when it goes, and never any content. The
-History row's line "recording kept until <time>" shows only to the owner and an Admin.
+History row's line `recording kept until <time>` shows only to the owner and an Admin.
 
 The Admin log records each action with who did it and the session, and never any text:
 
@@ -283,7 +288,7 @@ In short, on one Apple M5 over loopback, with 20 busy sessions of 4 loops each:
   hours. That is why the per-session default is 512 MB and the budget 4 GB.
 - The caps stopped recording as specified, and a purge of a full budget finished in under a second.
 
-The tables, the method, the caveats and the maintainer's decision are in [6.4](SPEC.md#session-recording-opt-in-353)
+The tables, the method, the caveats and the maintainer's decision are in [6.4](spec/06-reporter-protocol/06-04-failure-and-excerpt-rules.md#session-recording-opt-in-353)
 ("Measured write load"). **Real sessions have not been measured.**
 
 ## Open follow-ups
@@ -296,7 +301,5 @@ Not yet tracked as GitHub issues; they are in [ISSUES.md](ISSUES.md):
 - Hot-reloading the mod during a recording lost later prompts in one live run; the cause is not found.
 - A prompt sent within about 2 s of pressing Record can be lost.
 - Redaction hides some text that is not a secret, such as a long identifier line.
-- The `gap` mark after a dropped queue, a fork, and thinking text on models other than haiku and `claude-sonnet-5-5` were not
-  exercised live. Thinking arrived with empty text on every model tried.
 - The replay footer mixes row and entry counts, and Jump to next failure looks enabled for a filter with no rows.
 - The load measurement used simulated traffic.

@@ -1,3 +1,9 @@
+---
+title: "The reporter mod"
+description: "Install and configure podium-reporter, the Claude Code mod that sends a session's data to Podium, and see exactly what leaves a session."
+group: Running it
+---
+
 # The reporter mod
 
 `podium-reporter` is the Claude Code mod that sends a session's data to the Podium server. This page is for
@@ -10,6 +16,7 @@ Contents:
 - [Install the mod](#install-the-mod)
 - [In the session](#in-the-session)
 - [Options](#options)
+- [Over TLS](#over-tls)
 - [Messaging your other orchestrators](#messaging-your-other-orchestrators)
 - [What leaves the session](#what-leaves-the-session)
 - [Sessions without the mod](#sessions-without-the-mod)
@@ -32,8 +39,8 @@ If the server uses a token (`podiumctl start` generates one), enter it with
   name as `userName`.
 - The `token` option is secret, so it has no row in the `/config` menu.
 
-Without a token the server accepts, or with a token that does not belong to your name, the reporter gets
-HTTP 401, logs it once, and tries again about once a minute. `/podium` and the status line say so.
+If the server needs a token and you send none, or send one that does not belong to your name, the reporter
+gets HTTP 401, logs it once, and tries again about once a minute. `/podium` and the status line say so.
 
 To work on the mod itself, load it from a checkout for one session instead:
 
@@ -42,7 +49,7 @@ claude --plugin-dir /path/to/podium/mod/podium-reporter
 ```
 
 To update an installed mod, run this in a shell and then `/reload-plugins` in the session (see "Updating
-the mod" in [USER_GUIDE.md](USER_GUIDE.md)):
+the mod" in [docs/user-guide/](user-guide/README.md)):
 
 ```sh
 claude plugin marketplace update eengelking-marketplace && claude plugin update podium-reporter@eengelking-marketplace
@@ -52,9 +59,9 @@ claude plugin marketplace update eengelking-marketplace && claude plugin update 
 
 The session appears in Podium once you send its first prompt. A session that has done nothing yet is kept
 off the wall, because Claude Code's background daemon also runs idle twins and spares that report too (see
-"Sessions that have not done anything yet" in [USER_GUIDE.md](USER_GUIDE.md)).
+"Sessions that have not done anything yet" in [docs/user-guide/](user-guide/README.md)).
 
-- `/podium` prints the dashboard link, the connection state and report counts.
+- `/podium` prints the console link, the connection state and report counts.
 - `/podium name <text>` gives the session a display name. Without one, a name you gave the session in Claude
   Code (for example with `/rename`) is its name in Podium, picked up from the next prompt. The `sessionName`
   option and the worktree or folder name come after.
@@ -76,7 +83,7 @@ The status line under the prompt reads:
 | ends in `· update available` | The server supports a newer mod than yours |
 
 Claude Code puts a `⚠` and the mod's name in front of the line. That is how it draws every mod's status
-line, not a Podium warning (see [GOTCHAS.md](GOTCHAS.md)).
+line, not a Podium warning (see [docs/gotchas/](gotchas/README.md)).
 
 ## Options
 
@@ -161,12 +168,15 @@ file's name. Set `PODIUM_REPORTER_CONFIG` to use a file somewhere else. With no 
   request whenever it changes on disk, if it is still for the same person. That is how a renewal made by another
   session reaches this one, and how a reissued config saved over the old file is used within seconds. The server
   address stays the one read at start. `/clear` keeps the helper running.
-- Command line only for now: the desktop app and VS Code are untested, and Windows is not supported.
+- Where it runs: the Claude Code command line on macOS and Linux. The mod relies on `$.process`, which the engine
+  provides only on the command line, so the desktop app and VS Code are not covered. Windows is not a supported
+  platform; the mod can still read a Windows version string (see What leaves the session), but nothing else is
+  built or tested for it.
 
 ## Messaging your other orchestrators
 
-This section is the mod's side. To set messaging up across your machines, with the server's flag, rights, limits and
-Traffic, follow [MESSAGING.md](MESSAGING.md).
+This section is the mod's side. To set messaging up across your machines (the server's flag, rights and limits), follow
+[MESSAGING.md](MESSAGING.md). It also covers Traffic, the console page that shows who talks to whom.
 
 With `peers` on, and once the server says this session takes part, the orchestrator (the session's main loop)
 gets three tools. They are offered only then: with the option off, or in a `claude -p` run, no tool appears and
@@ -210,7 +220,7 @@ nothing the server sends is taken.
 
 ## What leaves the session
 
-Data goes only to the server URL above, and only the items below. Podium never reads transcripts or files.
+Data goes only to the server URL above, and only the items below. Podium does not read whole conversations or send whole files: text is cut to short excerpts, and the options below that send more are opt-in.
 
 **Always:**
 
@@ -221,7 +231,7 @@ Data goes only to the server URL above, and only the items below. Podium never r
   removed line counts. At most 200 files, and never file contents or diff text.
 - The plan's step titles (from TaskCreate, TaskUpdate or TodoWrite). A session that does not use these tools
   shows "No plan reported. Agents were launched ad hoc.", and plan mode does not make a plan appear (see
-  [Gotchas](GOTCHAS.md#a-session-shows-no-plan)).
+  [Gotchas](gotchas/session-shows-no-plan.md)).
 - For the orchestrator's own loop: how many model requests it made, the name of every tool it used with how
   many times, and the skills it loaded.
 - Per agent: type, description, model, effort, status, token counts, skills it loaded, the name of every
@@ -276,12 +286,15 @@ put on record:
 **Only with `userName`:**
 
 - That name.
-- Which machine the session runs on: its short host name (what `hostname` prints, up to the first dot) and a
+- Which machine the session runs on: its short host name (on a Mac `scutil --get LocalHostName`, else what `hostname` prints, up to the first dot) and a
   random 12-character id. The mod makes the id the first time and keeps it in one file
   (`~/.claude/podium-machine-id`, or under `CLAUDE_CONFIG_DIR` when that is set). Two machines with the same
-  host name stay apart, and every copy of the mod on a machine reports the same id.
+  host name stay apart, and every copy of the mod on a machine reports the same id. The name is pinned the
+  same way, in `podium-machine-name` beside the id file, so a name that changes with the network (#715) does not
+  split one machine into two. Delete that file to take the machine's current name.
 - The machine's OS and version, such as `macOS 27.0.1`, from the first of `sw_vers` (macOS), `PRETTY_NAME` in
-  `/etc/os-release` (Linux) or `cmd /c ver` (Windows) that works, cut to 80 characters. Left out when none does.
+  `/etc/os-release` (Linux) or `cmd /c ver` (Windows) that works, cut to 80 characters. Left out when none does. Reading a Windows version
+  string does not make Windows a supported platform; see In the session.
 - The id is random, not read from the hardware. The operating system user name and `git config` are never
   read.
 
