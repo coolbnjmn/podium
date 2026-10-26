@@ -1,0 +1,66 @@
+// The Podium docs site (#688). scripts/build.mjs runs this once per version and sets the DOCS_* variables each time:
+//   DOCS_BASE      where this build is served ("/" for the newest version, "/1.2/" for an older one)
+//   DOCS_OUT       the folder it writes to
+//   DOCS_CURRENT   this build's version line, and DOCS_VERSIONS the list the version menu shows (JSON)
+//   DOCS_REF       the git tag older versions are built from (empty for the newest)
+import path from "node:path";
+import { defineConfig } from "astro/config";
+import starlight from "@astrojs/starlight";
+import starlightLinksValidator from "starlight-links-validator";
+import { GROUPS, SITE_ORIGIN, REPO } from "./docs-nav.mjs";
+
+const base = process.env.DOCS_BASE || "/";
+const outDir = process.env.DOCS_OUT ? path.resolve(process.env.DOCS_OUT) : undefined;
+const older = process.env.DOCS_REF ? true : false;
+
+// The sidebar is built from the docs of the version being built (scripts/lib.mjs, collectPages): an older release may lack a page or
+// a folder, and a topic split into a folder has a group of its own with its overview first. The static list is for running Astro alone.
+const sidebar = process.env.DOCS_SIDEBAR
+  ? JSON.parse(process.env.DOCS_SIDEBAR)
+  : GROUPS.map((g) => ({ label: g.label, items: g.items.map((i) => ({ label: i.label, slug: i.slug })) }));
+
+const description =
+  "Podium is a live fleet console for Claude Code. See every session's model, cost, context window, failures and git branch on one screen. It watches and never types into a terminal.";
+
+export default defineConfig({
+  site: SITE_ORIGIN,
+  base,
+  outDir,
+  trailingSlash: "always",
+  integrations: [
+    starlight({
+      title: "Podium",
+      description,
+      favicon: "/favicon.svg",
+      credits: false,
+      lastUpdated: true,
+      tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 3 },
+      customCss: ["./src/styles/theme.css"],
+      components: {
+        Header: "./src/components/Header.astro",
+        Footer: "./src/components/Footer.astro",
+        Banner: "./src/components/Banner.astro",
+        PageTitle: "./src/components/PageTitle.astro",
+      },
+      sidebar,
+      plugins: [
+        starlightLinksValidator({
+          // The standards pages and the atlas page are served as they are, so they are not Starlight pages; the Markdown links
+          // to them are rewritten to static files and are not checked here.
+          exclude: ["**/docs/standards/**", "**/atlas-map/**", "**/images/**"],
+          errorOnLocalLinks: false,
+          errorOnInvalidHashes: false,
+        }),
+      ],
+      head: [
+        { tag: "meta", attrs: { property: "og:site_name", content: "Podium" } },
+        { tag: "meta", attrs: { property: "og:image", content: `${SITE_ORIGIN}/og.png` } },
+        { tag: "meta", attrs: { property: "og:image:alt", content: "Podium: every Claude Code session on one screen" } },
+        { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" } },
+        { tag: "meta", attrs: { name: "twitter:image", content: `${SITE_ORIGIN}/og.png` } },
+        ...(older ? [{ tag: "meta", attrs: { name: "robots", content: "noindex" } }] : []),
+        { tag: "link", attrs: { rel: "me", href: `https://github.com/${REPO}` } },
+      ],
+    }),
+  ],
+});

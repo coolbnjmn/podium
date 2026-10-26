@@ -1,15 +1,21 @@
+---
+title: "Orchestrator messaging"
+description: "Let one person's Claude Code orchestrators message each other through Podium: setup, rights, limits, what is kept and troubleshooting."
+group: Running it
+---
+
 # Orchestrator messaging
 
 One person's Claude Code orchestrators, on any of their machines, can send each other messages through Podium. This
 page is for whoever sets that up and uses it: what it is, how the parts fit, the setup from start to finish, rights,
 limits, what the session sees, Traffic, what is kept, troubleshooting and how to try it end to end.
 
-The exact rules are in [SPEC.md](SPEC.md): the reporter's side in
-[5.3](SPEC.md#orchestrator-messaging-from-the-reporter-347), the server's in
-[7.7](SPEC.md#orchestrator-messaging-347), what is stored in
-[7.2](SPEC.md#what-orchestrator-messaging-keeps-and-where-347) and the pages in
-[8.1](SPEC.md#my-reporters-page-347-mockuppodium-my-reportershtml). Where this page and the spec differ, the spec
-wins. Why it was built this way is [DECISIONS 37](DECISIONS.md#37-orchestrators-can-message-each-other-but-only-one-persons-own-347).
+The exact rules are in [docs/spec/](spec/README.md): the reporter's side in
+[SPEC 5.3](spec/05-mod-api/05-03-events-the-reporter-hooks.md#orchestrator-messaging-from-the-reporter-347), the server's in
+[SPEC 7.7](spec/07-server/07-07-hardening.md#orchestrator-messaging-347), what is stored in
+[SPEC 7.2](spec/07-server/07-02-database.md#what-orchestrator-messaging-keeps-and-where-347) and the pages in
+[SPEC 8.1](spec/08-ui/08-01-what-the-ui-must-do.md#my-reporters-page-347-mockuppodium-my-reportershtml). Where this page and the spec differ, the spec
+wins. Why it was built this way is [DECISIONS 37](decisions/37-orchestrators-can-message-each-other-but-only-one.md).
 
 ## Contents
 
@@ -80,9 +86,8 @@ orchestrators on one machine). A **conversation** is the messages between two or
 - **A person and a token.** An Admin makes the person in Admin > People, which shows their token once. Every machine
   that takes part reports with that token and that name. The admin secret cannot take part: its sessions belong to
   no one. See [SERVER.md](SERVER.md#admin-and-per-person-tokens).
-- **A reporter that can message.** podium-reporter must be a version with the `peers` option, from the release that
-  adds orchestrator messaging (the first after 1.1.0). An older one shows as **Reporter can't message: update it**.
-  Until that release is out, load the mod from a checkout of `development` with `claude --plugin-dir`.
+- **A reporter that can message.** podium-reporter must be version 1.2.0 or later, the first with the `peers` option.
+  An older one shows as **Reporter can't message: update it**.
 - **An interactive session.** A `claude -p` run never takes part.
 - **A server everyone can reach.** For more than one machine, see
   [Several people on one Podium](SERVER.md#several-people-on-one-podium). The same steps apply to one person's
@@ -115,7 +120,7 @@ On every machine that takes part, in Claude Code:
 
 For a terminal that should report as someone other than the saved options, start it with `PODIUM_USER` and
 `PODIUM_TOKEN` in its environment instead (see
-[More than one login on one machine](USER_GUIDE.md#more-than-one-login-on-one-machine)). `peers` still comes from the
+[More than one login on one machine](user-guide/02-set-it-up.md#more-than-one-login-on-one-machine)). `peers` still comes from the
 options.
 
 What changes on screen:
@@ -171,8 +176,8 @@ everywhere:
 - Sending includes seeing.
 - A reply is a message too, so B answering A needs its own right from B to A.
 - Two orchestrators on the same machine use that reporter's right to itself, the Grid's diagonal.
-- Lowering a right does not recall a message already sent: it is delivered under the right it was sent with. Remove
-  link drops one still waiting.
+- Lowering a right does not recall a message already sent: it is delivered under the right it was sent with.
+  Removing a link drops any message still waiting.
 
 ### Requests, and where to answer them
 
@@ -210,7 +215,7 @@ owner approves it.
 
 Pause and Remove act on the two reporters, so they cover every conversation between the same two machines. A pause
 holds under Trust my own reporters too. The Admin's page has no Remove button; the Admin API can remove a link
-(`DELETE /api/admin/reporters/:key/peers/:other`, [SPEC 7.1](SPEC.md#admin-api)).
+(`DELETE /api/admin/reporters/:key/peers/:other`, [SPEC 7.1](spec/07-server/07-01-endpoints.md#admin-api)).
 
 ## Limits
 
@@ -227,8 +232,8 @@ The Admin sets four limits in Admin > Settings > Orchestrator messaging, for eve
   Each change is written to the Admin log as `peer_limits_changed`.
 - A round trip is two changes of direction in one conversation, counted from the last message the owner approved.
 - An owner can make the first three stricter on their own links, in My reporters > Defaults, never looser. A value
-  above the Admin's is refused. If the Admin later sets theirs lower, theirs applies, the row says so, and the owner's
-  value is kept in case the Admin raises it again.
+  above the Admin's is refused. If the Admin later sets a lower value, the Admin's applies, the row says so, and the
+  owner's value is kept in case the Admin raises it again.
 - The round-trip limit is the only guard against two orchestrators looping. There is no hop count across a chain
   (A to B to C) and no spend cap.
 
@@ -320,13 +325,13 @@ The legend under the map says the same, and names your machines that are not dra
   narrow screen opens on it.
 - **Show** picks **Live sessions** (the default), **Last 24 hours** or **Last 30 days**.
 
-The full tour is in the user guide, [Traffic](USER_GUIDE.md#traffic).
+The full tour is in the user guide, [Traffic](user-guide/04-reading-the-console/15-traffic.md).
 
 ## What is kept and who sees it
 
 | What | Where, and for how long | Who can read it |
 |---|---|---|
-| A message's text, with sender, receiver, times and delivery state | The server's database, until the Admin's "Keep conversations" days after the last message on its link (30 by default), and deleted with its sessions | The owner and an Admin |
+| A message's text, with sender, receiver, times and delivery state | The server's database, until the Admin's "Keep conversations" days after the last message on its link (30 by default), and deleted when the server deletes either session (30 days after it ends, or when an Admin deletes it) | The owner and an Admin |
 | That two orchestrators talk, the counts and the states | `GET /api/fleet/peers/traffic` | Everyone who can read the console |
 | Rights, defaults and requests | The database. Closed requests go after the same period; rights and requests about a removed reporter go too | The owner, and an Admin |
 | Admin log rows | `peer_sent`, `peer_delivered`, `peer_approved`, `peer_declined`, `peer_dropped`, `peer_right_*`, `peer_access_requested`, `peer_defaults_changed`, `peer_limits_changed`: who, to whom and whose, never the text | Admin |
@@ -334,8 +339,8 @@ The full tour is in the user guide, [Traffic](USER_GUIDE.md#traffic).
 
 The text never goes in the fleet state, the event stream or a log. Podium's notices to an orchestrator are held in
 memory only and do not survive a restart; messages, rights and requests do. Turning the flag off drops every message
-still waiting and keeps the rights. The full list is [SPEC 7.2](SPEC.md#what-orchestrator-messaging-keeps-and-where-347)
-and [Retention](SPEC.md#retention).
+still waiting and keeps the rights. The full list is [SPEC 7.2](spec/07-server/07-02-database.md#what-orchestrator-messaging-keeps-and-where-347)
+and [Retention](spec/07-server/07-02-database.md#retention).
 
 What this exposes, and what counts as a security bug, is in
 [SECURITY.md](../.github/SECURITY.md#orchestrator-messaging). The short version: anyone holding a person's token can
@@ -345,7 +350,7 @@ server.
 ## Troubleshooting
 
 Find what you see, then follow the fix. For problems connecting the reporter at all, see
-[Something is wrong](USER_GUIDE.md#something-is-wrong) and [GOTCHAS.md](GOTCHAS.md).
+[Something is wrong](user-guide/03-something-is-wrong.md) and [docs/gotchas/](gotchas/README.md).
 
 | You see | Cause | Fix |
 |---|---|---|
@@ -363,9 +368,9 @@ Find what you see, then follow the fix. For problems connecting the reporter at 
 | "can see … but has no right to send there" | The right is **Can see** | Give **Can send** on My reporters, or have the orchestrator ask with `podium_request_access` |
 | **My reporters** is not in the top bar, or the page shows nothing | Not signed in; signed in with the admin secret, which has no reporters; or the flag is off | Sign in with your own name and token. Ask the Admin to turn on the flag |
 | My reporters shows **Off on the machine** | `peers` is off on that machine, and only that machine can turn it on | Run `/plugin configure podium-reporter@eengelking-marketplace` there and set `peers` on |
-| My reporters or Admin shows **Reporter can't message: update it** | The reporter predates the `peers` option | Update podium-reporter on that machine ([Updating the mod](USER_GUIDE.md#updating-the-mod)) |
+| My reporters or Admin shows **Reporter can't message: update it** | The reporter predates the `peers` option | Update podium-reporter on that machine ([Updating the mod](user-guide/09-updating-the-mod.md)) |
 | A machine box on Traffic reads "System not reported" | No live session on that machine and you are not signed in as its owner, or its reporter is too old to send the OS (`machine.os`) | Sign in from the top bar, or start a session on that machine |
-| A session reports to another server, or as another person, than you expect | How the reporter chooses: a session keeps the name and token it started with; at start it takes `PODIUM_USER` and `PODIUM_TOKEN` from the environment, both together, when either is set; otherwise the `userName` and `token` options. The options live under `podium-reporter@eengelking-marketplace` for the installed mod and `podium-reporter` for a `--plugin-dir` copy. A token that does not match its name gets `HTTP 401` | Check the environment and the right options key, then start a new session. See [More than one login on one machine](USER_GUIDE.md#more-than-one-login-on-one-machine) and [GOTCHAS](GOTCHAS.md#i-changed-my-reporter-settings-and-a-running-session-did-not-change-who-it-reports-as) |
+| A session reports to another server, or as another person, than you expect | How the reporter chooses: a session keeps the name and token it started with; at start it takes `PODIUM_USER` and `PODIUM_TOKEN` from the environment, both together, when either is set; otherwise the `userName` and `token` options. The options live under `podium-reporter@eengelking-marketplace` for the installed mod and `podium-reporter` for a `--plugin-dir` copy. A token that does not match its name gets `HTTP 401` | Check the environment and the right options key, then start a new session. See [More than one login on one machine](user-guide/02-set-it-up.md#more-than-one-login-on-one-machine) and [GOTCHAS](gotchas/running-session-keeps-its-old-identity.md) |
 
 ## Testing it end to end
 
