@@ -605,10 +605,10 @@ async function findBuild($: Engine): Promise<string | null> {
   }, root);
 }
 
-/** Debug-log line for a read that did not run, so a skip is visible without filling the error list. */
-function skipped($: Engine, kind: PollKind, why: string): void {
+/** Debug-log line for a read that did not run or gave nothing, so it is visible without filling the error list. */
+function skipped($: Engine, what: string, why: string, subject?: string): void {
   try {
-    $.ui.log(`podium-reporter: ${kind}_poll_skipped: ${why}`, { to: 'debug' });
+    $.ui.log(`podium-reporter: ${what}_skipped: ${why}${subject ? ` ${subject}` : ''}`, { to: 'debug' });
   } catch {
     // logging is best effort
   }
@@ -619,7 +619,7 @@ async function guarded($: Engine, r: Runtime, kind: PollKind, read: () => Promis
   const p = r.polling[kind];
   if (p.busy) {
     p.again = true;
-    skipped($, kind, 'previous_read_running');
+    skipped($, `${kind}_poll`, 'previous_read_running', r.state.id);
     return;
   }
   p.busy = true;
@@ -697,6 +697,7 @@ async function readHandoffPlan($: Engine, r: Runtime, path: string): Promise<Fal
     const st = await $.fs.stat(path);
     if (st.kind !== 'file' || st.size > MAX_HANDOFF_FILE) {
       r.handoffSeen = null;
+      skipped($, 'handoff_read', st.kind !== 'file' ? 'not_a_file' : 'too_large', path);
       return null;
     }
     if (r.handoffSeen?.path === path && r.handoffSeen.mtimeMs === st.mtimeMs) return r.handoffSeen.plan;
@@ -707,6 +708,7 @@ async function readHandoffPlan($: Engine, r: Runtime, path: string): Promise<Fal
   } catch {
     // A missing or unreadable file just means no plan from it.
     r.handoffSeen = null;
+    skipped($, 'handoff_read', 'unreadable', path);
     return null;
   }
 }
@@ -738,6 +740,7 @@ async function readPlanFallback($: Engine, r: Runtime): Promise<void> {
           beads = res.exitCode === 0 ? parseBeads(res.stdout) : null;
         } catch {
           beads = null;
+          skipped($, 'beads_read', 'bd_failed', dir);
         }
         if (beads) break;
       }
@@ -773,6 +776,7 @@ async function repoRootOf($: Engine, dir: string): Promise<string | null> {
     }
     return null;
   } catch {
+    skipped($, 'work_repo_lookup', 'lookup_failed', dir);
     return null;
   }
 }
