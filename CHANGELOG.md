@@ -14,6 +14,8 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-27
+
 ### Added
 
 - **A plan for sessions that keep theirs in HANDOFF.md or beads.** A session with no TaskCreate or TodoWrite plan now shows the open items of the HANDOFF.md it last read or wrote (the bullets, numbered items and checkboxes under headings such as "Open items", "In flight" or "Next"), and when there is none, its open beads from `bd list` in the HANDOFF.md's folder or the session's own. HANDOFF.md comes first because it is written just before a clear and may not be in beads yet. The plan's source is `handoff` or `beads`; a session's own plan always wins. The mod reads one capped file and runs one capped `bd list` every 10 seconds, and a missing file or tracker just means no plan.
@@ -24,6 +26,8 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 - **A session idle between turns reads "idle", not "waiting on you".** Every session that had finished its turn showed as waiting for the person, even when nothing asked for anything. Now only a permission prompt or a question counts as "needs you": the Waiting count, the Waiting filter, the board's Review column and the update interval's urgent changes follow it. A session idle between turns shows a calm "Idle" band with its own icon and sorts after one that needs you and one blocked on background work, and a session idle on background work reads "blocked on shell" (or the task's kind) beside its dot. The wire is unchanged: `waitReason: "input"` is the idle case. A session idle between turns whose plan has steps, every one done, reads "Done" instead of "Idle" and sorts after the idle ones.
   Standards: the status chip, the card band and the state icons gain an `idle` state, and the waiting chip's word is "needs you" (approved by the maintainer).
+
+- **The reporter starts far fewer processes.** Every session ran about eleven `git` commands and a plan read (`head`, `bd list`) every ten seconds, and each process a Claude Code session starts can leave a stray `ps` behind, so a dozen sessions kept hundreds alive. Git and the plan are now read every 30 seconds while a session works and every 60 while it waits, once more when a turn ends, and at once when the session moves folder. The branch, git dir, common dir and toplevel come from one `rev-parse`, the toplevel and HEAD from another, and the ancestor check is skipped while HEAD is still the starting commit. `bd list` runs only in the session's folder or its HANDOFF.md's folder when that has a `.beads` tracker, or when BEADS_DIR names one (a tracker `bd` would find in a parent folder, such as `~/.beads`, is no longer asked); HANDOFF.md is read through the file system, and again only when its modified time changes; the repository of an edited file is found by walking up to its `.git` instead of running `git`. A read never starts while the last one for that session is still running. Measured on a mocked five minutes: 66 spawns a minute before, 6 idle and 12 working after.
 
 ## [1.3.1] - 2026-10-25
 
@@ -825,7 +829,8 @@ and a plugin you can install from a marketplace.
 - The project was renamed from `claude-dashboard` to `podium`
   (`eengelking/podium`). (PR #5)
 
-[Unreleased]: https://github.com/eengelking/podium/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/coolbnjmn/podium/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/coolbnjmn/podium/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/eengelking/podium/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/eengelking/podium/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/eengelking/podium/compare/v1.2.1...v1.2.2

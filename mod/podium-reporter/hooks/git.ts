@@ -53,13 +53,10 @@ export async function readGit(run: Runner, cwd: string): Promise<GitInfo | null>
     return r.stdout.trim();
   };
   try {
-    const [abbrev, gitDir, commonDir, top, status] = await Promise.all([
-      ok(['git', 'rev-parse', '--abbrev-ref', 'HEAD']),
-      ok(['git', 'rev-parse', '--git-dir']),
-      ok(['git', 'rev-parse', '--git-common-dir']),
-      ok(['git', 'rev-parse', '--show-toplevel']),
-      run(['git', 'status', '--porcelain=v1', '-b']),
-    ]);
+    // One rev-parse answers the four facts, a line each in argument order; it fails as a whole where HEAD has no commit yet.
+    const [facts, status] = await Promise.all([ok(['git', 'rev-parse', '--abbrev-ref', 'HEAD', '--git-dir', '--git-common-dir', '--show-toplevel']), run(['git', 'status', '--porcelain=v1', '-b'])]);
+    const [abbrev, gitDir, commonDir, top] = facts.split('\n');
+    if (!abbrev || !gitDir || !commonDir || !top) return null;
     const detached = abbrev === 'HEAD';
     const branch = detached ? await ok(['git', 'rev-parse', '--short', 'HEAD']).catch(() => null) : abbrev;
     const isWorktree = resolvePath(cwd, gitDir) !== resolvePath(cwd, commonDir);
@@ -134,6 +131,8 @@ export function parseNumstat(stdout: string): Map<string, LineCount> {
 export async function resolveRef(run: Runner, top: string, start: string, head: string | null): Promise<{ ref: string; since: FilesReport['since'] }> {
   const git = (...args: string[]) => ['git', '-C', top, ...args];
   if (start === EMPTY_TREE) return { ref: EMPTY_TREE, since: 'start' };
+  // HEAD is still the starting commit: it is its own ancestor, so the check below would only spawn to say so.
+  if (start === head) return { ref: start, since: 'start' };
   if ((await run(git('merge-base', '--is-ancestor', start, 'HEAD'))).exitCode === 0) return { ref: start, since: 'start' };
   const up = await run(git('merge-base', 'HEAD', '@{upstream}'));
   const mb = up.exitCode === 0 ? up.stdout.trim() : '';
@@ -153,15 +152,17 @@ export interface Changes {
  */
 export async function readChanges(run: Runner, cwd: string, base: string | null): Promise<Changes | null> {
   try {
-    const top = (await run(['git', 'rev-parse', '--show-toplevel'])).stdout.trim() || cwd;
+    // The toplevel and HEAD in one call; a repository with no commit yet fails it after the toplevel line, and has no HEAD.
+    const tops = await run(['git', 'rev-parse', '--show-toplevel', 'HEAD']);
+    const [first, second] = tops.stdout.trim().split('\n');
+    const top = first?.startsWith('/') ? first : cwd;
+    const head = tops.exitCode === 0 && second ? second : null;
     const git = (...args: string[]) => ['git', '-C', top, ...args];
     const out = async (argv: string[], okCodes: number[] = [0]) => {
       const r = await run(argv);
       if (!okCodes.includes(r.exitCode)) throw new Error(`${argv.join(' ')} exited ${r.exitCode}`);
       return r.stdout;
     };
-    const headRes = await run(git('rev-parse', 'HEAD'));
-    const head = headRes.exitCode === 0 ? headRes.stdout.trim() : null;
     const start = base ?? head ?? EMPTY_TREE;
     const { ref, since } = await resolveRef(run, top, start, head);
     const [names, nums, others] = await Promise.all([
