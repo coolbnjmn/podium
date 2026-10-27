@@ -189,6 +189,8 @@ code. A function's line number is on the page, not here, because it moves.
 | Server | `sessionView` | Turns database rows into the SessionView the browsers get. In `server/src/fleet/derive.ts`. |
 | Server | `sessionStatus` | Done, stale (silent too long) or the status last reported. In `server/src/fleet/derive.ts`. |
 | Server | `class CmuxNames` | Card names from cmux tab titles, off unless PODIUM_CMUX_NAMES=1. In `server/src/fleet/cmuxNames.ts`. |
+| Server | `class ContextWatch` | A session's context against the soft and hard limits, one crossing at a time. In `server/src/fleet/contextHygiene.ts`. |
+| Server | `class ContextNudge` | One message to a session's cmux tab per crossing, off unless PODIUM_CONTEXT_NUDGE=1. In `server/src/fleet/contextHygiene.ts`. |
 | Server | `class Sidecar` | Follows Codex rollout files and reports each session, off unless PODIUM_CODEX=1. In `server/src/codex/sidecar.ts`. |
 | Server | `isHeadless` | A run nobody was ever attached to, left out of the activity feed. In `server/src/fleet/derive.ts`. |
 | Server | `startSweeper` | The one-second housekeeping loop. In `server/src/fleet/sweeper.ts`. |

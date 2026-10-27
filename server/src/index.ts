@@ -23,6 +23,7 @@ import { failureLimiter, pageLimiter, parseFailureLimit } from "./failureLimiter
 import { createRespondBridge } from "./fleet/respondBridge.js";
 import { forgetReporters, purgeStored, startSweeper } from "./fleet/sweeper.js";
 import { cmuxNamesFromEnv } from "./fleet/cmuxNames.js";
+import { contextNudgeFromEnv } from "./fleet/contextHygiene.js";
 import { activityDbPath, openActivityDb } from "./fleet/activityDb.js";
 import { REPORTER_SUPPORT } from "./fleet/compat.js";
 import { createServerLogging } from "./logging/setup.js";
@@ -65,6 +66,8 @@ const fleet = new Fleet(fleetDb, fleetConfig, Date.now, logger, { db: activityDb
 const cmuxNames = cmuxNamesFromEnv(process.env, logger);
 const stopCmuxNames = cmuxNames ? cmuxNames.start() : null;
 fleet.names = cmuxNames;
+// A nudge to a session's cmux tab when its context crosses a limit: off unless PODIUM_CONTEXT_NUDGE=1.
+fleet.nudge = contextNudgeFromEnv(process.env, logger);
 const people = new PeopleStore(fleetDb.db);
 const tlsSettings = new TlsSettingsStore(fleetDb.db);
 let tlsListener: TlsListener | null = null;

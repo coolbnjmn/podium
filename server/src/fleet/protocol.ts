@@ -935,6 +935,8 @@ export interface SessionView {
   /** When a heartbeat-lost session leaves the wall on its own (epoch ms); null while it is not stale. */
   dropAt: number | null;
   context: ContextFill;
+  /** Context against the soft and hard limits (see ContextHygiene). */
+  hygiene?: ContextHygiene;
   costUsd: number | null;
   tokensTotal: number;
   blowouts: {
@@ -1076,7 +1078,18 @@ export interface OwnerSpend {
 }
 
 /** The server's lifecycle timings, so the UI can say when a stale session will be dropped. */
+/** How full a session's context is against the two limits, and whether it is due a fresh restart. Absent on a view built before the server knew the limits. */
+export interface ContextHygiene {
+  level: 'ok' | 'soft' | 'hard';
+  /** At the hard limit and idle with no background work: the session can be restarted fresh now. Never true for the Orchestrator or a Codex card. */
+  resetDue: boolean;
+  /** The context a new session already held at its first report, when that was over the soft limit (it was resumed with it); null otherwise. */
+  resumedWith: number | null;
+}
+
 export interface LifecycleConfig {
+  /** The soft and hard context limits in tokens, from the shared limits file. */
+  contextLimits?: { soft: number; hard: number };
   staleAfterMs: number;
   dropAfterMs: number;
   lingerMs: number;

@@ -17,13 +17,15 @@ export const SORTS: Record<SortKey, string> = {
   newest: "Newest",
 };
 
-export type StatusFilter = "all" | "running" | "waiting" | "stale" | "blow" | "codex";
+export type StatusFilter = "all" | "running" | "waiting" | "stale" | "blow" | "soft" | "hard" | "codex";
 export const STATUS_FILTERS: Record<StatusFilter, string> = {
   all: "All",
   running: "Running",
   waiting: "Waiting",
   stale: "Stale",
   blow: "Blowouts",
+  soft: "Over soft",
+  hard: "Over hard",
   codex: "Codex",
 };
 
@@ -52,7 +54,8 @@ export function sortSessions(list: readonly SessionView[], key: SortKey): Sessio
     status: byStatus,
     model: (a, b) => MODEL_ORDER.indexOf(a.modelFamily) - MODEL_ORDER.indexOf(b.modelFamily) || byStatus(a, b),
     blow: (a, b) => b.blowouts.total - a.blowouts.total || byStatus(a, b),
-    ctx: (a, b) => (b.context.percent ?? -1) - (a.context.percent ?? -1),
+    // Absolute tokens, the unit the context limits are written in: a 1M window and a 200k window read the same here.
+    ctx: (a, b) => (b.context.tokens ?? -1) - (a.context.tokens ?? -1),
     cost: (a, b) => (b.costUsd ?? -1) - (a.costUsd ?? -1),
     newest: (a, b) => b.startedAt - a.startedAt,
   };
@@ -65,6 +68,11 @@ export function filterSessions(list: readonly SessionView[], filter: { status: S
   return list.filter((s) => {
     if (filter.status === "blow") {
       if (!s.blowouts.total) return false;
+    } else if (filter.status === "soft") {
+      // At or over the soft limit, the hard ones included.
+      if (s.hygiene?.level !== "soft" && s.hygiene?.level !== "hard") return false;
+    } else if (filter.status === "hard") {
+      if (s.hygiene?.level !== "hard") return false;
     } else if (filter.status === "codex") {
       // Codex sessions get their own tab; the other tabs list them with everything else.
       if (s.agent !== "codex") return false;

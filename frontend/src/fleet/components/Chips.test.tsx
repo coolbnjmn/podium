@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { ContextBar, Cost, EffortMeter, ModelChip, NO_PRICE_TITLE, StatusChip } from "./Chips";
+import { ContextBar, Cost, EffortMeter, HygieneChip, ModelChip, NO_PRICE_TITLE, StatusChip } from "./Chips";
 import { EFFORTS } from "../logic";
 
 afterEach(cleanup);
@@ -102,5 +102,34 @@ describe("StatusChip delegating variant (#98)", () => {
     const { container } = render(<StatusChip status="running" />);
     expect(container.querySelector(".st")).toHaveClass("running");
     expect(container.querySelector(".st")!.textContent).toBe("running");
+  });
+});
+
+describe("HygieneChip", () => {
+  const ctx = (tokens: number) => ({ tokens, window: 1_000_000, percent: tokens / 10_000 });
+  it("shows nothing under the soft limit or when the server sent no mark", () => {
+    const { container, rerender } = render(<HygieneChip s={{ hygiene: { level: "ok", resetDue: false, resumedWith: null }, context: ctx(40_000) }} />);
+    expect(container.textContent).toBe("");
+    rerender(<HygieneChip s={{ context: ctx(400_000) }} />);
+    expect(container.textContent).toBe("");
+  });
+  it("is amber over the soft limit and red over the hard one, in tokens, with a screen-reader name", () => {
+    const { container, rerender } = render(<HygieneChip s={{ hygiene: { level: "soft", resetDue: false, resumedWith: null }, context: ctx(142_000) }} />);
+    const soft = container.querySelector(".blow")!;
+    expect(soft).not.toHaveClass("l2");
+    expect(soft.textContent).toContain("142k");
+    expect(soft.querySelector(".vh")!.textContent).toContain("over the soft limit");
+    rerender(<HygieneChip s={{ hygiene: { level: "hard", resetDue: false, resumedWith: null }, context: ctx(301_000) }} />);
+    expect(container.querySelector(".blow")).toHaveClass("l2");
+    expect(container.textContent).not.toContain("reset due");
+  });
+  it("says reset due when the session is idle at the hard limit", () => {
+    const { container } = render(<HygieneChip s={{ hygiene: { level: "hard", resetDue: true, resumedWith: null }, context: ctx(301_000) }} />);
+    expect(container.textContent).toContain("reset due");
+    expect(container.querySelector(".blow")!.getAttribute("title")).toContain("due a fresh restart");
+  });
+  it("marks a session that was resumed with a big context, even when it has since come down", () => {
+    const { container } = render(<HygieneChip s={{ hygiene: { level: "ok", resetDue: false, resumedWith: 180_000 }, context: ctx(30_000) }} />);
+    expect(container.textContent).toBe("resumed with 180k");
   });
 });

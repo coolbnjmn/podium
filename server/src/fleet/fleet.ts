@@ -3,7 +3,7 @@
 // injected so the lifecycle tests can move time without waiting.
 import { ROLLUP_KEEP_MS, SAME_USAGE } from './db.js';
 import { costFn, writeRollups } from './rollups.js';
-import type { CostOf, FleetDb, RetentionPolicy, SessionRow } from './db.js';
+import type { CostOf, EventRow, FleetDb, RetentionPolicy, SessionRow } from './db.js';
 import { activityView, computeKpis, family, isHeadless, isUnused, repriced, sessionStatus, sessionView, shortenHome, staleAfterFor, startOfDay, type DeriveConfig } from './derive.js';
 import { serverBuild } from './build.js';
 import { REPORTER_SUPPORT, serverVersion } from './compat.js';
@@ -31,6 +31,7 @@ import { MAIN_LOOP } from './protocol.js';
 import { checkReporter } from './compat.js';
 import { silentLogger, type Logger } from '../logging/logger.js';
 import type { NameSource } from './cmuxNames.js';
+import { ContextWatch, hygieneView, isOrchestrator, limitsSourceFromEnv, type ContextNudge, type Crossing, type LimitsSource } from './contextHygiene.js';
 
 export interface FleetConfig {
   staleAfterMs: number;
@@ -147,6 +148,11 @@ export class Fleet {
   readonly updates: UpdateCheck;
   /** Where a card's name comes from when something other than the reporter names it (the cmux tab title); null keeps the reporter's. Set once at start. */
   names: NameSource | null = null;
+  /** The soft and hard context limits, from the shared limits file (PODIUM_CONTEXT_LIMITS_FILE overrides where it is). */
+  readonly limits: LimitsSource;
+  private readonly contextWatch: ContextWatch;
+  /** Messages a session's cmux tab when its context crosses a limit; null (the default) sends none. Set once at start. */
+  nudge: ContextNudge | null = null;
   private readonly live = new Map<string, LiveEntry>();
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly startedAt: number;
@@ -165,6 +171,8 @@ export class Fleet {
     history: { db?: DatabaseSync; authOn?: boolean; secret?: string | null } = {},
   ) {
     this.startedAt = now();
+    this.limits = limitsSourceFromEnv(process.env, logger, cfg.home, now);
+    this.contextWatch = new ContextWatch(() => this.limits.get());
     this.features = new FeatureFlags(db.db, (id, on) => {
       if (id === ACTIVITY_FEED && !on) this.activity.clear();
       if (id === FILE_DIFF && !on) this.diffs.clear();
@@ -324,6 +332,7 @@ export class Fleet {
     this.noteReporter(report, owner);
     const entry = this.live.get(res.sessionId);
     const row = this.db.getSession(res.sessionId);
+    this.noteContext(res, row);
     if (entry) {
       entry.heard = true;
     } else if (!(res.ended && res.wasDone)) {
@@ -354,6 +363,40 @@ export class Fleet {
     }
     if (this.live.has(res.sessionId)) this.scheduleSession(res.sessionId);
     return res;
+  }
+
+  /**
+   * Watches the session's context against the limits: a crossing becomes one feed line (naming the session and its tokens) and,
+   * when the nudge is on, one message to its cmux tab. A finished session is forgotten.
+   */
+  private noteContext(res: IngestResult, row: SessionRow | undefined): void {
+    if (!row) return;
+    if (res.ended) {
+      this.contextWatch.forget(res.sessionId);
+      return;
+    }
+    for (const c of this.contextWatch.observe(res.sessionId, row.context_tokens, res.created)) {
+      const title = this.names?.titleFor(res.sessionId) ?? null;
+      const name = title || row.name;
+      const e: EventRow = {
+        id: `context-${res.sessionId}-${c.level}-${this.now()}`,
+        session_id: res.sessionId,
+        agent_id: null,
+        t: this.now(),
+        kind: 'note',
+        text: `${name} context at ${Math.round(c.tokens / 1000)}k, over the ${c.level} limit of ${Math.round(c.limit / 1000)}k`,
+        data_json: JSON.stringify({ kind: `context_${c.level}`, tokens: c.tokens, limit: c.limit }),
+      };
+      if (this.db.insertEvent(e) && !this.feedHidden(row)) this.hub.broadcast('activity', activityView(e, this.feedSession(row)));
+      this.logger.info(`context.${c.level}`, `podium: session ${res.sessionId} crossed the ${c.level} context limit at ${c.tokens} tokens`, { session_id: res.sessionId, tokens: c.tokens, limit: c.limit });
+      this.sendNudge(res.sessionId, title, row, c);
+    }
+  }
+
+  private sendNudge(sessionId: string, title: string | null, row: SessionRow, c: Crossing): void {
+    // A Codex card has no tab of its own to message.
+    if (!this.nudge || sessionId.startsWith('codex:')) return;
+    void this.nudge.nudge(sessionId, title, row.name, c);
   }
 
   /** What the Stored activity table shows about a session; undefined when the main database does not hold it. */
@@ -434,7 +477,7 @@ export class Fleet {
   private viewOf(row: SessionRow): SessionView {
     const now = this.now();
     const entry = this.live.get(row.id);
-    return sessionView(
+    const view = sessionView(
       {
         row,
         agents: this.db.getAgents(row.id),
@@ -456,6 +499,19 @@ export class Fleet {
       now,
       this.derive,
     );
+    const claude = view.agent === 'claude';
+    view.hygiene = hygieneView(
+      {
+        tokens: row.context_tokens,
+        idle: view.status === 'waiting' && view.waitReason === 'input',
+        backgroundPending: !!view.background,
+        claude,
+        orchestrator: isOrchestrator(this.names?.titleFor(row.id), row.name),
+        resumedWith: this.contextWatch.resumedWith(row.id),
+      },
+      this.limits.get(),
+    );
+    return view;
   }
 
   /**
@@ -590,7 +646,7 @@ export class Fleet {
     const sessions = this.liveViews();
     return {
       serverTime: this.now(),
-      config: { staleAfterMs: this.cfg.staleAfterMs, dropAfterMs: this.cfg.dropAfterMs, lingerMs: this.cfg.lingerMs, detachedHideAfterMs: this.cfg.detachedHideAfterMs },
+      config: { contextLimits: this.limits.get(), staleAfterMs: this.cfg.staleAfterMs, dropAfterMs: this.cfg.dropAfterMs, lingerMs: this.cfg.lingerMs, detachedHideAfterMs: this.cfg.detachedHideAfterMs },
       sessions,
       kpis: this.kpis(sessions),
       clearedToday: this.clearedToday(),
@@ -637,6 +693,7 @@ export class Fleet {
   // ---- writes ---------------------------------------------------------------------------------
 
   deleteSession(id: string): boolean {
+    this.contextWatch.forget(id);
     const wasLive = this.live.delete(id);
     this.clockSkew.delete(id);
     this.activity.dropSession(id);
@@ -681,6 +738,7 @@ export class Fleet {
         silent_s: Math.round((now - row.last_seen_at) / 1000),
       });
     }
+    this.contextWatch.forget(row.id);
     this.live.delete(row.id);
     this.clockSkew.delete(row.id);
     this.activity.dropSession(row.id);
@@ -723,6 +781,7 @@ export class Fleet {
     for (const [id, entry] of [...this.live]) {
       const row = this.db.getSession(id);
       if (!row) {
+        this.contextWatch.forget(id);
         this.live.delete(id);
         continue;
       }

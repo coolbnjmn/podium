@@ -5,7 +5,7 @@ import { respondGate } from "../respond";
 import { RespondButton } from "./Respond";
 import { COST_HINT_SESSION, currentStep, delegateText, dropAtOf, inferredStep, planProgress, sessionCounts, sessionElapsedSec, sessionTokens, TOKENS_HINT, treeOrder } from "../logic";
 import type { AgentView, LifecycleConfig, SessionView } from "../types";
-import { AgentChip, BlowBadge, ContextBar, Cost, cssVar, delegatesOf, EffortMeter, FAMILY_COLOR, GitLine, ModelChip, PlanBar, StateIcon, stateKind, type StateKind } from "./Chips";
+import { AgentChip, BlowBadge, ContextBar, Cost, cssVar, delegatesOf, EffortMeter, FAMILY_COLOR, GitLine, HygieneChip, ModelChip, PlanBar, StateIcon, stateKind, type StateKind } from "./Chips";
 import { backgroundLead, backgroundTitle, toolOfNote, waitLead } from "../waiting";
 import { Sparkline } from "./Sparkline";
 import { OwnerLine } from "./People";
@@ -179,6 +179,7 @@ export function SessionCard(props: { s: SessionView; machineTitle?: boolean; now
           <span className="mdl">
             <ModelChip family={s.modelFamily} model={s.model} />
             <AgentChip agent={s.agent} />
+            <HygieneChip s={s} />
             <EffortMeter effort={s.effort} />
           </span>
         </div>

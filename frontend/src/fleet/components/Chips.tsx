@@ -1,6 +1,6 @@
 // Small shared pieces: model chip, effort meter, status chip, blowout badge, git line.
 import type { CSSProperties, ReactElement } from "react";
-import { fmtUsd } from "../format";
+import { fmtTok, fmtUsd } from "../format";
 import { EFFORTS, familyName, ORCHESTRATOR_ROW, planComplete, waitingOnByRow } from "../logic";
 import type { AgentView, BackgroundWait, GitInfo, ModelFamily, SessionView } from "../types";
 import { backgroundStatus, backgroundTitle, idleOnBackground, idleOnInput } from "../waiting";
@@ -43,6 +43,36 @@ export function AgentChip({ agent }: { agent: SessionView["agent"] }) {
     <span className="chip skill" title="A Codex session, reported by the Codex sidecar">
       codex
     </span>
+  );
+}
+
+/**
+ * How full the context is against the limits, in tokens: nothing under the soft limit, amber over it, red over the hard one, and
+ * "reset due" when the session is also idle with no background work. A session resumed with a big context says so. Reuses the
+ * blowout badge's two looks.
+ */
+export function HygieneChip({ s }: { s: Pick<SessionView, "hygiene" | "context"> }) {
+  const h = s.hygiene;
+  if (!h) return null;
+  const tokens = fmtTok(s.context.tokens);
+  return (
+    <>
+      {h.level !== "ok" && (
+        <span
+          className={`blow${h.level === "hard" ? " l2" : ""}`}
+          title={`Context at ${tokens} tokens, over the ${h.level} limit${h.resetDue ? ". Idle with no background work: due a fresh restart." : "."}`}
+        >
+          {tokens}
+          {h.resetDue ? " · reset due" : ""}
+          <span className="vh"> context over the {h.level} limit</span>
+        </span>
+      )}
+      {h.resumedWith !== null && (
+        <span className="chip skill" title="This session was resumed with that much context already in it">
+          resumed with {fmtTok(h.resumedWith)}
+        </span>
+      )}
+    </>
   );
 }
 
