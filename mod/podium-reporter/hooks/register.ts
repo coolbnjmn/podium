@@ -117,7 +117,13 @@ import {
 } from './respond.ts';
 
 export const VERSION = '1.3.1';
-const GIT_POLL_MS = 10_000;
+/** The poll timers tick this often; a tick spawns only when the session's cadence says a read is due. */
+const POLL_TICK_MS = 10_000;
+/** Time between two git or plan reads of one session: while it works, and while it waits for the person (each read spawns processes). */
+const POLL_ACTIVE_MS = 30_000;
+const POLL_IDLE_MS = 60_000;
+/** The largest HANDOFF.md read for a plan; a bigger file is left unread. */
+const MAX_HANDOFF_FILE = 1_000_000;
 /** session.end has one ~1.5 s bound for every hook and core together; stay well inside it. */
 const END_FLUSH_MS = 1000;
 const ERRORS_KEPT = 20;
@@ -195,7 +201,15 @@ interface Runtime {
   interactive: boolean;
   /** What `$.session.cwd()` last answered, so a move it reports is told apart from an answer that stayed put while the hooks carry the new folder (#382). */
   sessionCwd: string | null;
+  /** Reads under way, so a tick or an event never starts a second one for the same session; `again` asks for one more when it ends. */
+  polling: Record<PollKind, { busy: boolean; again: boolean }>;
+  /** When each read last started, on the engine's clock; 0 before the first. */
+  polledAt: Record<PollKind, number>;
+  /** The HANDOFF.md last read: where, when it was modified, and what it gave, so an unchanged file is not read again. */
+  handoffSeen: { path: string; mtimeMs: number; plan: ReturnType<typeof parseHandoff> } | null;
 }
+
+type PollKind = 'git' | 'plan';
 
 export function readOptions(o: Record<string, unknown>): Options {
   const s = (v: unknown, d: string) => (typeof v === 'string' ? v : d);
@@ -591,7 +605,52 @@ async function findBuild($: Engine): Promise<string | null> {
   }, root);
 }
 
-async function pollGit($: Engine, r: Runtime): Promise<void> {
+/** Debug-log line for a read that did not run or gave nothing, so it is visible without filling the error list. */
+function skipped($: Engine, what: string, why: string, subject?: string): void {
+  try {
+    $.ui.log(`podium-reporter: ${what}_skipped: ${why}${subject ? ` ${subject}` : ''}`, { to: 'debug' });
+  } catch {
+    // logging is best effort
+  }
+}
+
+/** Runs one read of `kind` unless one is under way for this session; a request that arrives meanwhile runs once more when it ends. */
+async function guarded($: Engine, r: Runtime, kind: PollKind, read: () => Promise<void>): Promise<void> {
+  const p = r.polling[kind];
+  if (p.busy) {
+    p.again = true;
+    skipped($, `${kind}_poll`, 'previous_read_running', r.state.id);
+    return;
+  }
+  p.busy = true;
+  try {
+    r.polledAt[kind] = await engineNow($);
+    await read();
+  } finally {
+    p.busy = false;
+  }
+  if (p.again) {
+    p.again = false;
+    void guarded($, r, kind, read);
+  }
+}
+
+/** The poll tick: starts the reads whose cadence is up. A session at work is read every POLL_ACTIVE_MS, one waiting every POLL_IDLE_MS. */
+async function pollDue($: Engine, r: Runtime): Promise<void> {
+  // A move to another folder is told by the engine without a process, so it is checked on every tick and read at once.
+  if (await attempt(() => movePlace($, r), false)) void pollGit($, r);
+  const now = await engineNow($);
+  // Half a tick of slack, so a read that came a hair early is not pushed a whole tick later.
+  const every = (r.state.status === 'running' ? POLL_ACTIVE_MS : POLL_IDLE_MS) - POLL_TICK_MS / 2;
+  if (now - r.polledAt.git >= every) void pollGit($, r);
+  if (now - r.polledAt.plan >= every) void pollPlan($, r);
+}
+
+function pollGit($: Engine, r: Runtime): Promise<void> {
+  return guarded($, r, 'git', () => readGitState($, r));
+}
+
+async function readGitState($: Engine, r: Runtime): Promise<void> {
   try {
     await movePlace($, r);
     const cwd = gitCwdOf(r.state);
@@ -609,7 +668,11 @@ async function pollGit($: Engine, r: Runtime): Promise<void> {
     const changes = await readChanges(run, cwd, base);
     if (!changes) {
       // A work repository that cannot be read any more (a removed worktree) is forgotten, and the starting folder is read next.
-      if (!git && root) r.state = dropWorkRoot(r.state, root);
+      if (!git && root) {
+        r.state = dropWorkRoot(r.state, root);
+        // The starting folder is read next, at once: the slow cadence would leave the card with no git for a minute.
+        r.polling.git.again = true;
+      }
       else if (!git) r.state = setFiles(r.state, NO_FILES, r.state.gitBase);
       return;
     }
@@ -628,32 +691,60 @@ function beadsDirs(handoffPath: string | null, cwd: string): string[] {
   return dirs.filter((d, i): d is string => !!d && dirs.indexOf(d) === i);
 }
 
+/** The plan in the session's HANDOFF.md. One stat; the file is read only when it changed since the last read, and a file past MAX_HANDOFF_FILE is left unread. */
+async function readHandoffPlan($: Engine, r: Runtime, path: string): Promise<FallbackPlan | null> {
+  try {
+    const st = await $.fs.stat(path);
+    if (st.kind !== 'file' || st.size > MAX_HANDOFF_FILE) {
+      r.handoffSeen = null;
+      skipped($, 'handoff_read', st.kind !== 'file' ? 'not_a_file' : 'too_large', path);
+      return null;
+    }
+    if (r.handoffSeen?.path === path && r.handoffSeen.mtimeMs === st.mtimeMs) return r.handoffSeen.plan;
+    const text = await $.fs.read(path);
+    const plan = parseHandoff(text.slice(0, MAX_HANDOFF_BYTES));
+    r.handoffSeen = { path, mtimeMs: st.mtimeMs, plan };
+    return plan;
+  } catch {
+    // A missing or unreadable file just means no plan from it.
+    r.handoffSeen = null;
+    skipped($, 'handoff_read', 'unreadable', path);
+    return null;
+  }
+}
+
+function pollPlan($: Engine, r: Runtime): Promise<void> {
+  return guarded($, r, 'plan', () => readPlanFallback($, r));
+}
+
 /**
  * The plan for a session that has none of its own: the open items of its HANDOFF.md, else its open beads.
- * Read-only, bounded (one capped read, one capped `bd list`), and a missing file or tracker just means no plan.
+ * Read-only and bounded: one stat and at most one capped read, and `bd list` runs only in a folder that holds a
+ * `.beads` tracker. A missing file or tracker just means no plan.
  */
-async function pollPlan($: Engine, r: Runtime): Promise<void> {
+async function readPlanFallback($: Engine, r: Runtime): Promise<void> {
   try {
     const id = r.state.id;
     if (r.state.plan.tasks.length) {
       r.state = setFallback(r.state, null);
       return;
     }
-    const run = async (argv: string[], cwd?: string): Promise<string | null> => {
-      try {
-        const res = await $.process.run(argv, { ...(cwd ? { cwd } : {}), timeoutMs: 5000 });
-        return res.exitCode === 0 ? res.stdout : null;
-      } catch {
-        return null;
-      }
-    };
     const path = r.state.handoffPath;
-    const text = path ? await run(['head', '-c', String(MAX_HANDOFF_BYTES), path]) : null;
-    const handoff = text === null ? null : parseHandoff(text);
+    const handoff = path ? await readHandoffPlan($, r, path) : null;
     let beads: FallbackPlan | null = null;
     if (!handoff) {
+      // `bd` also finds a tracker by itself in a parent folder (and does so slowly), so only a `.beads` in one of the two
+      // folders, or a tracker the person named with BEADS_DIR, is asked.
+      const named = !!(await attempt(() => $.env.get('BEADS_DIR'), undefined));
       for (const dir of beadsDirs(path, r.state.cwd)) {
-        beads = parseBeads((await run(['bd', 'list', '--json', '--brief', '-n', '50'], dir)) ?? '');
+        if (!named && !(await attempt(() => $.fs.exists(`${dir}/.beads`), false))) continue;
+        try {
+          const res = await $.process.run(['bd', 'list', '--json', '--brief', '-n', '50'], { cwd: dir, timeoutMs: 5000 });
+          beads = res.exitCode === 0 ? parseBeads(res.stdout) : null;
+        } catch {
+          beads = null;
+          skipped($, 'beads_read', 'bd_failed', dir);
+        }
         if (beads) break;
       }
     }
@@ -672,13 +763,24 @@ async function repoRootOf($: Engine, dir: string): Promise<string | null> {
   const hit = repoRoots.get(dir);
   if (hit) return hit;
   try {
-    const res = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd: dir, timeoutMs: 3000 });
-    const top = res.exitCode === 0 ? res.stdout.trim() : '';
-    if (!top.startsWith('/')) return null;
-    if (repoRoots.size >= REPO_ROOT_CACHE) repoRoots.clear();
-    repoRoots.set(dir, top);
-    return top;
+    // The nearest folder at or above `dir` with a `.git` (a folder, or the file a worktree has), resolved through links as git reports it.
+    // Through links first, as git reports it: a folder that links elsewhere has its parents there, not where the link stands.
+    let at = (await $.fs.stat(dir, { resolve: true })).realPath ?? dir;
+    for (let depth = 0; depth < 64; depth++) {
+      if (await $.fs.exists(`${at}/.git`)) {
+        const top = at;
+        if (!top.startsWith('/')) return null;
+        if (repoRoots.size >= REPO_ROOT_CACHE) repoRoots.clear();
+        repoRoots.set(dir, top);
+        return top;
+      }
+      const up = at.slice(0, at.lastIndexOf('/'));
+      if (!up || up === at) return null;
+      at = up;
+    }
+    return null;
   } catch {
+    skipped($, 'work_repo_lookup', 'lookup_failed', dir);
     return null;
   }
 }
@@ -1804,6 +1906,9 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
     clearedFrom: same && rt ? rt.clearedFrom : null,
     interactive: e.surface !== null,
     sessionCwd: await attempt<string | null>(() => $.session.cwd(), null),
+    polling: { git: { busy: false, again: false }, plan: { busy: false, again: false } },
+    polledAt: { git: 0, plan: 0 },
+    handoffSeen: null,
   };
   acted = await loadActed($);
   const r = rt;
@@ -1829,8 +1934,7 @@ async function start($: Engine, e: { cwd: string; surface: string | null }): Pro
     record($, 'tool.register', err);
   }
   r.timers.push($.clock.every(opts.flushIntervalMs, () => void flush($)));
-  r.timers.push($.clock.every(GIT_POLL_MS, () => void pollGit($, r)));
-  r.timers.push($.clock.every(GIT_POLL_MS, () => void pollPlan($, r)));
+  r.timers.push($.clock.every(POLL_TICK_MS, () => void pollDue($, r)));
   void pollGit($, r);
   void pollPlan($, r);
   showStatus($, r);
@@ -2120,6 +2224,8 @@ export const register: Register = (on, rawOptions) => {
     const res = await next(e);
     safe('turn.complete', (r) => {
       r.state = turnComplete(r.state, { agentId: e.agentId, reason: e.reason, answer: e.answer }, nowMs());
+      // The turn's edits are in: read git once now, so the slower idle cadence shows its end state.
+      if (!e.agentId) void pollGit($, r);
     });
     return res;
   }).catch(($, e, next) => next(e));

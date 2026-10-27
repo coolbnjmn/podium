@@ -8,11 +8,12 @@ function runner(map: Record<string, { exitCode?: number; stdout?: string }>): Ru
   }
 }
 
+const FACTS = 'rev-parse --abbrev-ref HEAD --git-dir --git-common-dir --show-toplevel'
+/** The one rev-parse answer: branch, git dir, common dir and toplevel, a line each. */
+const facts = (abbrev: string, gitDir: string, commonDir: string, top: string) => ({ [FACTS]: { stdout: `${abbrev}\n${gitDir}\n${commonDir}\n${top}\n` } })
+
 const base = {
-  'rev-parse --abbrev-ref HEAD': { stdout: 'feat/x\n' },
-  'rev-parse --git-dir': { stdout: '.git\n' },
-  'rev-parse --git-common-dir': { stdout: '.git\n' },
-  'rev-parse --show-toplevel': { stdout: '/repo\n' },
+  ...facts('feat/x', '.git', '.git', '/repo'),
   'status --porcelain=v1 -b': { stdout: '## feat/x...origin/feat/x [ahead 3, behind 1]\n' },
 }
 
@@ -22,7 +23,7 @@ describe('git', () => {
   })
 
   test('detached head reports the short sha', async () => {
-    const g = await readGit(runner({ ...base, 'rev-parse --abbrev-ref HEAD': { stdout: 'HEAD\n' }, 'rev-parse --short HEAD': { stdout: '1a2b3c4\n' }, 'status --porcelain=v1 -b': { stdout: '## HEAD (no branch)\n' } }), '/repo')
+    const g = await readGit(runner({ ...base, ...facts('HEAD', '.git', '.git', '/repo'), 'rev-parse --short HEAD': { stdout: '1a2b3c4\n' }, 'status --porcelain=v1 -b': { stdout: '## HEAD (no branch)\n' } }), '/repo')
     expect(g).toMatchObject({ branch: '1a2b3c4', detached: true, ahead: 0, behind: 0 })
   })
 
@@ -30,9 +31,7 @@ describe('git', () => {
     const g = await readGit(
       runner({
         ...base,
-        'rev-parse --git-dir': { stdout: '/repo/.git/worktrees/feat-x\n' },
-        'rev-parse --git-common-dir': { stdout: '/repo/.git\n' },
-        'rev-parse --show-toplevel': { stdout: '/repo/.claude/worktrees/feat-x\n' },
+        ...facts('feat/x', '/repo/.git/worktrees/feat-x', '/repo/.git', '/repo/.claude/worktrees/feat-x'),
       }),
       '/repo/.claude/worktrees/feat-x',
     )
@@ -40,13 +39,33 @@ describe('git', () => {
   })
 
   test('relative git dirs resolve against the working directory', async () => {
-    const g = await readGit(runner({ ...base, 'rev-parse --git-dir': { stdout: '.git\n' }, 'rev-parse --git-common-dir': { stdout: '/repo/.git\n' } }), '/repo')
+    const g = await readGit(runner({ ...base, ...facts('feat/x', '.git', '/repo/.git', '/repo') }), '/repo')
     expect(g!.isWorktree).toBe(false)
     expect(resolvePath('/a/b', '../c/./d')).toBe('/a/c/d')
   })
 
+  test('branch, worktree and status take two commands (three when detached)', async () => {
+    const seen: string[] = []
+    const counted = (m: Record<string, { exitCode?: number; stdout?: string }>): Runner => {
+      const r = runner(m)
+      return async (argv) => {
+        seen.push(argv.slice(1).join(' '))
+        return r(argv)
+      }
+    }
+    await readGit(counted(base), '/repo')
+    expect(seen).toEqual([FACTS, 'status --porcelain=v1 -b'])
+    seen.length = 0
+    await readGit(counted({ ...base, ...facts('HEAD', '.git', '.git', '/repo'), 'rev-parse --short HEAD': { stdout: '1a2b3c4\n' } }), '/repo')
+    expect(seen).toHaveLength(3)
+  })
+
+  test('an answer missing a fact gives null, not a half-read repository', async () => {
+    expect(await readGit(runner({ ...base, [FACTS]: { stdout: 'feat/x\n.git\n' } }), '/repo')).toBeNull()
+  })
+
   test('not a repository (non-zero exit) gives null', async () => {
-    expect(await readGit(runner({ 'rev-parse --abbrev-ref HEAD': { exitCode: 128, stdout: '' } }), '/tmp')).toBeNull()
+    expect(await readGit(runner({ [FACTS]: { exitCode: 128, stdout: '' } }), '/tmp')).toBeNull()
   })
 
   test('dirty counts modified, untracked and renamed lines', () => {
@@ -60,8 +79,7 @@ const Z = '\0'
 const BASE = 'a'.repeat(40)
 const HEAD = 'b'.repeat(40)
 const top = {
-  'rev-parse --show-toplevel': { stdout: '/repo\n' },
-  '-C /repo rev-parse HEAD': { stdout: HEAD + '\n' },
+  'rev-parse --show-toplevel HEAD': { stdout: `/repo\n${HEAD}\n` },
   [`-C /repo merge-base --is-ancestor ${BASE} HEAD`]: { exitCode: 0 },
   [`-C /repo diff --name-status -z -M ${BASE}`]: { stdout: `M${Z}src/a.ts${Z}A${Z}src/new.ts${Z}D${Z}old.md${Z}R100${Z}x/was.ts${Z}x/now.ts${Z}` },
   [`-C /repo diff --numstat -z -M ${BASE}`]: { stdout: `12\t3\tsrc/a.ts${Z}40\t0\tsrc/new.ts${Z}0\t9\told.md${Z}2\t1\t${Z}x/was.ts${Z}x/now.ts${Z}` },
@@ -108,6 +126,15 @@ describe('changed files', () => {
     expect(r).toMatchObject({ base: HEAD, files: { files: [], total: 0, added: 0, removed: 0, since: 'start' } })
   })
 
+  test('while HEAD is still the starting commit no ancestor check is run', async () => {
+    const seen: string[] = []
+    const r = runner({ ...top, [`-C /repo diff --name-status -z -M ${HEAD}`]: { stdout: '' }, [`-C /repo diff --numstat -z -M ${HEAD}`]: { stdout: '' }, '-C /repo ls-files -z --others --exclude-standard --full-name': { stdout: '' } })
+    const out = await readChanges(async (argv) => (seen.push(argv.slice(1).join(' ')), r(argv)), '/repo', HEAD)
+    expect(out!.files.since).toBe('start')
+    expect(seen.some((c) => c.includes('merge-base'))).toBe(false)
+    expect(seen).toHaveLength(4)
+  })
+
   test('a starting commit that is no longer an ancestor falls back to the upstream merge base', async () => {
     const MB = 'c'.repeat(40)
     const m = { ...top, [`-C /repo merge-base --is-ancestor ${BASE} HEAD`]: { exitCode: 1 }, '-C /repo merge-base HEAD @{upstream}': { stdout: MB + '\n' } }
@@ -131,8 +158,7 @@ describe('changed files', () => {
 
   test('a repository with no commits diffs against the empty tree', async () => {
     const m: Record<string, { exitCode?: number; stdout?: string }> = {
-      'rev-parse --show-toplevel': { stdout: '/repo\n' },
-      '-C /repo rev-parse HEAD': { exitCode: 128 },
+      'rev-parse --show-toplevel HEAD': { exitCode: 128, stdout: '/repo\nHEAD\n' },
       [`-C /repo diff --name-status -z -M ${EMPTY_TREE}`]: { stdout: `A${Z}first.ts${Z}` },
       [`-C /repo diff --numstat -z -M ${EMPTY_TREE}`]: { stdout: `5\t0\tfirst.ts${Z}` },
       '-C /repo ls-files -z --others --exclude-standard --full-name': { stdout: '' },
@@ -141,7 +167,7 @@ describe('changed files', () => {
     expect(r!.base).toBe(EMPTY_TREE)
     expect(r!.files.files.map((f) => f.path)).toEqual(['first.ts'])
     // the first commit is made later: the base stays the empty tree, so the file is still listed
-    m['-C /repo rev-parse HEAD'] = { stdout: HEAD + '\n' }
+    m['rev-parse --show-toplevel HEAD'] = { stdout: `/repo\n${HEAD}\n` }
     const again = await readChanges(runner(m), '/repo', EMPTY_TREE)
     expect(again!.files.since).toBe('start')
   })
