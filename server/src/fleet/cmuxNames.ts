@@ -127,6 +127,11 @@ export class CmuxNames implements NameSource {
     return null;
   }
 
+  /** The title of a cmux workspace by its id, or null when cmux does not list it. */
+  titleOfWorkspace(workspaceId: string): string | null {
+    return this.titles.get(workspaceId) ?? null;
+  }
+
   /** One refresh: never overlaps another, and a failure keeps what was known. Resolves when done. */
   async refresh(): Promise<void> {
     if (this.busy) return;

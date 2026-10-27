@@ -17,13 +17,14 @@ export const SORTS: Record<SortKey, string> = {
   newest: "Newest",
 };
 
-export type StatusFilter = "all" | "running" | "waiting" | "stale" | "blow";
+export type StatusFilter = "all" | "running" | "waiting" | "stale" | "blow" | "codex";
 export const STATUS_FILTERS: Record<StatusFilter, string> = {
   all: "All",
   running: "Running",
   waiting: "Waiting",
   stale: "Stale",
   blow: "Blowouts",
+  codex: "Codex",
 };
 
 /** Model order for sorting: alphabetical by family, unknown models last. */
@@ -64,6 +65,9 @@ export function filterSessions(list: readonly SessionView[], filter: { status: S
   return list.filter((s) => {
     if (filter.status === "blow") {
       if (!s.blowouts.total) return false;
+    } else if (filter.status === "codex") {
+      // Codex sessions get their own tab; the other tabs list them with everything else.
+      if (s.agent !== "codex") return false;
     } else if (filter.status === "waiting") {
       // The same sessions the Waiting count counts: one that needs the person, not one idle between turns or on background work.
       if (!needsPerson(s)) return false;

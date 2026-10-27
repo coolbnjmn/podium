@@ -334,6 +334,7 @@ These are environment variables (see `.env.example`). Under `podiumctl` you set 
 | `DETACHED_HIDE_AFTER_MS` | `60000` | A session nobody is attached to (a background job left running after `/exit`) shows dimmed this long, then is set aside behind a "background sessions hidden" line |
 | `PODIUM_CMUX_NAMES` | off | `1` names each card after the cmux tab (workspace) its session runs in. The server runs `cmux workspace list --json` every 15 seconds for the whole fleet and reads `~/.cmuxterm/claude-hook-sessions.json` and `codex-hook-sessions.json` to tell which session is in which tab. A session cmux does not know keeps the name its reporter sent, and the reporter's name is stored unchanged. Local only: nothing leaves the machine |
 | `PODIUM_CMUX_BIN` | the cmux app's own binary | The `cmux` command `PODIUM_CMUX_NAMES` runs, when it is installed somewhere else |
+| `PODIUM_CODEX` | off | Read by the Codex sidecar, not the server: `1` lets `server/dist/codex/sidecar.js` follow Codex sessions and report them. See [Codex sessions](CODEX.md) |
 | `SHOW_HEADLESS_FEED` | off | `1` puts the start and end lines of headless runs (`claude -p`, `codex exec`: sessions nobody was ever attached to) back in the activity feed. By default the feed leaves them out; the wall and the costs still include them |
 | `RETAIN_SAMPLES_MS` | 24 hours | Per-second chart samples kept |
 | `RETAIN_EVENTS_MS` | 30 days | Activity events kept |

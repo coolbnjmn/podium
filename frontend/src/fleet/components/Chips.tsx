@@ -36,6 +36,16 @@ export function ModelChip({ family, model }: { family: ModelFamily; model?: stri
   );
 }
 
+/** Marks a card the Codex sidecar reports, so it is not taken for a Claude Code session. Reuses the existing mono chip. */
+export function AgentChip({ agent }: { agent: SessionView["agent"] }) {
+  if (agent !== "codex") return null;
+  return (
+    <span className="chip skill" title="A Codex session, reported by the Codex sidecar">
+      codex
+    </span>
+  );
+}
+
 /** Five bars filled one to five, colored by level; the level is the tooltip and the accessible name, not text. */
 export function EffortMeter({ effort }: { effort: string | null }) {
   const n = effort ? EFFORTS.indexOf(effort as (typeof EFFORTS)[number]) + 1 : 0;

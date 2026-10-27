@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Podium Codex sidecar. Copy to ~/Library/LaunchAgents/, replace /ABSOLUTE/PATH/TO/podium with your checkout, then follow docs/CODEX.md. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.podium.codex</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/node/bin/node</string>
+    <string>/ABSOLUTE/PATH/TO/podium/server/dist/codex/sidecar.js</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PODIUM_CODEX</key>
+    <string>1</string>
+    <key>PATH</key>
+    <string>/Applications/cmux.app/Contents/Resources/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/podium-codex.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/podium-codex.log</string>
+</dict>
+</plist>

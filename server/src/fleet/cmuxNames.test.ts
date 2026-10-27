@@ -60,6 +60,14 @@ describe('the resolver', () => {
     expect(names.titleFor('unknown')).toBeNull();
   });
 
+  it('gives the title of a workspace by its id, for a session found some other way', async () => {
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'Manual PR Reviewer' })], [file]);
+    expect(names.titleOfWorkspace(WS_A)).toBeNull();
+    await names.refresh();
+    expect(names.titleOfWorkspace(WS_A)).toBe('Manual PR Reviewer');
+    expect(names.titleOfWorkspace('nope')).toBeNull();
+  });
+
   it('picks up a rename on the next refresh, and a session that moved tabs when the hook file changes', async () => {
     fs.writeFileSync(file, hooks({ sess1: WS_A }));
     let title = 'Orchestrator';
