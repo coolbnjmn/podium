@@ -30,9 +30,9 @@ export function defaultHookFiles(home: string): string[] {
   return [path.join(home, '.cmuxterm', 'claude-hook-sessions.json'), path.join(home, '.cmuxterm', 'codex-hook-sessions.json')];
 }
 
-function execText(bin: string, args: string[]): Promise<string> {
+function execText(bin: string, args: string[], timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout: LIST_TIMEOUT_MS, maxBuffer: LIST_MAX_BYTES, encoding: 'utf8', windowsHide: true }, (err, stdout) => {
+    execFile(bin, args, { timeout: timeoutMs, maxBuffer: LIST_MAX_BYTES, encoding: 'utf8', windowsHide: true }, (err, stdout) => {
       if (err) reject(err);
       else resolve(stdout);
     });
@@ -50,11 +50,11 @@ export function parseWindowIds(text: string): string[] {
  * Runs `cmux workspace list --json` in every window (it lists one window at a time). A cmux that cannot list its windows is
  * asked once, for the window it answers for by default.
  */
-export function execList(bin: string): ListRunner {
+export function execList(bin: string, timeoutMs: number = LIST_TIMEOUT_MS): ListRunner {
   return async () => {
-    const ids = await execText(bin, ['list-windows', '--json']).then(parseWindowIds, () => [] as string[]);
-    if (ids.length === 0) return [await execText(bin, ['workspace', 'list', '--json'])];
-    return Promise.all(ids.slice(0, MAX_WINDOWS).map((id) => execText(bin, ['workspace', 'list', '--json', '--window', id])));
+    const ids = await execText(bin, ['list-windows', '--json'], timeoutMs).then(parseWindowIds, () => [] as string[]);
+    if (ids.length === 0) return [await execText(bin, ['workspace', 'list', '--json'], timeoutMs)];
+    return Promise.all(ids.slice(0, MAX_WINDOWS).map((id) => execText(bin, ['workspace', 'list', '--json', '--window', id], timeoutMs)));
   };
 }
 

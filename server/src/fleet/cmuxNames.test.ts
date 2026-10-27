@@ -193,7 +193,7 @@ describe('windows', () => {
     const script = path.join(dir, 'old-cmux');
     fs.writeFileSync(script, `#!/bin/sh\nif [ "$1 $2 $3" = "workspace list --json" ] && [ -z "$4" ]; then echo '${list({ id: WS_A, custom_title: 'Only window' })}'; else exit 2; fi\n`, { mode: 0o755 });
     fs.writeFileSync(file, hooks({ sess1: WS_A }));
-    const names = new CmuxNames(logger, execList(script), [file]);
+    const names = new CmuxNames(logger, execList(script, 30_000), [file]);
     await names.refresh();
     expect(names.titleFor('sess1')).toBe('Only window');
   });
@@ -222,13 +222,13 @@ describe('the switch', () => {
       { mode: 0o755 },
     );
     fs.writeFileSync(file, hooks({ sess1: WS_A }));
-    const ok = new CmuxNames(logger, execList(script), [file]);
+    const ok = new CmuxNames(logger, execList(script, 30_000), [file]);
     await ok.refresh();
     expect(ok.titleFor('sess1')).toBe('Fake tab');
     fs.writeFileSync(file, hooks({ sess1: WS_A, other: WS_B }));
     await ok.refresh();
     expect(ok.titleFor('other')).toBe('Second window');
-    const gone = new CmuxNames(logger, execList(path.join(dir, 'nope')), [file]);
+    const gone = new CmuxNames(logger, execList(path.join(dir, 'nope'), 30_000), [file]);
     await gone.refresh();
     expect(gone.titleFor('sess1')).toBeNull();
     expect(warnings.at(-1)!.event).toBe('cmux_names.refresh_failed');
