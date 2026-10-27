@@ -906,6 +906,8 @@ export interface SessionView {
   name: string;
   /** `mod`: the reporter mod (full detail); `hooks`: classic settings hooks only (no usage, cost, plan). */
   reporter: 'mod' | 'hooks';
+  /** `codex` for a card the Codex sidecar reports (its id starts with `codex:`), `claude` for every Claude Code session. */
+  agent: 'claude' | 'codex';
   /** The mod's version as it reported it; null for a hooks-only session, which has no mod. */
   reporterVersion: string | null;
   /** The commit hash of a dev build of the mod (#400); null for a release, a hooks-only session and a mod that does not send one. */

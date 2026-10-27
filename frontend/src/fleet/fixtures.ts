@@ -60,6 +60,7 @@ export function makeSession(over: Partial<SessionView> = {}): SessionView {
     id: "s1",
     name: "api-refactor",
     reporter: "mod",
+    agent: "claude",
     reporterVersion: "0.4.0",
     reporterBuild: null,
     compat: "ok",

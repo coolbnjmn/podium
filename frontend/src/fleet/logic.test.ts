@@ -32,6 +32,12 @@ describe("filterSessions", () => {
     expect(ids("stale")).toEqual(["c"]);
     expect(ids("blow")).toEqual(["b", "c", "e"]);
   });
+  it("lists Codex sessions on their own tab and leaves them with everything else on the others", () => {
+    const list = [makeSession({ id: "c1", agent: "codex", status: "running" }), makeSession({ id: "k1", status: "running" })];
+    expect(filterSessions(list, { status: "codex", q: "" }).map((s) => s.id)).toEqual(["c1"]);
+    expect(filterSessions(list, { status: "running", q: "" }).map((s) => s.id)).toEqual(["c1", "k1"]);
+    expect(filterSessions(list, { status: "all", q: "" })).toHaveLength(2);
+  });
   it("matches name, project and branch case-insensitively", () => {
     const list = [
       makeSession({ id: "n", name: "Payments" }),

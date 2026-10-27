@@ -244,6 +244,7 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
     id: row.id,
     name: input.displayName || row.name,
     reporter: row.reporter_version === 'hooks' ? 'hooks' : 'mod',
+    agent: row.id.startsWith('codex:') ? 'codex' : 'claude',
     reporterVersion: row.reporter_version === 'hooks' ? null : row.reporter_version,
     reporterBuild: row.reporter_version === 'hooks' ? null : row.reporter_build ?? null,
     compat: row.reporter_version === 'hooks' ? 'unknown' : checkReporter(row.reporter_version),

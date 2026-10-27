@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { planProgress, sessionCounts } from "../logic";
 import type { SessionView } from "../types";
-import { backgroundOf, BlowBadge, ModelChip, PlanBar, sessionDot, stateKind } from "./Chips";
+import { AgentChip, backgroundOf, BlowBadge, ModelChip, PlanBar, sessionDot, stateKind } from "./Chips";
 import { backgroundStatus } from "../waiting";
 import { COPYRIGHT, LICENSE_URL, NOTICES_URL } from "../types";
 import { Monogram, YouTag } from "./People";
@@ -117,6 +117,7 @@ export function Rail(props: {
             )}
             <BlowBadge n={s.blowouts.total} level={s.blowouts.level} />
             <ModelChip family={s.modelFamily} model={s.model} />
+            <AgentChip agent={s.agent} />
           </div>
           <div className="l2">
             {p ? (
