@@ -270,7 +270,7 @@ function sampleUsage(usage: string | null, previous: string | null | undefined, 
  * was detached when the server was updated is not taken for a headless run.
  */
 export function attachedEver(attached: boolean | null | undefined, prev: { attached: number | null; attached_ever?: number | null } | undefined): number | null {
-  if (attached === true || prev?.attached_ever === 1) return 1;
+  if (attached === true || prev?.attached_ever === 1 || prev?.attached === 1) return 1;
   if (attached === false) return prev && prev.attached_ever == null && prev.attached === 0 ? null : 0;
   return prev?.attached_ever ?? null;
 }

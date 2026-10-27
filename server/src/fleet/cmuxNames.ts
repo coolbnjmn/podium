@@ -15,8 +15,10 @@ const LIST_MAX_BYTES = 1024 * 1024;
 const HOOK_FILE_MAX_BYTES = 4 * 1024 * 1024;
 const TITLE_MAX = 80;
 
-/** What `cmux workspace list --json` printed; rejects when cmux is missing, slow, or fails. */
-export type ListRunner = () => Promise<string>;
+/** What `cmux workspace list --json` printed for each window; rejects when cmux is missing, slow, or fails. */
+export type ListRunner = () => Promise<string[]>;
+/** The most windows read in one refresh. */
+const MAX_WINDOWS = 8;
 
 export function cmuxNamesOn(env: NodeJS.ProcessEnv): boolean {
   const v = (env.PODIUM_CMUX_NAMES ?? '').toLowerCase();
@@ -28,14 +30,32 @@ export function defaultHookFiles(home: string): string[] {
   return [path.join(home, '.cmuxterm', 'claude-hook-sessions.json'), path.join(home, '.cmuxterm', 'codex-hook-sessions.json')];
 }
 
-export function execList(bin: string): ListRunner {
-  return () =>
-    new Promise((resolve, reject) => {
-      execFile(bin, ['workspace', 'list', '--json'], { timeout: LIST_TIMEOUT_MS, maxBuffer: LIST_MAX_BYTES, encoding: 'utf8', windowsHide: true }, (err, stdout) => {
-        if (err) reject(err);
-        else resolve(stdout);
-      });
+function execText(bin: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { timeout: LIST_TIMEOUT_MS, maxBuffer: LIST_MAX_BYTES, encoding: 'utf8', windowsHide: true }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
     });
+  });
+}
+
+/** The ids of the windows `cmux list-windows --json` printed. Throws on JSON that is not a list. */
+export function parseWindowIds(text: string): string[] {
+  const doc = JSON.parse(text) as unknown;
+  if (!Array.isArray(doc)) throw new Error('no_windows_array');
+  return doc.map((w) => (w as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string' && id !== '');
+}
+
+/**
+ * Runs `cmux workspace list --json` in every window (it lists one window at a time). A cmux that cannot list its windows is
+ * asked once, for the window it answers for by default.
+ */
+export function execList(bin: string): ListRunner {
+  return async () => {
+    const ids = await execText(bin, ['list-windows', '--json']).then(parseWindowIds, () => [] as string[]);
+    if (ids.length === 0) return [await execText(bin, ['workspace', 'list', '--json'])];
+    return Promise.all(ids.slice(0, MAX_WINDOWS).map((id) => execText(bin, ['workspace', 'list', '--json', '--window', id])));
+  };
 }
 
 /** A title fit to show: control characters out, trimmed, cut at TITLE_MAX. Null when nothing is left. */
@@ -128,7 +148,9 @@ export class CmuxNames implements NameSource {
 
   private async refreshTitles(): Promise<void> {
     try {
-      this.titles = parseWorkspaceTitles(await this.runList());
+      const merged = new Map<string, string>();
+      for (const text of await this.runList()) for (const [id, title] of parseWorkspaceTitles(text)) merged.set(id, title);
+      this.titles = merged;
       this.lastFailure.delete('cmux');
     } catch (err) {
       this.failed('cmux', (err as Error).message);

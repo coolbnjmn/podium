@@ -107,6 +107,27 @@ describe('openDb', () => {
     db.close();
   });
 
+  it('migration 24 marks a session that was attached and leaves one that was not unknown', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'podium-db-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'fleet.db');
+    const first = openDb(file);
+    const f = new FleetDb(first);
+    f.upsertSession(session({ id: 'open', attached: 1 }));
+    f.upsertSession(session({ id: 'closed', attached: 0 }));
+    f.upsertSession(session({ id: 'unknown' }));
+    first.exec('ALTER TABLE sessions DROP COLUMN attached_ever');
+    first.exec('DELETE FROM schema_migrations WHERE version = 24');
+    first.close();
+    const db = openDb(file);
+    expect(db.prepare('SELECT id, attached_ever FROM sessions ORDER BY id').all()).toEqual([
+      { id: 'closed', attached_ever: null },
+      { id: 'open', attached_ever: 1 },
+      { id: 'unknown', attached_ever: null },
+    ]);
+    db.close();
+  });
+
   it('drops the unread people.token_last4 column and keeps the people it had (issue #277)', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'podium-db-'));
     tmpDirs.push(dir);

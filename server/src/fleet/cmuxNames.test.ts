@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { cleanTitle, CmuxNames, cmuxNamesFromEnv, cmuxNamesOn, defaultHookFiles, parseHookSessions, parseWorkspaceTitles } from './cmuxNames.js';
+import { cleanTitle, CmuxNames, cmuxNamesFromEnv, cmuxNamesOn, defaultHookFiles, execList, parseHookSessions, parseWindowIds, parseWorkspaceTitles } from './cmuxNames.js';
 import { silentLogger, type Logger } from '../logging/logger.js';
 
 const WS_A = '191435E4-457D-43F6-A92B-FC731B8391EA';
@@ -52,7 +52,7 @@ describe('parsing', () => {
 describe('the resolver', () => {
   it('gives a session the title of the tab it runs in, and nothing for one cmux does not know', async () => {
     fs.writeFileSync(file, hooks({ sess1: WS_A, sess2: 'GONE' }));
-    const names = new CmuxNames(logger, async () => list({ id: WS_A, custom_title: 'Orchestrator' }), [file]);
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'Orchestrator' })], [file]);
     expect(names.titleFor('sess1')).toBeNull(); // nothing refreshed yet
     await names.refresh();
     expect(names.titleFor('sess1')).toBe('Orchestrator');
@@ -63,7 +63,7 @@ describe('the resolver', () => {
   it('picks up a rename on the next refresh, and a session that moved tabs when the hook file changes', async () => {
     fs.writeFileSync(file, hooks({ sess1: WS_A }));
     let title = 'Orchestrator';
-    const names = new CmuxNames(logger, async () => list({ id: WS_A, custom_title: title }, { id: WS_B, custom_title: 'Other' }), [file]);
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: title }, { id: WS_B, custom_title: 'Other' })], [file]);
     await names.refresh();
     title = 'Chief';
     await names.refresh();
@@ -74,11 +74,24 @@ describe('the resolver', () => {
     expect(names.titleFor('sess1')).toBe('Other');
   });
 
+  it('merges the tabs of every window, and one window that returns garbage keeps the last names', async () => {
+    fs.writeFileSync(file, hooks({ a: WS_A, b: WS_B }));
+    let second = list({ id: WS_B, custom_title: 'In window two' });
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'In window one' }), second], [file]);
+    await names.refresh();
+    expect(names.titleFor('a')).toBe('In window one');
+    expect(names.titleFor('b')).toBe('In window two');
+    second = 'not json';
+    await names.refresh();
+    expect(names.titleFor('b')).toBe('In window two');
+    expect(warnings.at(-1)!.event).toBe('cmux_names.refresh_failed');
+  });
+
   it('reads the Codex file too', async () => {
     const codex = path.join(dir, 'codex-hook-sessions.json');
     fs.writeFileSync(file, hooks({ c1: WS_A }));
     fs.writeFileSync(codex, hooks({ x1: WS_B }));
-    const names = new CmuxNames(logger, async () => list({ id: WS_A, custom_title: 'A' }, { id: WS_B, custom_title: 'Manual PR Reviewer' }), [file, codex]);
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'A' }, { id: WS_B, custom_title: 'Manual PR Reviewer' })], [file, codex]);
     await names.refresh();
     expect(names.titleFor('x1')).toBe('Manual PR Reviewer');
     expect(names.titleFor('c1')).toBe('A');
@@ -91,7 +104,7 @@ describe('the resolver', () => {
       logger,
       async () => {
         if (mode === 'missing') throw new Error('spawn ENOENT');
-        return mode === 'garbage' ? '{"workspaces":"x"}' : list({ id: WS_A, custom_title: 'Orchestrator' });
+        return [mode === 'garbage' ? '{"workspaces":"x"}' : list({ id: WS_A, custom_title: 'Orchestrator' })];
       },
       [file],
     );
@@ -113,7 +126,7 @@ describe('the resolver', () => {
   });
 
   it('treats a missing hook file as normal and a garbled or oversized one as a logged failure that keeps the old map', async () => {
-    const names = new CmuxNames(logger, async () => list({ id: WS_A, custom_title: 'Orchestrator' }), [file]);
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'Orchestrator' })], [file]);
     await names.refresh();
     expect(warnings).toHaveLength(0);
     expect(names.titleFor('sess1')).toBeNull();
@@ -135,7 +148,7 @@ describe('the resolver', () => {
 
   it('forgets the sessions of a hook file that is deleted', async () => {
     fs.writeFileSync(file, hooks({ sess1: WS_A }));
-    const names = new CmuxNames(logger, async () => list({ id: WS_A, custom_title: 'Orchestrator' }), [file]);
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'Orchestrator' })], [file]);
     await names.refresh();
     fs.rmSync(file);
     await names.refresh();
@@ -146,7 +159,7 @@ describe('the resolver', () => {
     fs.writeFileSync(file, hooks({}));
     let calls = 0;
     let release: () => void = () => undefined;
-    const names = new CmuxNames(logger, () => new Promise<string>((resolve) => { calls++; release = () => resolve(list()); }), [file]);
+    const names = new CmuxNames(logger, () => new Promise<string[]>((resolve) => { calls++; release = () => resolve([list()]); }), [file]);
     const first = names.refresh();
     await names.refresh();
     expect(calls).toBe(1);
@@ -161,12 +174,28 @@ describe('the resolver', () => {
   it('start refreshes at once and stop ends the timer', async () => {
     fs.writeFileSync(file, hooks({ sess1: WS_A }));
     let calls = 0;
-    const names = new CmuxNames(logger, async () => (calls++, list({ id: WS_A, custom_title: 'T' })), [file]);
+    const names = new CmuxNames(logger, async () => (calls++, [list({ id: WS_A, custom_title: 'T' })]), [file]);
     const stop = names.start(10_000_000);
     await new Promise((r) => setTimeout(r, 20));
     expect(calls).toBe(1);
     expect(names.titleFor('sess1')).toBe('T');
     stop();
+  });
+});
+
+describe('windows', () => {
+  it('lists the window ids and rejects anything that is not a list', () => {
+    expect(parseWindowIds('[{"id":"W1"},{"id":""},{"nope":1},null,{"id":"W2"}]')).toEqual(['W1', 'W2']);
+    expect(() => parseWindowIds('{"id":"W1"}')).toThrow('no_windows_array');
+  });
+
+  it('a cmux that cannot list windows is asked once for its default window', async () => {
+    const script = path.join(dir, 'old-cmux');
+    fs.writeFileSync(script, `#!/bin/sh\nif [ "$1 $2 $3" = "workspace list --json" ] && [ -z "$4" ]; then echo '${list({ id: WS_A, custom_title: 'Only window' })}'; else exit 2; fi\n`, { mode: 0o755 });
+    fs.writeFileSync(file, hooks({ sess1: WS_A }));
+    const names = new CmuxNames(logger, execList(script), [file]);
+    await names.refresh();
+    expect(names.titleFor('sess1')).toBe('Only window');
   });
 });
 
@@ -186,12 +215,20 @@ describe('the switch', () => {
 
   it('runs the real cmux binary the owner names, and a missing one is a logged failure that changes nothing', async () => {
     const script = path.join(dir, 'fake-cmux');
-    fs.writeFileSync(script, `#!/bin/sh\nif [ "$1 $2 $3" = "workspace list --json" ]; then echo '${list({ id: WS_A, custom_title: 'Fake tab' })}'; else exit 3; fi\n`, { mode: 0o755 });
+    // two windows: `workspace list --window W2` answers with the second tab; the first window is the default answer
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh\nif [ "$1" = "list-windows" ]; then echo '[{"id":"W1"},{"id":"W2"}]'; elif [ "$1 $2 $3 $4 $5" = "workspace list --json --window W2" ]; then echo '${list({ id: WS_B, custom_title: 'Second window' })}'; elif [ "$1 $2 $3 $4 $5" = "workspace list --json --window W1" ]; then echo '${list({ id: WS_A, custom_title: 'Fake tab' })}'; else exit 3; fi\n`,
+      { mode: 0o755 },
+    );
     fs.writeFileSync(file, hooks({ sess1: WS_A }));
-    const ok = new CmuxNames(logger, (await import('./cmuxNames.js')).execList(script), [file]);
+    const ok = new CmuxNames(logger, execList(script), [file]);
     await ok.refresh();
     expect(ok.titleFor('sess1')).toBe('Fake tab');
-    const gone = new CmuxNames(logger, (await import('./cmuxNames.js')).execList(path.join(dir, 'nope')), [file]);
+    fs.writeFileSync(file, hooks({ sess1: WS_A, other: WS_B }));
+    await ok.refresh();
+    expect(ok.titleFor('other')).toBe('Second window');
+    const gone = new CmuxNames(logger, execList(path.join(dir, 'nope')), [file]);
     await gone.refresh();
     expect(gone.titleFor('sess1')).toBeNull();
     expect(warnings.at(-1)!.event).toBe('cmux_names.refresh_failed');

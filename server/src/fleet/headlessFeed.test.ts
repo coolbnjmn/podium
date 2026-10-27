@@ -100,6 +100,27 @@ describe('headless runs and the activity feed', () => {
     expect(isHeadless(db.getSession('long-lived')!)).toBe(false);
   });
 
+  it('a feed read finds the interactive lines behind a page of headless ones', () => {
+    const fleet = new Fleet(db, CFG, () => clock);
+    fleet.ingest(report('terminal', true, 'work'));
+    for (let i = 0; i < 40; i++) {
+      const r = report(`scan-${i}`, false);
+      r.events = [{ id: `scan-${i}:start`, t: T0 + 1000 + i, kind: 'start', agentId: null, text: 'session.start', data: null }] as unknown as Report['events'];
+      fleet.ingest(r);
+    }
+    expect(fleet.events({ limit: 10 }).map((e) => e.sessionId)).toEqual(['terminal']);
+    expect(fleet.state().events.map((e) => e.sessionId)).toEqual(['terminal']);
+  });
+
+  it('a session attached when the history began to be kept is not taken for headless when it detaches', () => {
+    const fleet = new Fleet(db, CFG, () => clock);
+    fleet.ingest(report('open-window', true, 'work'));
+    db.db.prepare("UPDATE sessions SET attached_ever = NULL WHERE id = 'open-window'").run();
+    fleet.ingest(report('open-window', false, 'work'));
+    expect(db.getSession('open-window')!.attached_ever).toBe(1);
+    expect(feedIds(fleet, 'open-window').length).toBeGreaterThan(0);
+  });
+
   it('SHOW_HEADLESS_FEED=1 brings the lines back', () => {
     expect(configFromEnv({}, { home: '/h', dbPath: ':memory:' }).hideHeadlessFeed).toBe(true);
     expect(configFromEnv({ SHOW_HEADLESS_FEED: '1' }, { home: '/h', dbPath: ':memory:' }).hideHeadlessFeed).toBe(false);
@@ -126,6 +147,7 @@ describe('attachedEver', () => {
     [false, { attached: 1, attached_ever: 1 }, 1],
     [false, { attached: 0, attached_ever: 0 }, 0],
     [false, { attached: 0, attached_ever: null }, null],
+    [false, { attached: 1, attached_ever: null }, 1],
     [false, { attached: null, attached_ever: null }, 0],
     [null, undefined, null],
     [null, { attached: 0, attached_ever: 0 }, 0],

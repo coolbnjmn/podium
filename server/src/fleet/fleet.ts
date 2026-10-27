@@ -100,6 +100,9 @@ const SWEEP_IDS_LOGGED = 10;
 /** Reporters remembered for `reporter.connected`; the oldest is forgotten past this. */
 const MAX_REPORTERS = 1000;
 
+/** The most pages of events one listing reads while it looks for lines that are not hidden. */
+const EVENT_PAGES = 20;
+
 /** How many events /state returns and the UI keeps. */
 export const STATE_EVENTS = 150;
 
@@ -503,14 +506,23 @@ export class Fleet {
   }
 
   events(opts: { sessionId?: string | null; before?: number | null; limit: number }): ActivityView[] {
-    const rows = this.db.listEvents(opts);
     const sessions = new Map<string, SessionRow | undefined>();
-    return rows
-      .filter((e) => {
+    const out: ActivityView[] = [];
+    // Lines of hidden sessions are dropped after the read, so a page of them would leave the feed short: read on, at most
+    // EVENT_PAGES pages, until `limit` lines are kept or the events run out.
+    let before = opts.before ?? null;
+    for (let page = 0; page < EVENT_PAGES && out.length < opts.limit; page++) {
+      const rows = this.db.listEvents({ sessionId: opts.sessionId, before, limit: opts.limit });
+      for (const e of rows) {
+        if (out.length >= opts.limit) break;
         if (!sessions.has(e.session_id)) sessions.set(e.session_id, this.db.getSession(e.session_id));
-        return !this.feedHidden(sessions.get(e.session_id));
-      })
-      .map((e) => activityView(e, this.feedSession(sessions.get(e.session_id))));
+        const row = sessions.get(e.session_id);
+        if (!this.feedHidden(row)) out.push(activityView(e, this.feedSession(row)));
+      }
+      if (rows.length < opts.limit) break;
+      before = rows[rows.length - 1]!.t;
+    }
+    return out;
   }
 
   /** Sessions that ended or were dropped in [from, to), as summary rows, newest first. */

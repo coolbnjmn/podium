@@ -311,8 +311,8 @@ CREATE INDEX IF NOT EXISTS person_certificates_person ON person_certificates(per
   {
     version: 24,
     // Whether any report ever said a client was attached: 1 yes, 0 no (a headless `claude -p` or `codex exec` run), NULL unknown
-    // (a session stored before this column, or one whose reporter does not send `attached`).
-    sql: 'ALTER TABLE sessions ADD COLUMN attached_ever INTEGER;',
+    // (a session stored before this column that was not attached then, or one whose reporter does not send `attached`).
+    sql: 'ALTER TABLE sessions ADD COLUMN attached_ever INTEGER; UPDATE sessions SET attached_ever = 1 WHERE attached = 1;',
   },
 ];
 
