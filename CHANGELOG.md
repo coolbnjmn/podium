@@ -14,6 +14,14 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+### Added
+
+- **Cards named after their cmux tab (opt-in).** With `PODIUM_CMUX_NAMES=1` the server names each card after the cmux tab its session runs in, so the wall reads Orchestrator, Sandbox Coordinator and Podium instead of a row of "Code". One `cmux workspace list --json` every 15 seconds serves the whole fleet; the hook files cmux keeps under `~/.cmuxterm` say which session is in which tab, for Claude Code and for Codex. A rename shows within one interval, a session cmux does not know keeps its reporter's name, and a failure of cmux or a file keeps the last names and logs `cmux_names.refresh_failed` once. Server only: no reporter change, nothing leaves the machine.
+
+### Changed
+
+- **The activity feed leaves out headless runs.** A `claude -p` or `codex exec` run reports through the mod like any session, so every scan added a start and an end line and buried the real activity. The server now records whether any report ever said a client was attached (`sessions.attached_ever`, migration 24) and keeps the lines of a run nobody was ever attached to out of the feed, live and listed. The wall, the costs and sessions stored before this change are untouched. `SHOW_HEADLESS_FEED=1` brings the lines back.
+
 ## [1.4.0] - 2026-10-27
 
 ### Added

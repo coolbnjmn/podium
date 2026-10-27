@@ -4,7 +4,7 @@
 import { ROLLUP_KEEP_MS, SAME_USAGE } from './db.js';
 import { costFn, writeRollups } from './rollups.js';
 import type { CostOf, FleetDb, RetentionPolicy, SessionRow } from './db.js';
-import { activityView, computeKpis, family, isUnused, repriced, sessionStatus, sessionView, shortenHome, staleAfterFor, startOfDay, type DeriveConfig } from './derive.js';
+import { activityView, computeKpis, family, isHeadless, isUnused, repriced, sessionStatus, sessionView, shortenHome, staleAfterFor, startOfDay, type DeriveConfig } from './derive.js';
 import { serverBuild } from './build.js';
 import { REPORTER_SUPPORT, serverVersion } from './compat.js';
 import { ingestReport, type IngestResult } from './ingest.js';
@@ -30,6 +30,7 @@ import { ReporterStore } from './reporters.js';
 import { MAIN_LOOP } from './protocol.js';
 import { checkReporter } from './compat.js';
 import { silentLogger, type Logger } from '../logging/logger.js';
+import type { NameSource } from './cmuxNames.js';
 
 export interface FleetConfig {
   staleAfterMs: number;
@@ -39,6 +40,8 @@ export interface FleetConfig {
   lingerMs: number;
   /** How long a session nobody is attached to stays on the wall, dimmed, before it is set aside. */
   detachedHideAfterMs: number;
+  /** Keep the start and end lines of headless runs (`claude -p`, `codex exec`) out of the activity feed. On by default. */
+  hideHeadlessFeed: boolean;
   retention: RetentionPolicy;
   home: string;
   /** Minimum gap between two `session` messages for one session. */
@@ -52,6 +55,7 @@ export const DEFAULT_CONFIG: Omit<FleetConfig, 'home' | 'dbPath'> = {
   dropAfterMs: 60_000,
   lingerMs: 8_000,
   detachedHideAfterMs: 60_000,
+  hideHeadlessFeed: true,
   retention: { samplesMs: 24 * 3600_000, eventsMs: 30 * 24 * 3600_000, sessionsMs: 30 * 24 * 3600_000, adminLogMs: 90 * 24 * 3600_000, rollupMs: ROLLUP_KEEP_MS },
   throttleMs: 500,
 };
@@ -77,6 +81,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv, base: { home: string; dbPa
     dropAfterMs: envMs(env, 'DROP_AFTER_MS', d.dropAfterMs),
     lingerMs: envMs(env, 'LINGER_MS', d.lingerMs),
     detachedHideAfterMs: envMs(env, 'DETACHED_HIDE_AFTER_MS', d.detachedHideAfterMs),
+    // SHOW_HEADLESS_FEED=1 brings the headless runs' lines back.
+    hideHeadlessFeed: !['1', 'true'].includes((env.SHOW_HEADLESS_FEED ?? '').toLowerCase()),
     throttleMs: d.throttleMs,
     retention: {
       samplesMs: envMs(env, 'RETAIN_SAMPLES_MS', d.retention.samplesMs),
@@ -136,6 +142,8 @@ export class Fleet {
   readonly peers: PeerService;
   /** The daily check for a newer Podium release (#499); the wall's update notice reads its answer. */
   readonly updates: UpdateCheck;
+  /** Where a card's name comes from when something other than the reporter names it (the cmux tab title); null keeps the reporter's. Set once at start. */
+  names: NameSource | null = null;
   private readonly live = new Map<string, LiveEntry>();
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly startedAt: number;
@@ -271,6 +279,16 @@ export class Fleet {
     return n;
   }
 
+  /** Whether the activity feed leaves this session's lines out: one that has done nothing yet (see `isUnused`), or a headless run (see `isHeadless`). The wall is not affected by the second. */
+  private feedHidden(row: SessionRow | undefined): boolean {
+    return this.unused(row) || (this.cfg.hideHeadlessFeed && !!row && isHeadless(row));
+  }
+
+  /** The name and model a feed line shows for a session: the tab title when the session has one. */
+  private feedSession(row: SessionRow | undefined): { name: string; model: string | null } | undefined {
+    return row ? { name: this.names?.titleFor(row.id) || row.name, model: row.model } : undefined;
+  }
+
   /** A session that has done nothing yet is kept off the wall and out of every feed (see `isUnused`). */
   private unused(row: SessionRow | undefined): boolean {
     return !!row && isUnused(row, () => this.db.getAgents(row.id).length);
@@ -326,9 +344,9 @@ export class Fleet {
         end_reason: row?.end_reason ?? null,
       });
     }
-    if (!this.unused(row)) {
+    if (!this.feedHidden(row)) {
       for (const e of res.newEvents.slice().sort((a, b) => a.t - b.t)) {
-        this.hub.broadcast('activity', activityView(e, row));
+        this.hub.broadcast('activity', activityView(e, this.feedSession(row)));
       }
     }
     if (this.live.has(res.sessionId)) this.scheduleSession(res.sessionId);
@@ -430,6 +448,7 @@ export class Fleet {
         respond: this.respond.info(row.id),
         asks: this.respond.summaries(row.id),
         recording: this.recordings.view(row.id),
+        displayName: this.names?.titleFor(row.id) ?? null,
       },
       now,
       this.derive,
@@ -489,9 +508,9 @@ export class Fleet {
     return rows
       .filter((e) => {
         if (!sessions.has(e.session_id)) sessions.set(e.session_id, this.db.getSession(e.session_id));
-        return !this.unused(sessions.get(e.session_id));
+        return !this.feedHidden(sessions.get(e.session_id));
       })
-      .map((e) => activityView(e, sessions.get(e.session_id)));
+      .map((e) => activityView(e, this.feedSession(sessions.get(e.session_id))));
   }
 
   /** Sessions that ended or were dropped in [from, to), as summary rows, newest first. */
@@ -676,7 +695,7 @@ export class Fleet {
     const inserted = this.db.insertEvent(ev);
     // A session that never reached the wall gets no activity line on its way out. 'removed' is always sent:
     // a card shown while the session was running must still go when it ends with no usage.
-    if (inserted && !this.unused(row)) this.hub.broadcast('activity', activityView(ev, row));
+    if (inserted && !this.feedHidden(row)) this.hub.broadcast('activity', activityView(ev, this.feedSession(row)));
     this.hub.broadcast('removed', { sessionId: row.id, reason });
   }
 
