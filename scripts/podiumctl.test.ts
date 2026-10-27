@@ -513,6 +513,8 @@ describe("podiumctl CLI", () => {
 describe("podiumctl covers every server setting (#157)", () => {
   // Read by the server but not a user setting: podiumctl sets it itself in the container (PODIUM_BUILD comes from the image build, #400).
   const SET_BY_PODIUMCTL = ["PODIUM_HOST_HOME", "HOST", "PORT", "PODIUM_BUILD", "PODIUM_TLS_PUBLIC_PORT"];
+  // Read by the Codex sidecar (server/src/codex), a separate process with its own environment (docs/CODEX.md), not by the server.
+  const READ_BY_THE_CODEX_SIDECAR = ["PODIUM_CODEX", "PODIUM_URL", "PODIUM_USER", "PODIUM_CODEX_DIR"];
   const serverSrc = path.join(__dirname, "..", "server", "src");
   function sources(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -531,7 +533,7 @@ describe("podiumctl covers every server setting (#157)", () => {
   });
 
   it("lets `config set` take every one, or names why it does not", () => {
-    const settable = new Set<string>([...PASSTHROUGH, ...OWN_KEYS, ...SET_BY_PODIUMCTL]);
+    const settable = new Set<string>([...PASSTHROUGH, ...OWN_KEYS, ...SET_BY_PODIUMCTL, ...READ_BY_THE_CODEX_SIDECAR]);
     expect(readByServer.filter((k) => !settable.has(k))).toEqual([]);
   });
 });

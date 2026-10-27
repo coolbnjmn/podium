@@ -102,7 +102,6 @@ export function interactiveReport(run: RunInfo, now: number): Report {
   s.model = f.model;
   s.context = contextOf(f);
   s.tokens = { ...f.tokens };
-  s.resumeId = f.sessionId;
   return frame(now, s);
 }
 

@@ -349,8 +349,8 @@ export function FactsBar({ s, now, onAgent, blow }: { s: SessionView; now: numbe
       <MachineFact s={s} />
       <ReporterFact s={s} />
       <SessionCell id={s.id} />
-      <CopyCell label="Resume" name="Copy resume command" text={s.resumeCommand} tip={RESUME_TIP} />
-      <CopyCell label="Fork" name="Copy fork command" text={s.forkCommand} tip={FORK_TIP} />
+      {s.resumeCommand && <CopyCell label="Resume" name="Copy resume command" text={s.resumeCommand} tip={RESUME_TIP} />}
+      {s.forkCommand && <CopyCell label="Fork" name="Copy fork command" text={s.forkCommand} tip={FORK_TIP} />}
       <RecordingFact s={s} now={now} />
     </div>
   );

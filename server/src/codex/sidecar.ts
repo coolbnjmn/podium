@@ -66,7 +66,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv, home: string = os.homedir(
   };
 }
 
-/** Finds the cmux tab a Codex session runs in from its process, for a session cmux's hook file does not list. */
+/** Finds the id of the cmux workspace a Codex session runs in from its process, for a session cmux's hook file does not list. */
 export type ProcessTabLookup = (startedAt: number) => Promise<string | null>;
 
 function execText(bin: string, args: string[]): Promise<string> {
@@ -99,13 +99,12 @@ export function workspaceIdIn(text: string): string | null {
   return /CMUX_WORKSPACE_ID=([0-9A-Fa-f-]{36})/.exec(text)?.[1] ?? null;
 }
 
-export function processTabLookup(names: CmuxNames, toleranceMs = 30_000): ProcessTabLookup {
+export function processTabLookup(toleranceMs = 30_000): ProcessTabLookup {
   return async (startedAt) => {
     const procs = parsePs(await execText('ps', ['-axo', 'pid=,lstart=,command=']));
     const hit = procs.find((p) => Math.abs(p.startedAt - startedAt) <= toleranceMs);
     if (!hit) return null;
-    const ws = workspaceIdIn(await execText('ps', ['eww', '-p', hit.pid]));
-    return ws ? names.titleOfWorkspace(ws) : null;
+    return workspaceIdIn(await execText('ps', ['eww', '-p', hit.pid]));
   };
 }
 
@@ -119,7 +118,7 @@ export interface SidecarDeps {
   logger: Logger;
   fetch: typeof fetch;
   /** cmux tab titles for session ids. */
-  names: { titleFor(sessionId: string): string | null; refresh?: () => Promise<void> };
+  names: { titleFor(sessionId: string): string | null; titleOfWorkspace?(workspaceId: string): string | null; refresh?: () => Promise<void> };
   now: () => number;
   /** Optional: where an interactive session cmux's hook file does not list runs. */
   processTab?: ProcessTabLookup;
@@ -142,7 +141,8 @@ export class Sidecar {
   private refused = false;
   private readonly threadNames = new Map<string, string>();
   private indexStat: { mtimeMs: number; size: number } | null = null;
-  private readonly tabBySession = new Map<string, { tab: string | null; tries: number; at: number }>();
+  /** The workspace a session was found in from its process; its title is read again every pass, so a renamed tab shows the new name. */
+  private readonly tabBySession = new Map<string, { workspaceId: string | null; tries: number; at: number }>();
 
   constructor(private readonly deps: SidecarDeps) {}
 
@@ -192,7 +192,7 @@ export class Sidecar {
       const d = new Date(now - i * 86_400_000);
       dirs.push(path.join(this.deps.config.sessionsDir, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')));
     }
-    const seen = new Set<string>();
+    const candidates = new Map<string, number>();
     for (const dir of dirs) {
       let names: string[];
       try {
@@ -205,20 +205,30 @@ export class Sidecar {
         const file = path.join(dir, name);
         try {
           const st = fs.statSync(file);
-          if (now - st.mtimeMs > ACTIVE_WINDOW_MS) continue;
-          seen.add(file);
-          const have = this.tracked.get(file);
-          if (have) have.mtimeMs = st.mtimeMs;
-          else if (this.tracked.size < MAX_FILES) this.tracked.set(file, { file: new RolloutFile(file), mtimeMs: st.mtimeMs });
+          if (now - st.mtimeMs <= ACTIVE_WINDOW_MS) candidates.set(file, st.mtimeMs);
         } catch {
           // A file that vanished between the listing and the stat is just not there.
         }
       }
     }
-    // A file still being followed keeps being read even if its date folder has aged out of the list; one gone or idle for the window is dropped.
-    for (const [file, t] of this.tracked) {
-      if (seen.has(file)) continue;
-      if (now - t.mtimeMs > ACTIVE_WINDOW_MS || !fs.existsSync(file)) this.tracked.delete(file);
+    // A file already followed stays a candidate even when its date folder has aged out of the list, with its time read again.
+    for (const file of this.tracked.keys()) {
+      if (candidates.has(file)) continue;
+      try {
+        const st = fs.statSync(file);
+        if (now - st.mtimeMs <= ACTIVE_WINDOW_MS) candidates.set(file, st.mtimeMs);
+      } catch {
+        // Gone: not followed any more.
+      }
+    }
+    // The newest MAX_FILES win, so yesterday's finished runs never keep today's sessions out.
+    const keep = [...candidates].sort((a, b) => b[1] - a[1]).slice(0, MAX_FILES);
+    const keepSet = new Set(keep.map(([f]) => f));
+    for (const file of this.tracked.keys()) if (!keepSet.has(file)) this.tracked.delete(file);
+    for (const [file, mtimeMs] of keep) {
+      const have = this.tracked.get(file);
+      if (have) have.mtimeMs = mtimeMs;
+      else this.tracked.set(file, { file: new RolloutFile(file), mtimeMs });
     }
   }
 
@@ -255,18 +265,12 @@ export class Sidecar {
     const order = [...this.tracked.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
     for (const t of order) {
       if (budget <= 0) break;
-      let size = 0;
-      try {
-        size = fs.statSync(t.file.path).size;
-      } catch {
-        this.tracked.delete(t.file.path);
-        continue;
-      }
       if (!t.file.read()) {
         this.tracked.delete(t.file.path);
         continue;
       }
-      budget -= Math.min(size, 512 * 1024);
+      // Only bytes really read count, so files with nothing new never use up the budget of those that have.
+      budget -= t.file.bytesRead;
     }
   }
 
@@ -287,15 +291,16 @@ export class Sidecar {
     const lookup = this.deps.processTab;
     if (!lookup || startedAt === null) return null;
     const have = this.tabBySession.get(id);
-    if (have && (have.tab || have.tries >= PROCESS_TRIES || now - have.at < PROCESS_RETRY_MS)) return have.tab;
-    let tab: string | null = null;
+    if (have?.workspaceId) return this.deps.names.titleOfWorkspace?.(have.workspaceId) ?? null;
+    if (have && (have.tries >= PROCESS_TRIES || now - have.at < PROCESS_RETRY_MS)) return null;
+    let workspaceId: string | null = null;
     try {
-      tab = await lookup(startedAt);
+      workspaceId = await lookup(startedAt);
     } catch (err) {
       this.deps.logger.warn('codex_sidecar.process_lookup_failed', 'codex sidecar: tab not found from the process', { reason: String((err as Error).message).slice(0, 120) });
     }
-    this.tabBySession.set(id, { tab, tries: (have?.tries ?? 0) + 1, at: now });
-    return tab;
+    this.tabBySession.set(id, { workspaceId, tries: (have?.tries ?? 0) + 1, at: now });
+    return workspaceId ? (this.deps.names.titleOfWorkspace?.(workspaceId) ?? null) : null;
   }
 
   /** Posts one report. True when the server took it; a refused token or an unreachable server pauses all posting for a minute. */
@@ -335,7 +340,7 @@ export function makeSidecar(env: NodeJS.ProcessEnv = process.env, home: string =
   if (!config.enabled) return null;
   const logger = createLogger({ format: 'json', service: 'podium-codex', secrets: config.token ? [config.token] : [] });
   const names = new CmuxNames(logger, execList(env.PODIUM_CMUX_BIN || CMUX_BIN), defaultHookFiles(home));
-  return new Sidecar({ config, logger, fetch, names, now: Date.now, processTab: processTabLookup(names) });
+  return new Sidecar({ config, logger, fetch, names, now: Date.now, processTab: processTabLookup() });
 }
 
 const invoked = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;

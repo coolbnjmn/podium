@@ -150,11 +150,14 @@ export class RolloutFile {
   private seeded = false;
   /** The rest of a line longer than a read is being thrown away. */
   private discarding = false;
+  /** Bytes the last `read()` took from the file; zero when nothing was appended. */
+  bytesRead = 0;
 
   constructor(readonly path: string) {}
 
   /** Reads what was appended since the last pass. Returns true when the file was read, false when it could not be (gone, unreadable). */
   read(maxBytes: number = READ_CHUNK_BYTES): boolean {
+    this.bytesRead = 0;
     let fd: number;
     try {
       fd = fs.openSync(this.path, 'r');
@@ -193,6 +196,7 @@ export class RolloutFile {
   private alignToLine(fd: number, from: number, size: number): number {
     const buf = Buffer.alloc(Math.min(READ_CHUNK_BYTES, size - from));
     const n = fs.readSync(fd, buf, 0, buf.length, from);
+    this.bytesRead += n;
     const nl = buf.subarray(0, n).indexOf(10);
     return nl < 0 ? size : from + nl + 1;
   }
@@ -201,6 +205,7 @@ export class RolloutFile {
   private readRange(fd: number, from: number, to: number, headOnly: boolean): void {
     const buf = Buffer.alloc(to - from);
     const n = fs.readSync(fd, buf, 0, buf.length, from);
+    this.bytesRead += n;
     let start = 0;
     const text = buf.subarray(0, n);
     for (;;) {

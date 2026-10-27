@@ -25,7 +25,7 @@ interface Sent {
   raw: string;
 }
 
-function setup(over: { token?: string | null; status?: (r: Report) => number; throws?: boolean; titles?: Record<string, string>; processTab?: SidecarDeps['processTab']; userName?: string | null } = {}) {
+function setup(over: { token?: string | null; status?: (r: Report) => number; throws?: boolean; titles?: Record<string, string>; workspaces?: Record<string, string>; processTab?: SidecarDeps['processTab']; userName?: string | null } = {}) {
   const root = dir();
   const sessionsDir = path.join(root, 'sessions');
   const home = path.join(root, 'home');
@@ -41,7 +41,7 @@ function setup(over: { token?: string | null; status?: (r: Report) => number; th
     sent.push({ url, headers: init.headers, body, raw: init.body });
     return new Response('{}', { status: state.status ? state.status(body) : 200 });
   }) as unknown as typeof fetch;
-  const names = { titleFor: (id: string) => over.titles?.[id] ?? null };
+  const names = { titleFor: (id: string) => over.titles?.[id] ?? null, titleOfWorkspace: (id: string) => over.workspaces?.[id] ?? null };
   const sidecar = new Sidecar({ config, logger, fetch: fakeFetch, names, now: () => state.now, processTab: over.processTab });
   return { sidecar, sessionsDir, config, logs, sent, state, root };
 }
@@ -189,13 +189,26 @@ describe('Sidecar', () => {
   describe('finding the tab of a session cmux does not list', () => {
     it('asks the process lookup for an interactive session, uses the answer, and does not ask again', async () => {
       const calls: number[] = [];
-      const t = setup({ processTab: async (at) => (calls.push(at), '"Manual" PR Reviewer') });
+      const t = setup({ workspaces: { WS1: '"Manual" PR Reviewer' }, processTab: async (at) => (calls.push(at), 'WS1') });
       writeRollout(t.sessionsDir, 'i1', interactive('i1'));
       writeRollout(t.sessionsDir, 'e1', [meta('e1', '/p', 'exec')]);
       await t.sidecar.tick();
       await t.sidecar.tick();
       expect(t.sent.find((s) => s.body.session.id === 'codex:i1')!.body.session.name).toBe('"Manual" PR Reviewer');
       expect(calls).toEqual([T0]);
+    });
+
+    it('reads the tab title again every pass, so a renamed tab shows its new name without another process lookup', async () => {
+      const workspaces: Record<string, string> = { WS1: 'Old name' };
+      let lookups = 0;
+      const t = setup({ workspaces, processTab: async () => (lookups++, 'WS1') });
+      writeRollout(t.sessionsDir, 'i1', interactive('i1'));
+      await t.sidecar.tick();
+      expect(t.sent.at(-1)!.body.session.name).toBe('Old name');
+      workspaces.WS1 = 'New name';
+      await t.sidecar.tick();
+      expect(t.sent.at(-1)!.body.session.name).toBe('New name');
+      expect(lookups).toBe(1);
     });
 
     it('tries a few times a minute apart, then gives up, and a failing lookup is only a warning', async () => {
@@ -210,6 +223,58 @@ describe('Sidecar', () => {
       expect(t.logs.filter((l) => l.event === 'codex_sidecar.process_lookup_failed')).toHaveLength(3);
       expect(t.sent.at(-1)!.body.session.name).toBe('app');
     });
+  });
+
+  it('does not let files with nothing new use up the read budget of the ones that have', async () => {
+    const t = setup();
+    const filler = JSON.stringify({ type: 'response_item', payload: { type: 'reasoning', encrypted_content: 'x'.repeat(8000) } });
+    const big = (id: string) => [...interactive(id), ...Array.from({ length: 80 }, () => filler)]; // about 640 KiB: a whole read each
+    const files: string[] = [];
+    for (let i = 0; i < 20; i++) files.push(writeRollout(t.sessionsDir, `b${i}`, big(`b${i}`), T0 + i * 1000));
+    await t.sidecar.tick();
+    await t.sidecar.tick();
+    await t.sidecar.tick();
+    expect(new Set(t.sent.map((s) => s.body.session.id)).size).toBe(20);
+    // every file is read to its end by now, so a new line in the oldest one is picked up at once
+    fs.appendFileSync(files[0]!, started('t2', T0 + 50_000) + '\n');
+    t.state.now = T0 + 55_000;
+    await t.sidecar.tick();
+    expect(t.sent.at(-1)!.body.session.id).toBe('codex:b0');
+    expect(t.sent.at(-1)!.body.session.status).toBe('running');
+  });
+
+  it('keeps the newest files when there are more than it follows, so old runs never shut today\'s session out', async () => {
+    const t = setup();
+    for (let i = 0; i < MAX_FILES + 10; i++) writeRollout(t.sessionsDir, `old${i}`, [meta(`old${i}`, '/a', 'exec', T0 - 3_600_000)], T0 - 3_600_000);
+    writeRollout(t.sessionsDir, 'today', interactive('today'));
+    await t.sidecar.tick();
+    expect(t.sent.some((s) => s.body.session.id === 'codex:today')).toBe(true);
+  });
+
+  it('keeps following a session whose date folder has aged out of the listing, while it is written to', async () => {
+    const t = setup();
+    const file = writeRollout(t.sessionsDir, 'long', [meta('long', '/a', 'vscode'), started('t1', T0 + 1000)]);
+    await t.sidecar.tick();
+    t.state.now = T0 + 4 * 86_400_000;
+    fs.appendFileSync(file, started('t2', t.state.now - 1000) + '\n');
+    fs.utimesSync(file, t.state.now / 1000, t.state.now / 1000);
+    const r = await t.sidecar.tick();
+    expect(r.files).toBe(1);
+    expect(t.sent.at(-1)!.body.session).toMatchObject({ id: 'codex:long', status: 'running' });
+  });
+
+  it('gives a Codex card a codex resume command, and a folded card of runs none; never a claude one', async () => {
+    const t = setup();
+    writeRollout(t.sessionsDir, 'i1', interactive('i1', '/Users/dev/my app'));
+    writeRollout(t.sessionsDir, 'e1', [meta('e1', '/p', 'exec'), started('a', T0 + 1000), tokens(100, 0, 10, 100, T0 + 2000)]);
+    await t.sidecar.tick();
+    const fleet = new Fleet(new FleetDb(openDb(':memory:')), { ...DEFAULT_CONFIG, home: '/Users/dev', dbPath: ':memory:' }, () => T0 + 60_000);
+    for (const s of t.sent) fleet.ingest(s.body);
+    const byId = new Map(fleet.state().sessions.map((s) => [s.id, s]));
+    expect(byId.get('codex:i1')).toMatchObject({ resumeCommand: "cd '/Users/dev/my app' && codex resume i1", forkCommand: '' });
+    const folded = [...byId.values()].find((s) => s.id.startsWith('codex:runs:'))!;
+    expect(folded).toMatchObject({ resumeCommand: '', forkCommand: '' });
+    expect([...byId.values()].some((s) => s.resumeCommand.includes('claude'))).toBe(false);
   });
 
   it('never runs two passes at once', async () => {

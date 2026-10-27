@@ -70,6 +70,12 @@ export function resumeCommand(cwd: string, resumeId: string | null, id: string):
   return `cd ${shellQuote(cwd)} && claude --resume ${shellQuote(resumeId ?? id)}`;
 }
 
+/** What resumes a Codex session: `codex resume <id>`. A folded card of headless runs is no one session, so it has none. */
+export function codexResumeCommand(cwd: string, id: string): string {
+  const raw = id.slice('codex:'.length);
+  return raw.startsWith('runs:') ? '' : `cd ${shellQuote(cwd)} && codex resume ${shellQuote(raw)}`;
+}
+
 /** The resume command with `--fork-session`: a new session that starts from a copy of this conversation (#352). */
 export function forkCommand(cwd: string, resumeId: string | null, id: string): string {
   return `${resumeCommand(cwd, resumeId, id)} --fork-session`;
@@ -251,8 +257,8 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
     project: shortenHome(row.project_root ?? row.cwd, cfg.home),
     cwd: shortenHome(row.cwd, cfg.home),
     repoName: row.repo_name,
-    resumeCommand: resumeCommand(row.cwd, row.resume_id, row.id),
-    forkCommand: forkCommand(row.cwd, row.resume_id, row.id),
+    resumeCommand: row.id.startsWith('codex:') ? codexResumeCommand(row.cwd, row.id) : resumeCommand(row.cwd, row.resume_id, row.id),
+    forkCommand: row.id.startsWith('codex:') ? '' : forkCommand(row.cwd, row.resume_id, row.id),
     git: parse<GitInfo | null>(row.git_json, null),
     model: row.model,
     modelFamily: family(row.model),
