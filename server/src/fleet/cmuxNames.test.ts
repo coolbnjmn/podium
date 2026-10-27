@@ -60,6 +60,17 @@ describe('the resolver', () => {
     expect(names.titleFor('unknown')).toBeNull();
   });
 
+  it('gives the workspace id a session runs in, with or without a title, and nothing for an unknown session', async () => {
+    fs.writeFileSync(file, hooks({ sess1: WS_A, sess2: WS_B }));
+    const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'Gardener' })], [file]);
+    expect(names.workspaceFor('sess1')).toBeNull();
+    await names.refresh();
+    expect(names.workspaceFor('sess1')).toBe(WS_A.toUpperCase());
+    expect(names.workspaceFor('sess2')).toBe(WS_B.toUpperCase());
+    expect(names.titleFor('sess2')).toBeNull();
+    expect(names.workspaceFor('unknown')).toBeNull();
+  });
+
   it('gives the title of a workspace by its id, for a session found some other way', async () => {
     const names = new CmuxNames(logger, async () => [list({ id: WS_A, custom_title: 'Manual PR Reviewer' })], [file]);
     expect(names.titleOfWorkspace(WS_A)).toBeNull();
@@ -215,6 +226,8 @@ describe('the switch', () => {
     expect(cmuxNamesOn({ PODIUM_CMUX_NAMES: 'TRUE' })).toBe(true);
     expect(cmuxNamesFromEnv({}, logger, dir)).toBeNull();
     expect(cmuxNamesFromEnv({ PODIUM_CMUX_NAMES: '1' }, logger, dir)).toBeInstanceOf(CmuxNames);
+    // a feature that only needs the session-to-tab map (the context nudge) can ask for it with the renaming off
+    expect(cmuxNamesFromEnv({}, logger, dir, true)).toBeInstanceOf(CmuxNames);
   });
 
   it('reads the two cmux hook files under the home folder', () => {

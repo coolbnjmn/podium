@@ -107,6 +107,15 @@ describe('a crossing is seen once', () => {
     expect(w.observe('s', 310_000, false)).toEqual([]);
   });
 
+  it('a restart while a session hovers inside the re-arm band does not turn its next rise into a crossing', () => {
+    const w = watch();
+    expect(w.observe('s', 95_000, false)).toEqual([]);
+    expect(w.observe('s', 105_000, false)).toEqual([]);
+    const low = watch();
+    expect(low.observe('s', 85_000, false)).toEqual([]);
+    expect(low.observe('s', 105_000, false)).toEqual([{ level: 'soft', tokens: 105_000, limit: 100_000 }]);
+  });
+
   it('reports soft then hard as they are crossed, once each', () => {
     const w = watch();
     w.observe('s', 50_000, false);
@@ -181,6 +190,8 @@ describe('the view of a session', () => {
   });
 });
 
+const WS = 'B40FBFC1-146D-4CEC-B942-D79D292D9065';
+
 describe('the nudge', () => {
   const crossing: Crossing = { level: 'soft', tokens: 120_000, limit: 100_000 };
   let sent: { title: string; text: string }[];
@@ -200,38 +211,55 @@ describe('the nudge', () => {
   });
 
   it('messages the tab once with the soft text', async () => {
-    expect(await make().nudge('s', 'Gardener', 'gardener', crossing)).toBe('sent');
-    expect(sent).toEqual([{ title: 'Gardener', text: 'context over 100k: write HANDOFF.md at the next boundary' }]);
+    expect(await make().nudge('s', WS, 'Gardener', 'gardener', crossing)).toBe('sent');
+    expect(sent).toEqual([{ title: WS, text: 'context over 100k: write HANDOFF.md at the next boundary' }]);
   });
 
   it('the hard crossing says so', async () => {
-    await make().nudge('s', 'Gardener', 'gardener', { level: 'hard', tokens: 260_000, limit: 250_000 });
+    await make().nudge('s', WS, 'Gardener', 'gardener', { level: 'hard', tokens: 260_000, limit: 250_000 });
     expect(sent[0]!.text).toContain('over 250k');
   });
 
   it('a session with no tab is skipped, with the reason logged', async () => {
-    expect(await make().nudge('s', null, 'x', crossing)).toBe('skipped');
+    expect(await make().nudge('s', null, null, 'x', crossing)).toBe('skipped');
     expect(sent).toEqual([]);
     expect(logged.find((l) => l.event === 'context_nudge.skipped')!.fields).toMatchObject({ session_id: 's', reason: 'no_cmux_tab' });
   });
 
   it('the Orchestrator is never messaged', async () => {
-    expect(await make().nudge('s', 'Orchestrator', 'x', crossing)).toBe('skipped');
-    expect(await make().nudge('s', 'Other', 'Orchestrator', crossing)).toBe('skipped');
+    expect(await make().nudge('s', WS, 'Orchestrator', 'x', crossing)).toBe('skipped');
+    expect(await make().nudge('s', WS, 'Other', 'Orchestrator', crossing)).toBe('skipped');
     expect(sent).toEqual([]);
     expect(logged.filter((l) => l.event === 'context_nudge.skipped').every((l) => l.fields?.reason === 'orchestrator')).toBe(true);
   });
 
   it('a refusal by cmux is logged once and stops every nudge until the backoff ends', async () => {
     const n = make('ERROR: Access denied - only processes started inside cmux can connect');
-    expect(await n.nudge('a', 'A', 'a', crossing)).toBe('failed');
-    expect(await n.nudge('b', 'B', 'b', crossing)).toBe('skipped');
+    expect(await n.nudge('a', WS, 'A', 'a', crossing)).toBe('failed');
+    expect(await n.nudge('b', WS, 'B', 'b', crossing)).toBe('skipped');
     expect(warnings('context_nudge.failed')).toHaveLength(1);
     expect(warnings('context_nudge.failed')[0]!.fields?.reason).toContain('Access denied');
     expect(logged.find((l) => l.fields?.reason === 'cmux_backoff')).toBeTruthy();
     now += NUDGE_BACKOFF_MS + 1;
-    expect(await n.nudge('c', 'C', 'c', crossing)).toBe('failed');
+    expect(await n.nudge('c', WS, 'C', 'c', crossing)).toBe('failed');
     expect(warnings('context_nudge.failed')).toHaveLength(1);
+  });
+
+  it('many crossings at once start one cmux process, not one each, when cmux refuses', async () => {
+    let started = 0;
+    const n = new ContextNudge(
+      logger,
+      async () => {
+        started++;
+        await new Promise((r) => setTimeout(r, 5));
+        throw new Error('Access denied');
+      },
+      () => now,
+    );
+    const results = await Promise.all(Array.from({ length: 50 }, (_, i) => n.nudge(`s${i}`, WS, 'T', 'n', crossing)));
+    expect(started).toBe(1);
+    expect(results.filter((r) => r === 'failed')).toHaveLength(1);
+    expect(results.filter((r) => r === 'skipped')).toHaveLength(49);
   });
 
   it('a nudge that works after a failure clears the memory of it', async () => {
@@ -243,13 +271,13 @@ describe('the nudge', () => {
       },
       () => now,
     );
-    expect(await n.nudge('a', 'A', 'a', crossing)).toBe('failed');
+    expect(await n.nudge('a', WS, 'A', 'a', crossing)).toBe('failed');
     now += NUDGE_BACKOFF_MS + 1;
     fail = false;
-    expect(await n.nudge('a', 'A', 'a', crossing)).toBe('sent');
+    expect(await n.nudge('a', WS, 'A', 'a', crossing)).toBe('sent');
     fail = true;
     now += NUDGE_BACKOFF_MS + 1;
-    await n.nudge('a', 'A', 'a', crossing);
+    await n.nudge('a', WS, 'A', 'a', crossing);
     expect(warnings('context_nudge.failed')).toHaveLength(2);
   });
 });
@@ -329,7 +357,8 @@ describe('in the fleet', () => {
     const fleet = new Fleet(db, CFG, () => clock, logger);
     const sent: string[] = [];
     fleet.nudge = new ContextNudge(logger, async (t) => void sent.push(t));
-    fleet.names = { titleFor: () => 'Codex tab' };
+    fleet.names = { titleFor: () => 'Codex tab', workspaceFor: () => WS };
+    fleet.tabs = fleet.names;
     fleet.ingest(report('codex:1', 60_000));
     fleet.ingest(report('codex:1', 300_000));
     await Promise.resolve();
@@ -342,13 +371,15 @@ describe('in the fleet', () => {
     const sent: string[] = [];
     const on = new Fleet(db, CFG, () => clock, logger);
     on.nudge = new ContextNudge(logger, async (t, text) => void sent.push(`${t}: ${text}`));
-    on.names = { titleFor: () => 'Gardener' };
+    // The tab map is there for the nudge although the cards are not renamed (no `names`).
+    on.tabs = { titleFor: () => 'Gardener', workspaceFor: () => WS };
     on.ingest(report('a', 60_000));
     on.ingest(report('a', 130_000));
     await Promise.resolve();
-    expect(sent).toEqual(['Gardener: context over 100k: write HANDOFF.md at the next boundary']);
+    expect(sent).toEqual([`${WS}: context over 100k: write HANDOFF.md at the next boundary`]);
+    expect(on.state().sessions.find((s) => s.id === 'a')!.name).toBe('work');
     const off = new Fleet(new FleetDb(openDb(':memory:')), CFG, () => clock, logger);
-    off.names = { titleFor: () => 'Gardener' };
+    off.tabs = { titleFor: () => 'Gardener', workspaceFor: () => WS };
     off.ingest(report('b', 60_000));
     off.ingest(report('b', 130_000));
     expect(off.nudge).toBeNull();

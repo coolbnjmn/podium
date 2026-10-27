@@ -122,8 +122,12 @@ export class ContextWatch {
     if (first && created && tokens >= soft) t.resumedWith = tokens;
     const out: Crossing[] = [];
     for (const [level, limit] of [['soft', soft], ['hard', hard]] as const) {
-      if (tokens >= limit) {
-        if (!t.over[level] && !first) out.push({ level, tokens, limit });
+      if (first) {
+        // Not seen before (a new server, or a new session): a context already inside the re-arm band of a limit counts as over it,
+        // so a restart while a session hovers at 95k does not make its next 105k a fresh crossing.
+        t.over[level] = tokens >= limit * REARM_SHARE;
+      } else if (tokens >= limit) {
+        if (!t.over[level]) out.push({ level, tokens, limit });
         t.over[level] = true;
       } else if (tokens < limit * REARM_SHARE) {
         t.over[level] = false;
@@ -166,13 +170,13 @@ export function hygieneView(
   return { level, resetDue: level === 'hard' && o.idle && !o.backgroundPending && o.claude && !o.orchestrator, resumedWith: o.resumedWith };
 }
 
-/** Sends one line to a cmux tab by its title; rejects when cmux refuses or is missing. */
-export type SendRunner = (title: string, text: string) => Promise<void>;
+/** Sends one line to a cmux tab by its workspace id; rejects when cmux refuses or is missing. */
+export type SendRunner = (target: string, text: string) => Promise<void>;
 
 export function execSend(bin: string, timeoutMs: number = NUDGE_TIMEOUT_MS): SendRunner {
-  return (title, text) =>
+  return (target, text) =>
     new Promise((resolve, reject) => {
-      execFile(bin, ['agent', 'message', title, text], { timeout: timeoutMs, maxBuffer: 64 * 1024, encoding: 'utf8', windowsHide: true }, (err, _stdout, stderr) => {
+      execFile(bin, ['agent', 'message', target, text], { timeout: timeoutMs, maxBuffer: 64 * 1024, encoding: 'utf8', windowsHide: true }, (err, _stdout, stderr) => {
         if (err) reject(new Error(`${(stderr || err.message).trim().split('\n')[0] ?? 'failed'}`.slice(0, 200)));
         else resolve();
       });
@@ -189,6 +193,8 @@ const HARD_TEXT = (limit: number) => `context over ${Math.round(limit / 1000)}k:
 export class ContextNudge {
   private deniedUntil = 0;
   private lastFailure: string | null = null;
+  /** Nudges run one after another, so a refusal by the first is seen by the rest before they start a process. */
+  private chain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly logger: Logger,
@@ -196,13 +202,23 @@ export class ContextNudge {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Resolves when the attempt is over; never rejects. Skips are logged with the session and the reason. */
-  async nudge(sessionId: string, title: string | null, name: string, c: Crossing): Promise<'sent' | 'skipped' | 'failed'> {
-    if (!title) return this.skip(sessionId, 'no_cmux_tab');
+  /**
+   * Resolves when the attempt is over; never rejects. `target` is the session's cmux workspace id, which cannot be mistaken for
+   * another tab the way a title can after a rename; `title` and `name` only decide whether this is the Orchestrator.
+   * Skips are logged with the session and the reason.
+   */
+  nudge(sessionId: string, target: string | null, title: string | null, name: string, c: Crossing): Promise<'sent' | 'skipped' | 'failed'> {
+    const run = this.chain.then(() => this.attempt(sessionId, target, title, name, c));
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async attempt(sessionId: string, target: string | null, title: string | null, name: string, c: Crossing): Promise<'sent' | 'skipped' | 'failed'> {
+    if (!target) return this.skip(sessionId, 'no_cmux_tab');
     if (isOrchestrator(title, name)) return this.skip(sessionId, 'orchestrator');
     if (this.now() < this.deniedUntil) return this.skip(sessionId, 'cmux_backoff');
     try {
-      await this.send(title, c.level === 'soft' ? SOFT_TEXT(c.limit) : HARD_TEXT(c.limit));
+      await this.send(target, c.level === 'soft' ? SOFT_TEXT(c.limit) : HARD_TEXT(c.limit));
       this.lastFailure = null;
       this.logger.info('context_nudge.sent', `podium: nudged the tab of session ${sessionId} at ${c.tokens} tokens`, { session_id: sessionId, level: c.level, tokens: c.tokens });
       return 'sent';

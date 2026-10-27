@@ -105,6 +105,8 @@ interface HookCache {
 export interface NameSource {
   /** The cmux tab title of a session, or null when it is not known to cmux (or the feature has nothing yet). */
   titleFor(sessionId: string): string | null;
+  /** The cmux workspace id a session runs in (a stable target for a message), or null when unknown. */
+  workspaceFor?(sessionId: string): string | null;
 }
 
 export class CmuxNames implements NameSource {
@@ -123,6 +125,14 @@ export class CmuxNames implements NameSource {
     for (const cache of this.hooks.values()) {
       const ws = cache.sessions.get(sessionId);
       if (ws) return this.titles.get(ws) ?? null;
+    }
+    return null;
+  }
+
+  workspaceFor(sessionId: string): string | null {
+    for (const cache of this.hooks.values()) {
+      const ws = cache.sessions.get(sessionId);
+      if (ws) return ws;
     }
     return null;
   }
@@ -197,7 +207,8 @@ export class CmuxNames implements NameSource {
   }
 }
 
-export function cmuxNamesFromEnv(env: NodeJS.ProcessEnv, logger: Logger, home: string = os.homedir()): CmuxNames | null {
-  if (!cmuxNamesOn(env)) return null;
+/** `force` builds it for a feature that needs the session-to-tab map (the context nudge) even when the cards are not renamed. */
+export function cmuxNamesFromEnv(env: NodeJS.ProcessEnv, logger: Logger, home: string = os.homedir(), force = false): CmuxNames | null {
+  if (!force && !cmuxNamesOn(env)) return null;
   return new CmuxNames(logger, execList(env.PODIUM_CMUX_BIN || CMUX_BIN), defaultHookFiles(home));
 }

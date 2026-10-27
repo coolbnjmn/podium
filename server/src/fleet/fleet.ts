@@ -148,6 +148,8 @@ export class Fleet {
   readonly updates: UpdateCheck;
   /** Where a card's name comes from when something other than the reporter names it (the cmux tab title); null keeps the reporter's. Set once at start. */
   names: NameSource | null = null;
+  /** The map from a session to its cmux tab, for a message to it; the same source as `names` when cards are renamed, and kept apart so the nudge works without renaming. */
+  tabs: NameSource | null = null;
   /** The soft and hard context limits, from the shared limits file (PODIUM_CONTEXT_LIMITS_FILE overrides where it is). */
   readonly limits: LimitsSource;
   private readonly contextWatch: ContextWatch;
@@ -376,7 +378,7 @@ export class Fleet {
       return;
     }
     for (const c of this.contextWatch.observe(res.sessionId, row.context_tokens, res.created)) {
-      const title = this.names?.titleFor(res.sessionId) ?? null;
+      const title = this.names?.titleFor(res.sessionId) ?? this.tabs?.titleFor(res.sessionId) ?? null;
       const name = title || row.name;
       const e: EventRow = {
         id: `context-${res.sessionId}-${c.level}-${this.now()}`,
@@ -396,7 +398,7 @@ export class Fleet {
   private sendNudge(sessionId: string, title: string | null, row: SessionRow, c: Crossing): void {
     // A Codex card has no tab of its own to message.
     if (!this.nudge || sessionId.startsWith('codex:')) return;
-    void this.nudge.nudge(sessionId, title, row.name, c);
+    void this.nudge.nudge(sessionId, this.tabs?.workspaceFor?.(sessionId) ?? null, title ?? this.tabs?.titleFor(sessionId) ?? null, row.name, c);
   }
 
   /** What the Stored activity table shows about a session; undefined when the main database does not hold it. */
@@ -506,7 +508,7 @@ export class Fleet {
         idle: view.status === 'waiting' && view.waitReason === 'input',
         backgroundPending: !!view.background,
         claude,
-        orchestrator: isOrchestrator(this.names?.titleFor(row.id), row.name),
+        orchestrator: isOrchestrator(this.names?.titleFor(row.id) ?? this.tabs?.titleFor(row.id), row.name),
         resumedWith: this.contextWatch.resumedWith(row.id),
       },
       this.limits.get(),
