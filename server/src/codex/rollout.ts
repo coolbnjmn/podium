@@ -12,6 +12,8 @@ export const INITIAL_TAIL_BYTES = 512 * 1024;
 /** The first line (the session record) carries the agent's instructions, so it can be long; past this it is not read. */
 const HEAD_BYTES = 256 * 1024;
 const MAX_OPEN_TURNS = 64;
+/** How many of a file's first bytes are kept to tell a replaced file from the same one grown. */
+const HEAD_CHECK_BYTES = 256;
 
 export interface TokenTotals {
   /** Prompt tokens that were not served from the cache. */
@@ -152,6 +154,8 @@ export class RolloutFile {
   private discarding = false;
   /** Bytes the last `read()` took from the file; zero when nothing was appended. */
   bytesRead = 0;
+  /** The file's first bytes when it was first read: a replaced file that reuses the inode and is longer still starts differently. */
+  private head: Buffer | null = null;
 
   constructor(readonly path: string) {}
 
@@ -167,7 +171,7 @@ export class RolloutFile {
     try {
       const st = fs.fstatSync(fd);
       // A different file under the same name (rotated), or one that got shorter: start over.
-      if ((this.ino !== null && this.ino !== st.ino) || st.size < this.offset) this.reset();
+      if ((this.ino !== null && this.ino !== st.ino) || st.size < this.offset || (this.head !== null && !this.startsAsBefore(fd))) this.reset();
       this.ino = st.ino;
       if (!this.seeded) {
         this.seeded = true;
@@ -177,6 +181,7 @@ export class RolloutFile {
         }
       }
       if (st.size > this.offset) this.readRange(fd, this.offset, Math.min(st.size, this.offset + maxBytes), false);
+      if (this.head === null && st.size >= HEAD_CHECK_BYTES) this.head = this.firstBytes(fd);
       return true;
     } catch {
       return false;
@@ -185,7 +190,18 @@ export class RolloutFile {
     }
   }
 
+  private firstBytes(fd: number): Buffer {
+    const buf = Buffer.alloc(HEAD_CHECK_BYTES);
+    const n = fs.readSync(fd, buf, 0, HEAD_CHECK_BYTES, 0);
+    return buf.subarray(0, n);
+  }
+
+  private startsAsBefore(fd: number): boolean {
+    return this.head !== null && this.firstBytes(fd).equals(this.head);
+  }
+
   private reset(): void {
+    this.head = null;
     this.facts = emptyFacts();
     this.offset = 0;
     this.seeded = false;

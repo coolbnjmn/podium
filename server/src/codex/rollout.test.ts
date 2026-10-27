@@ -87,6 +87,19 @@ describe('RolloutFile', () => {
     expect(r.facts.sessionId).toBe('three');
   });
 
+  it('starts over when a longer, different file is written over the same one, inode kept', () => {
+    const file = path.join(dir(), 'r.jsonl');
+    fs.writeFileSync(file, [meta('one', '/x', 'exec'), started('t1')].join('\n') + '\n');
+    const r = new RolloutFile(file);
+    r.read();
+    const before = fs.statSync(file).ino;
+    fs.writeFileSync(file, [meta('two', '/y', 'vscode'), started('a'), started('b'), started('c'), tokens(10, 0, 5, 10)].join('\n') + '\n'); // same path and inode, and longer
+    expect(fs.statSync(file).ino).toBe(before);
+    r.read();
+    expect(r.facts).toMatchObject({ sessionId: 'two', source: 'vscode' });
+    expect([...r.facts.openTurns]).toEqual(['a', 'b', 'c']);
+  });
+
   it('reports a file that is gone as unreadable', () => {
     expect(new RolloutFile(path.join(dir(), 'missing.jsonl')).read()).toBe(false);
   });
