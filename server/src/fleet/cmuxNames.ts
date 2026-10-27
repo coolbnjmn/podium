@@ -41,8 +41,11 @@ export function execList(bin: string): ListRunner {
 /** A title fit to show: control characters out, trimmed, cut at TITLE_MAX. Null when nothing is left. */
 export function cleanTitle(v: unknown): string | null {
   if (typeof v !== 'string') return null;
-  // eslint-disable-next-line no-control-regex
-  const t = v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const printable = Array.from(v, (c) => {
+    const code = c.codePointAt(0) ?? 0;
+    return code < 32 || code === 127 ? ' ' : c;
+  }).join('');
+  const t = printable.replaceAll(/\s+/g, ' ').trim();
   return t ? t.slice(0, TITLE_MAX) : null;
 }
 
