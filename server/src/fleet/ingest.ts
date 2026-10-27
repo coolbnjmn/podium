@@ -123,6 +123,7 @@ function sessionRow(r: Report, prev: SessionRow | undefined, serverTime: number,
     background_json: json(s.background ?? null),
     usage_json: json(s.usageByModel ?? null),
     attached: s.attached == null ? null : s.attached ? 1 : 0,
+    attached_ever: attachedEver(s.attached, prev),
     // The clock starts at the first report with nobody attached and keeps running while that stays true.
     detached_at: s.attached === false ? (prev?.attached === 0 && prev.detached_at !== null ? prev.detached_at : serverTime) : null,
     owner: owner ?? prev?.owner ?? null,
@@ -261,4 +262,15 @@ function sampleUsage(usage: string | null, previous: string | null | undefined, 
   if (usage === null) return null;
   const sameMinute = before !== undefined && Math.floor(before.t / 60) === Math.floor(second / 60);
   return sameMinute && previous === usage ? SAME_USAGE : usage;
+}
+
+/**
+ * Whether a client was ever attached: 1 from the first report that says so, 0 while every report says nobody is, and unknown
+ * (null) otherwise. A session already stored as detached before this was tracked stays unknown, so a long-lived session that
+ * was detached when the server was updated is not taken for a headless run.
+ */
+export function attachedEver(attached: boolean | null | undefined, prev: { attached: number | null; attached_ever?: number | null } | undefined): number | null {
+  if (attached === true || prev?.attached_ever === 1 || prev?.attached === 1) return 1;
+  if (attached === false) return prev && prev.attached_ever == null && prev.attached === 0 ? null : 0;
+  return prev?.attached_ever ?? null;
 }

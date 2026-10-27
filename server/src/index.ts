@@ -22,6 +22,7 @@ import { Lockout } from "./fleet/lockout.js";
 import { failureLimiter, pageLimiter, parseFailureLimit } from "./failureLimiter.js";
 import { createRespondBridge } from "./fleet/respondBridge.js";
 import { forgetReporters, purgeStored, startSweeper } from "./fleet/sweeper.js";
+import { cmuxNamesFromEnv } from "./fleet/cmuxNames.js";
 import { activityDbPath, openActivityDb } from "./fleet/activityDb.js";
 import { REPORTER_SUPPORT } from "./fleet/compat.js";
 import { createServerLogging } from "./logging/setup.js";
@@ -60,6 +61,10 @@ const fleetConfig = configFromEnv(process.env, { home: os.homedir(), dbPath: DB_
 // The Activity history lives in its own file beside the database (#432); nothing is written to it under the default policy.
 const activityDb = openActivityDb(activityDbPath(DB_PATH));
 const fleet = new Fleet(fleetDb, fleetConfig, Date.now, logger, { db: activityDb, authOn: TOKEN !== null, secret: TOKEN });
+// Card names from cmux tab titles: off unless PODIUM_CMUX_NAMES=1. One `cmux workspace list` every 15 s serves the whole fleet.
+const cmuxNames = cmuxNamesFromEnv(process.env, logger);
+const stopCmuxNames = cmuxNames ? cmuxNames.start() : null;
+fleet.names = cmuxNames;
 const people = new PeopleStore(fleetDb.db);
 const tlsSettings = new TlsSettingsStore(fleetDb.db);
 let tlsListener: TlsListener | null = null;
@@ -172,6 +177,7 @@ function shutdown(signal: string) {
   closing = true;
   logger.info("server.stop", `Received ${signal}, shutting down`, { signal });
   stopSweeper();
+  stopCmuxNames?.();
   stopUpdateCheck();
   fleet.close();
   tlsListener?.server.close();

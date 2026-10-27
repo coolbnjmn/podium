@@ -308,6 +308,12 @@ CREATE TABLE IF NOT EXISTS person_certificates (
 );
 CREATE INDEX IF NOT EXISTS person_certificates_person ON person_certificates(person_id);`,
   },
+  {
+    version: 24,
+    // Whether any report ever said a client was attached: 1 yes, 0 no (a headless `claude -p` or `codex exec` run), NULL unknown
+    // (a session stored before this column that was not attached then, or one whose reporter does not send `attached`).
+    sql: 'ALTER TABLE sessions ADD COLUMN attached_ever INTEGER; UPDATE sessions SET attached_ever = 1 WHERE attached = 1;',
+  },
 ];
 
 export interface SessionRow {
@@ -349,6 +355,8 @@ export interface SessionRow {
   background_json: string | null;
   usage_json: string | null;
   attached: number | null;
+  /** 1 once any report said a client was attached, 0 while every report said none, NULL when unknown. */
+  attached_ever?: number | null;
   detached_at: number | null;
   owner: string | null;
   machine_json: string | null;

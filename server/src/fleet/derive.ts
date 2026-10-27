@@ -185,6 +185,14 @@ export function isUnused(row: SessionRow, agentCount: number | (() => number)): 
   );
 }
 
+/**
+ * A run nobody ever attached to: a headless `claude -p` or `codex exec`, which reports through the mod like any session but has
+ * no window. Hook-only sessions send no `attached` and are never headless. A session once attached, or of unknown history, is not.
+ */
+export function isHeadless(row: SessionRow): boolean {
+  return row.reporter_version !== 'hooks' && row.attached === 0 && row.attached_ever === 0;
+}
+
 /** How long a session may stay silent before it shows as stale: hook-only sessions have no heartbeat. */
 export function staleAfterFor(row: SessionRow, cfg: DeriveConfig): number {
   return row.reporter_version === 'hooks' ? (cfg.hookStaleAfterMs ?? cfg.staleAfterMs) : cfg.staleAfterMs;
@@ -215,6 +223,8 @@ export interface SessionInput {
   respond?: RespondInfo | null;
   /** The session's asks without their content, from the respond store. */
   asks?: AskSummary[];
+  /** The name to show in place of the one the reporter sent, e.g. the cmux tab title; null or absent keeps the reporter's. */
+  displayName?: string | null;
   /** What everyone sees of the session's recording (#353): no text. Null or absent when nothing is chosen or kept. */
   recording?: RecordingView | null;
 }
@@ -232,7 +242,7 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
   const agentTotal = agentBlows.reduce((a, b) => a + b, 0);
   return {
     id: row.id,
-    name: row.name,
+    name: input.displayName || row.name,
     reporter: row.reporter_version === 'hooks' ? 'hooks' : 'mod',
     reporterVersion: row.reporter_version === 'hooks' ? null : row.reporter_version,
     reporterBuild: row.reporter_version === 'hooks' ? null : row.reporter_build ?? null,
