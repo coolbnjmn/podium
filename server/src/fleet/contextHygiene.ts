@@ -71,14 +71,19 @@ export class LimitsSource {
       const code = (err as NodeJS.ErrnoException).code;
       this.limits = DEFAULT_LIMITS;
       this.mtimeMs = -1;
-      this.failed(code === 'ENOENT' ? 'limits_file_missing' : (err as Error).message);
+      this.failed(code === 'ENOENT' ? 'limits_file_missing' : (err as Error).message, code === 'ENOENT');
     }
     return this.limits;
   }
 
-  private failed(reason: string): void {
+  /** A missing file is the usual case (the defaults apply) and is only noted; a file that is there but wrong is a warning. */
+  private failed(reason: string, missing: boolean): void {
     if (this.lastFailure === reason) return;
     this.lastFailure = reason;
+    if (missing) {
+      this.logger.info('context_limits.file_missing', `podium: no context limits file (${path.basename(this.file)}); using ${DEFAULT_LIMITS.soft} and ${DEFAULT_LIMITS.hard}`, { file: path.basename(this.file) });
+      return;
+    }
     this.logger.warn('context_limits.load_failed', `podium: context limits file not used (${path.basename(this.file)}): ${reason}; using ${DEFAULT_LIMITS.soft} and ${DEFAULT_LIMITS.hard}`, {
       file: path.basename(this.file),
       reason: reason.slice(0, 200),

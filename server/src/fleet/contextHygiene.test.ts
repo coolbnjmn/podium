@@ -70,14 +70,15 @@ describe('the limits file', () => {
     expect(warnings('context_limits.load_failed')).toEqual([]);
   });
 
-  it('a missing file means the defaults, logged once', () => {
+  it('a missing file means the defaults, noted once and not a warning', () => {
     let now = 1_000_000;
     const src = new LimitsSource(path.join(dir, 'nope.json'), logger, () => now);
     expect(src.get()).toEqual(DEFAULT_LIMITS);
     now += 11_000;
     expect(src.get()).toEqual(DEFAULT_LIMITS);
-    expect(warnings('context_limits.load_failed')).toHaveLength(1);
-    expect(warnings('context_limits.load_failed')[0]!.fields).toMatchObject({ file: 'nope.json', reason: 'limits_file_missing' });
+    expect(warnings('context_limits.load_failed')).toEqual([]);
+    expect(logged.filter((l) => l.event === 'context_limits.file_missing')).toHaveLength(1);
+    expect(logged.find((l) => l.event === 'context_limits.file_missing')!.fields).toMatchObject({ file: 'nope.json' });
   });
 
   it('a garbled or oversized file means the defaults, logged once per reason, and a fixed file recovers', () => {
@@ -410,7 +411,8 @@ describe('in the fleet', () => {
     const fleet = new Fleet(db, CFG, () => clock, logger);
     fleet.ingest(report('a', 40_000));
     expect(fleet.state().config.contextLimits).toEqual(DEFAULT_LIMITS);
-    expect(warnings('context_limits.load_failed')).toHaveLength(1);
+    expect(warnings('context_limits.load_failed')).toEqual([]);
+    expect(logged.filter((l) => l.event === 'context_limits.file_missing')).toHaveLength(1);
   });
 
   it('sub-agent rows are not sessions: only the session itself is marked', () => {
