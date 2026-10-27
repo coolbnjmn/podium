@@ -6,11 +6,11 @@ import type { SessionView } from "./types";
 const blow = (total: number, level: 0 | 1 | 2 = total ? 1 : 0): SessionView["blowouts"] => ({ orchestrator: total, agents: 0, total, level, loopsHit: total ? 1 : 0, loopsTotal: 1, log: [] });
 
 const S = [
-  makeSession({ id: "a", name: "alpha", status: "waiting", modelFamily: "sonnet", context: { tokens: 1, window: 1, percent: 20 }, costUsd: 5, startedAt: 3, blowouts: blow(0) }),
-  makeSession({ id: "b", name: "bravo", status: "running", modelFamily: "opus", context: { tokens: 1, window: 1, percent: 80 }, costUsd: 1, startedAt: 9, blowouts: blow(3, 2) }),
-  makeSession({ id: "c", name: "charlie", status: "stale", modelFamily: "fable", context: { tokens: 1, window: 1, percent: 50 }, costUsd: 9, startedAt: 1, blowouts: blow(1) }),
-  makeSession({ id: "d", name: "delta", status: "running", modelFamily: "haiku", context: { tokens: 1, window: 1, percent: 10 }, costUsd: null, startedAt: 5, blowouts: blow(0) }),
-  makeSession({ id: "e", name: "echo", status: "running", modelFamily: "opus", context: { tokens: 1, window: 1, percent: 10 }, costUsd: 2, startedAt: 7, blowouts: blow(1) }),
+  makeSession({ id: "a", name: "alpha", status: "waiting", modelFamily: "sonnet", context: { tokens: 20000, window: 1000000, percent: 20 }, costUsd: 5, startedAt: 3, blowouts: blow(0) }),
+  makeSession({ id: "b", name: "bravo", status: "running", modelFamily: "opus", context: { tokens: 80000, window: 1000000, percent: 80 }, costUsd: 1, startedAt: 9, blowouts: blow(3, 2) }),
+  makeSession({ id: "c", name: "charlie", status: "stale", modelFamily: "fable", context: { tokens: 50000, window: 1000000, percent: 50 }, costUsd: 9, startedAt: 1, blowouts: blow(1) }),
+  makeSession({ id: "d", name: "delta", status: "running", modelFamily: "haiku", context: { tokens: 10000, window: 1000000, percent: 10 }, costUsd: null, startedAt: 5, blowouts: blow(0) }),
+  makeSession({ id: "e", name: "echo", status: "running", modelFamily: "opus", context: { tokens: 10000, window: 1000000, percent: 10 }, costUsd: 2, startedAt: 7, blowouts: blow(1) }),
 ];
 
 describe("sortSessions", () => {
@@ -18,6 +18,10 @@ describe("sortSessions", () => {
   it("by status, then name", () => expect(names("status")).toEqual(["bravo", "delta", "echo", "alpha", "charlie"]));
   it("by model: Fable, Haiku, Opus, Sonnet, ties by status then name", () => expect(names("model")).toEqual(["charlie", "delta", "bravo", "echo", "alpha"]));
   it("by context blowouts, most first", () => expect(names("blow")).toEqual(["bravo", "echo", "charlie", "delta", "alpha"]));
+  it("by context used orders by absolute tokens, not by percent of each window", () => {
+    const list = [makeSession({ id: "small-window", name: "s", context: { tokens: 150_000, window: 200_000, percent: 75 } }), makeSession({ id: "big-window", name: "b", context: { tokens: 300_000, window: 1_000_000, percent: 30 } }), makeSession({ id: "none", name: "n", context: { tokens: null, window: null, percent: null } })];
+    expect(sortSessions(list, "ctx").map((s) => s.id)).toEqual(["big-window", "small-window", "none"]);
+  });
   it("by context used, fullest first", () => expect(names("ctx")).toEqual(["bravo", "charlie", "alpha", "delta", "echo"]));
   it("by cost, highest first, unknown last", () => expect(names("cost")).toEqual(["charlie", "alpha", "echo", "bravo", "delta"]));
   it("by newest", () => expect(names("newest")).toEqual(["bravo", "echo", "delta", "alpha", "charlie"]));
@@ -31,6 +35,12 @@ describe("filterSessions", () => {
     expect(ids("waiting")).toEqual(["a"]);
     expect(ids("stale")).toEqual(["c"]);
     expect(ids("blow")).toEqual(["b", "c", "e"]);
+  });
+  it("filters by context limit: Over soft takes the hard ones too, Over hard only them, and a session with no mark is in neither", () => {
+    const h = (level: "ok" | "soft" | "hard") => ({ level, resetDue: false, resumedWith: null });
+    const list = [makeSession({ id: "ok", hygiene: h("ok") }), makeSession({ id: "soft", hygiene: h("soft") }), makeSession({ id: "hard", hygiene: h("hard") }), makeSession({ id: "none" })];
+    expect(filterSessions(list, { status: "soft", q: "" }).map((s) => s.id)).toEqual(["soft", "hard"]);
+    expect(filterSessions(list, { status: "hard", q: "" }).map((s) => s.id)).toEqual(["hard"]);
   });
   it("lists Codex sessions on their own tab and leaves them with everything else on the others", () => {
     const list = [makeSession({ id: "c1", agent: "codex", status: "running" }), makeSession({ id: "k1", status: "running" })];

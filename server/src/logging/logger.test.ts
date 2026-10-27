@@ -107,11 +107,17 @@ describe('the text format', () => {
   });
 
   it('shows the events added in #140 only at debug, so the default output is what it was, but still ships them at their level', () => {
-    for (const event of ['session.started', 'session.ended', 'session.deleted', 'reporter.connected', 'reporter.silent', 'sweep.removed', 'admin.unlock', 'admin.unlock_failed', 'report.conflict']) {
+    for (const event of ['session.started', 'session.ended', 'session.deleted', 'reporter.connected', 'reporter.silent', 'sweep.removed', 'admin.unlock', 'admin.unlock_failed', 'report.conflict', 'context.soft', 'context.hard', 'context_limits.file_missing', 'context_nudge.sent', 'context_nudge.skipped']) {
       const { logger, lines, shipped } = capture();
       logger.warn(event, `line for ${event}`);
       expect(lines, event).toEqual([]);
       expect(JSON.parse(shipped[0]!), event).toMatchObject({ event, level: 'warn' });
+    }
+    // A context limits file that is there but wrong, and a refused nudge, are for a person to see: they print.
+    for (const event of ['context_limits.load_failed', 'context_nudge.failed']) {
+      const { logger, lines } = capture();
+      logger.warn(event, `line for ${event}`);
+      expect(lines.map((l) => l.line), event).toEqual([`line for ${event}`]);
     }
     // The lines the server always printed stay at their level.
     for (const event of ['server.start', 'server.console', 'server.stop', 'report.rejected', 'hook.rejected', 'ingest.failed', 'request.failed', 'sweeper.failed']) {

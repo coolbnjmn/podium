@@ -27,6 +27,10 @@ export function quietInText(event: string): boolean {
     event.startsWith('reporter.') ||
     event.startsWith('admin.') ||
     event.startsWith('tls.') || // below warn; a refusal at warn or error is folded instead
+    event.startsWith('context.') || // a session crossing a context limit
+    event === 'context_limits.file_missing' || // the normal case: no limits file, so the defaults
+    event === 'context_nudge.sent' ||
+    event === 'context_nudge.skipped' ||
     event === 'sweep.removed' ||
     event === 'report.conflict' ||
     event === 'report.accepted' ||

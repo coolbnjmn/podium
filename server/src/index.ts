@@ -22,7 +22,8 @@ import { Lockout } from "./fleet/lockout.js";
 import { failureLimiter, pageLimiter, parseFailureLimit } from "./failureLimiter.js";
 import { createRespondBridge } from "./fleet/respondBridge.js";
 import { forgetReporters, purgeStored, startSweeper } from "./fleet/sweeper.js";
-import { cmuxNamesFromEnv } from "./fleet/cmuxNames.js";
+import { cmuxNamesFromEnv, cmuxNamesOn } from "./fleet/cmuxNames.js";
+import { contextNudgeFromEnv, contextNudgeOn } from "./fleet/contextHygiene.js";
 import { activityDbPath, openActivityDb } from "./fleet/activityDb.js";
 import { REPORTER_SUPPORT } from "./fleet/compat.js";
 import { createServerLogging } from "./logging/setup.js";
@@ -62,9 +63,13 @@ const fleetConfig = configFromEnv(process.env, { home: os.homedir(), dbPath: DB_
 const activityDb = openActivityDb(activityDbPath(DB_PATH));
 const fleet = new Fleet(fleetDb, fleetConfig, Date.now, logger, { db: activityDb, authOn: TOKEN !== null, secret: TOKEN });
 // Card names from cmux tab titles: off unless PODIUM_CMUX_NAMES=1. One `cmux workspace list` every 15 s serves the whole fleet.
-const cmuxNames = cmuxNamesFromEnv(process.env, logger);
+const cmuxNames = cmuxNamesFromEnv(process.env, logger, undefined, contextNudgeOn(process.env));
 const stopCmuxNames = cmuxNames ? cmuxNames.start() : null;
-fleet.names = cmuxNames;
+// The cards are renamed only when PODIUM_CMUX_NAMES asks; the context nudge uses the same map just to find a session's tab.
+fleet.names = cmuxNamesOn(process.env) ? cmuxNames : null;
+fleet.tabs = cmuxNames;
+// A nudge to a session's cmux tab when its context crosses a limit: off unless PODIUM_CONTEXT_NUDGE=1.
+fleet.nudge = contextNudgeFromEnv(process.env, logger);
 const people = new PeopleStore(fleetDb.db);
 const tlsSettings = new TlsSettingsStore(fleetDb.db);
 let tlsListener: TlsListener | null = null;
