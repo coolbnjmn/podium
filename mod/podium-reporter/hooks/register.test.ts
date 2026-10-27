@@ -23,6 +23,24 @@ const PROJECT_GIT: Record<string, string> = {
   'config --get remote.origin.url': 'git@github.com:acme/podium.git',
 }
 
+/**
+ * What git answers to `sub` (the argv after `git`), from a map written one fact to a command. The reporter asks for
+ * the branch, git dir, common dir and toplevel in one rev-parse, and for the toplevel and HEAD in another, so those
+ * two are put together from the single-fact entries.
+ */
+function gitAnswer(m: Record<string, string> | null | undefined, sub: string): string | undefined {
+  if (!m) return undefined
+  if (sub === 'rev-parse --abbrev-ref HEAD --git-dir --git-common-dir --show-toplevel') {
+    const parts = ['--abbrev-ref HEAD', '--git-dir', '--git-common-dir', '--show-toplevel'].map((k) => m[`rev-parse ${k}`])
+    return parts.some((p) => p === undefined) ? undefined : `${parts.join('\n')}\n`
+  }
+  if (sub === 'rev-parse --show-toplevel HEAD') {
+    const top = m['rev-parse --show-toplevel']
+    return top === undefined ? undefined : `${top}\n${m['rev-parse HEAD'] ? `${m['rev-parse HEAD']}\n` : ''}`
+  }
+  return m[sub]
+}
+
 interface World {
   posts: Report[]
   headers: Record<string, string>[]
@@ -43,7 +61,9 @@ interface World {
   /** What each model request streams before it ends. */
   chunks: { value: TurnStepChunk[] }
   /** The files the plugin reads and writes by path, from memory; `broken` makes every access fail. */
-  files: { text: Record<string, string>; broken: boolean }
+  files: { text: Record<string, string>; mtimes: Record<string, number>; reads: string[]; broken: boolean; exists?: (path: string) => boolean }
+  /** Makes every git command hang, as one on a stuck disk would. */
+  stall: { git: boolean }
   /** Where `$.session` says the session is: `cwd` null makes `cwd()` fail; `repo` null is a folder that is not a repository (#382). */
   place: { cwd: string | null; root: string; repo: { root: string; remote: string | null; internal: boolean; name: string | null } | null }
   /** Git's answers for a folder other than the default one: null is a folder that is not a repository (#382). */
@@ -80,10 +100,18 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   let toolUseId = ''
   const clock = mock.clock(on, { now: 1_800_000_000_000 })
   mock.store(on, store)
-  const kept: World['files'] = { text: { ...files }, broken: false }
+  const kept: World['files'] = { text: { ...files }, mtimes: {}, reads: [], broken: false }
+  const stall: World['stall'] = { git: false }
   on('fs.read', (_$, e) => {
     if (kept.broken || !(e.path in kept.text)) throw new Error('ENOENT')
+    kept.reads.push(e.path)
     return { value: kept.text[e.path]! }
+  })
+  // A folder is a repository when git has an answer for it; a file's size and time come from what the world keeps.
+  on('fs.exists', (_$, e) => ({ value: e.path in kept.text || (e.path.endsWith('/.git') && !!gitAt[e.path.slice(0, -5)]) || !!kept.exists?.(e.path) }))
+  on('fs.stat', (_$, e) => {
+    if (e.path in kept.text) return { value: { kind: 'file' as const, size: kept.text[e.path]!.length, mtimeMs: kept.mtimes[e.path] ?? 1, isLink: false } }
+    return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false, ...(e.resolve ? { realPath: e.path } : {}) } }
   })
   on('fs.write', (_$, e) => {
     if (kept.broken) throw new Error('EACCES')
@@ -133,6 +161,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('ui.log', () => ({ value: undefined }))
   on('process.run', (_$, e) => {
     ran.push([...e.argv])
+    if (stall.git && e.argv[0] === 'git' && e.init?.cwd !== undefined) return new Promise(() => {})
     if (e.argv[1] === '-C') {
       // the mod's own folder: a dev checkout names a commit, an installed copy is no repository (#400)
       const sub = e.argv.slice(3).join(' ')
@@ -142,12 +171,12 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
     const at = e.init?.cwd
     const here = at !== undefined && at in gitAt ? gitAt[at] : undefined
     if (here !== undefined) {
-      const out = here?.[e.argv.slice(1).join(' ')]
+      const out = gitAnswer(here, e.argv.slice(1).join(' '))
       return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     if (e.argv[0] === 'hostname') return { value: { exitCode: 0, stdout: hosts.hostname, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'scutil') return { value: { exitCode: hosts.local === null ? 1 : 0, stdout: hosts.local ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-    return { value: { exitCode: e.argv[1] === 'rev-parse' || e.argv[1] === 'status' ? 0 : 1, stdout: GIT[e.argv.slice(1).join(' ')] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: e.argv[1] === 'rev-parse' || e.argv[1] === 'status' ? 0 : 1, stdout: gitAnswer(GIT, e.argv.slice(1).join(' ')) ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('http.fetch', (_$, e) => {
     if (fetchMode.mode === 'down') throw new Error('ECONNREFUSED')
@@ -194,7 +223,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('classic.Notification', () => ({}))
   on('classic.SessionStart', () => ({}))
   on('classic.UserPromptSubmit', () => ({}))
-  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, place, gitAt, devBuild, hosts, statuses, serverBuild, fetched, toasts }
+  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, stall, place, gitAt, devBuild, hosts, statuses, serverBuild, fetched, toasts }
 }
 
 type StepArgs = Parameters<Engine['turn']['step']>[0]
@@ -645,7 +674,6 @@ describe('podium-reporter end to end', () => {
     const w = world(on)
     const OTHER = '/Users/dev/web/other'
     w.gitAt[CWD] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': CWD, 'rev-parse --abbrev-ref HEAD': 'feat/x', 'status --porcelain=v1 -b': '## feat/x\n' }
-    w.gitAt[`${OTHER}/src`] = { 'rev-parse --show-toplevel': OTHER }
     w.gitAt[OTHER] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': OTHER, 'rev-parse --abbrev-ref HEAD': 'ben/other-work', 'status --porcelain=v1 -b': '## ben/other-work\n' }
     await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
     await w.clock.advance(10_000)
@@ -655,9 +683,106 @@ describe('podium-reporter end to end', () => {
     expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'ben/other-work' } })
     // the worktree is removed: git there fails, and the card goes back to the folder the session started in
     w.gitAt[OTHER] = null
-    await w.clock.advance(10_000)
-    await w.clock.advance(10_000)
+    await w.clock.advance(60_000)
     expect(w.posts.at(-1)!.session).toMatchObject({ cwd: CWD, git: { branch: 'feat/x' } })
+  })
+
+  /** The git commands the reporter ran so far (the folder it asked in is not recorded). */
+  const gitRuns = (w: World) => w.ran.filter((a) => a[0] === 'git').length
+  const bdRuns = (w: World) => w.ran.filter((a) => a[0] === 'bd').length
+
+  test('a tick whose cadence is not up spawns nothing; an idle session is read again after a minute', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    const first = gitRuns(w)
+    expect(first).toBeGreaterThan(0)
+    await w.clock.advance(40_000)
+    expect(gitRuns(w)).toBe(first)
+    await w.clock.advance(20_000)
+    expect(gitRuns(w)).toBeGreaterThan(first)
+    expect(gitRuns(w)).toBeLessThanOrEqual(first * 2)
+  })
+
+  test('a session at work is read every half minute', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.status).toBe('running')
+    const first = gitRuns(w)
+    await w.clock.advance(20_000)
+    expect(gitRuns(w)).toBe(first)
+    await w.clock.advance(10_000)
+    expect(gitRuns(w)).toBeGreaterThan(first)
+  })
+
+  test('git is read with at most two commands when the session still stands at its starting commit', async ($, on) => {
+    const w = world(on)
+    w.gitAt[CWD] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': CWD, 'rev-parse HEAD': 'a'.repeat(40) }
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    // facts + status, then toplevel/HEAD + two diffs + untracked files; no merge-base check, no per-fact rev-parse
+    expect(w.ran.filter((a) => a[0] === 'git' && a.includes('merge-base')).length).toBe(0)
+    expect(w.ran.filter((a) => a[0] === 'git' && a[1] === 'rev-parse').length).toBe(2)
+    expect(gitRuns(w)).toBeLessThanOrEqual(7)
+  })
+
+  test('a read that is still running is not started twice; the request that came meanwhile runs once when it ends', async ($, on) => {
+    const w = world(on)
+    w.stall.git = true
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    const stuck = gitRuns(w)
+    expect(stuck).toBeGreaterThan(0)
+    await w.clock.advance(180_000)
+    expect(gitRuns(w)).toBe(stuck)
+  })
+
+  test('bd is never run in a folder without a .beads tracker, and a failing bd leaves the session with no plan', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(125_000)
+    expect(bdRuns(w)).toBe(0)
+    expect(w.posts.at(-1)!.session.plan ?? null).toBeNull()
+  })
+
+  test('bd runs where a .beads tracker exists, and its failure is a missing plan, not an error', async ($, on) => {
+    const w = world(on)
+    w.files.exists = (path) => path === `${CWD}/.beads`
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(bdRuns(w)).toBe(1)
+    expect(w.posts.at(-1)!.session.plan ?? null).toBeNull()
+  })
+
+  test('HANDOFF.md is read with the file system, only again when its modified time changes', async ($, on) => {
+    const PATH = `${CWD}/HANDOFF.md`
+    const w = world(on, {}, { [PATH]: '# Handoff\n\n## Next step\n1. Ship the fix\n2. Tell Ben\n' })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.tool.call({ tool: 'Read', file_path: PATH })
+    await w.clock.advance(1000)
+    expect(w.files.reads.filter((p) => p === PATH).length).toBeGreaterThan(0)
+    expect(w.ran.some((a) => a[0] === 'head')).toBe(false)
+    const reads = () => w.files.reads.filter((p) => p === PATH).length
+    const before = reads()
+    await w.clock.advance(125_000)
+    expect(reads()).toBe(before)
+    w.files.mtimes[PATH] = 2
+    w.files.text[PATH] = '# Handoff\n\n## Next step\n1. Only this\n'
+    await w.clock.advance(60_000)
+    expect(reads()).toBe(before + 1)
+  })
+
+  test('a file edit in a folder with no repository above it notes no repository and spawns nothing', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    const before = w.ran.length
+    await $.tool.call({ tool: 'Edit', file_path: '/Users/dev/scratch/none/a.ts', old_string: 'a', new_string: 'b' })
+    await w.clock.advance(1000)
+    expect(w.ran.length).toBe(before)
+    expect(w.posts.at(-1)!.session.git).toMatchObject({ branch: 'feat/x' })
   })
 
   test('reports whether any client is attached, from the roster', async ($, on) => {
@@ -1234,13 +1359,13 @@ function helperWorld(on: On, o: { files: Record<string, string>; node: string | 
     if (!names.length) throw new Error('ENOENT')
     return { value: names }
   })
-  on('fs.exists', (_$, e) => ({ value: e.path === o.node }))
   on('process.spawn', async function* (_$, e) {
     spawned.push({ argv: e.argv, env: e.env })
     for (const text of o.helperSays ?? ['ready\n']) yield { stream: 'stdout' as const, text }
     await new Promise(() => {})
   })
   const w = world(on, {}, o.files)
+  w.files.exists = (path) => path === o.node
   return { w, spawned }
 }
 
