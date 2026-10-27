@@ -159,12 +159,18 @@ export class CmuxNames implements NameSource {
 
   private refreshHooks(file: string): void {
     try {
-      const st = fs.statSync(file);
-      const have = this.hooks.get(file);
-      if (have && have.mtimeMs === st.mtimeMs && have.size === st.size) return;
-      if (st.size > HOOK_FILE_MAX_BYTES) throw new Error('hook_file_too_large');
-      this.hooks.set(file, { mtimeMs: st.mtimeMs, size: st.size, sessions: parseHookSessions(fs.readFileSync(file, 'utf8')) });
-      this.lastFailure.delete(file);
+      // One open file for the stat and the read, so the file cannot change between the two.
+      const fd = fs.openSync(file, 'r');
+      try {
+        const st = fs.fstatSync(fd);
+        const have = this.hooks.get(file);
+        if (have && have.mtimeMs === st.mtimeMs && have.size === st.size) return;
+        if (st.size > HOOK_FILE_MAX_BYTES) throw new Error('hook_file_too_large');
+        this.hooks.set(file, { mtimeMs: st.mtimeMs, size: st.size, sessions: parseHookSessions(fs.readFileSync(fd, 'utf8')) });
+        this.lastFailure.delete(file);
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch (err) {
       // A missing file is normal (Codex may not be installed): nothing is logged for it, and a rename or delete forgets its sessions.
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
