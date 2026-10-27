@@ -63,7 +63,9 @@ interface World {
   /** The files the plugin reads and writes by path, from memory; `broken` makes every access fail. */
   files: { text: Record<string, string>; mtimes: Record<string, number>; reads: string[]; broken: boolean; exists?: (path: string) => boolean }
   /** Makes every git command hang, as one on a stuck disk would. */
-  stall: { git: boolean }
+  stall: { git: boolean; held: (() => void)[] }
+  /** Folders that are links, with where they lead. */
+  links: Record<string, string>
   /** Where `$.session` says the session is: `cwd` null makes `cwd()` fail; `repo` null is a folder that is not a repository (#382). */
   place: { cwd: string | null; root: string; repo: { root: string; remote: string | null; internal: boolean; name: string | null } | null }
   /** Git's answers for a folder other than the default one: null is a folder that is not a repository (#382). */
@@ -101,7 +103,8 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   const clock = mock.clock(on, { now: 1_800_000_000_000 })
   mock.store(on, store)
   const kept: World['files'] = { text: { ...files }, mtimes: {}, reads: [], broken: false }
-  const stall: World['stall'] = { git: false }
+  const stall: World['stall'] = { git: false, held: [] }
+  const links: World['links'] = {}
   on('fs.read', (_$, e) => {
     if (kept.broken || !(e.path in kept.text)) throw new Error('ENOENT')
     kept.reads.push(e.path)
@@ -111,7 +114,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('fs.exists', (_$, e) => ({ value: e.path in kept.text || (e.path.endsWith('/.git') && !!gitAt[e.path.slice(0, -5)]) || !!kept.exists?.(e.path) }))
   on('fs.stat', (_$, e) => {
     if (e.path in kept.text) return { value: { kind: 'file' as const, size: kept.text[e.path]!.length, mtimeMs: kept.mtimes[e.path] ?? 1, isLink: false } }
-    return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false, ...(e.resolve ? { realPath: e.path } : {}) } }
+    return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false, ...(e.resolve ? { realPath: links[e.path] ?? e.path } : {}) } }
   })
   on('fs.write', (_$, e) => {
     if (kept.broken) throw new Error('EACCES')
@@ -161,7 +164,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('ui.log', () => ({ value: undefined }))
   on('process.run', (_$, e) => {
     ran.push([...e.argv])
-    if (stall.git && e.argv[0] === 'git' && e.init?.cwd !== undefined) return new Promise(() => {})
+    if (stall.git && e.argv[0] === 'git' && e.init?.cwd !== undefined) return new Promise((release) => stall.held.push(() => release({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })))
     if (e.argv[1] === '-C') {
       // the mod's own folder: a dev checkout names a commit, an installed copy is no repository (#400)
       const sub = e.argv.slice(3).join(' ')
@@ -223,7 +226,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('classic.Notification', () => ({}))
   on('classic.SessionStart', () => ({}))
   on('classic.UserPromptSubmit', () => ({}))
-  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, stall, place, gitAt, devBuild, hosts, statuses, serverBuild, fetched, toasts }
+  return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, stall, links, place, gitAt, devBuild, hosts, statuses, serverBuild, fetched, toasts }
 }
 
 type StepArgs = Parameters<Engine['turn']['step']>[0]
@@ -745,6 +748,44 @@ describe('podium-reporter end to end', () => {
     await w.clock.advance(125_000)
     expect(bdRuns(w)).toBe(0)
     expect(w.posts.at(-1)!.session.plan ?? null).toBeNull()
+  })
+
+  test('a BEADS_DIR the person named runs bd even where no .beads is beside the session', async ($, on) => {
+    const w = world(on)
+    on('env.get', (_$, e) => ({ value: e.name === 'BEADS_DIR' ? '/Users/dev/elsewhere/.beads' : undefined }))
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    expect(bdRuns(w)).toBe(1)
+  })
+
+  test('an edit under a linked folder is read in the repository the link leads to', async ($, on) => {
+    const w = world(on)
+    const REPO = '/Users/dev/web/linked-repo'
+    w.gitAt[REPO] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': REPO, 'rev-parse --abbrev-ref HEAD': 'ben/linked', 'status --porcelain=v1 -b': '## ben/linked\n' }
+    w.links['/Users/dev/links/src'] = `${REPO}/src`
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await $.tool.call({ tool: 'Edit', file_path: '/Users/dev/links/src/a.ts', old_string: 'a', new_string: 'b' })
+    await w.clock.advance(1000)
+    expect(w.posts.at(-1)!.session.git).toMatchObject({ branch: 'ben/linked' })
+  })
+
+  test('a request that comes while a read is stuck runs once when the read ends', async ($, on) => {
+    const w = world(on)
+    const OTHER = '/Users/dev/web/other'
+    w.gitAt[OTHER] = { ...PROJECT_GIT, 'rev-parse --show-toplevel': OTHER, 'rev-parse --abbrev-ref HEAD': 'ben/other-work', 'status --porcelain=v1 -b': '## ben/other-work\n' }
+    w.stall.git = true
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    await w.clock.advance(1000)
+    const stuck = gitRuns(w)
+    // an edit in another repository asks for a read while the first is stuck: nothing new starts
+    await $.tool.call({ tool: 'Edit', file_path: `${OTHER}/a.ts`, old_string: 'a', new_string: 'b' })
+    await w.clock.advance(1000)
+    expect(gitRuns(w)).toBe(stuck)
+    w.stall.git = false
+    w.stall.held.splice(0).forEach((release) => release())
+    await w.clock.advance(1000)
+    expect(gitRuns(w)).toBeGreaterThan(stuck)
+    expect(w.posts.at(-1)!.session.git).toMatchObject({ branch: 'ben/other-work' })
   })
 
   test('bd runs where a .beads tracker exists, and its failure is a missing plan, not an error', async ($, on) => {

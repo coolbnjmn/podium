@@ -733,8 +733,11 @@ async function readPlanFallback($: Engine, r: Runtime): Promise<void> {
     const handoff = path ? await readHandoffPlan($, r, path) : null;
     let beads: FallbackPlan | null = null;
     if (!handoff) {
+      // `bd` also finds a tracker by itself in a parent folder (and does so slowly), so only a `.beads` in one of the two
+      // folders, or a tracker the person named with BEADS_DIR, is asked.
+      const named = !!(await attempt(() => $.env.get('BEADS_DIR'), undefined));
       for (const dir of beadsDirs(path, r.state.cwd)) {
-        if (!(await attempt(() => $.fs.exists(`${dir}/.beads`), false))) continue;
+        if (!named && !(await attempt(() => $.fs.exists(`${dir}/.beads`), false))) continue;
         try {
           const res = await $.process.run(['bd', 'list', '--json', '--brief', '-n', '50'], { cwd: dir, timeoutMs: 5000 });
           beads = res.exitCode === 0 ? parseBeads(res.stdout) : null;
@@ -761,10 +764,11 @@ async function repoRootOf($: Engine, dir: string): Promise<string | null> {
   if (hit) return hit;
   try {
     // The nearest folder at or above `dir` with a `.git` (a folder, or the file a worktree has), resolved through links as git reports it.
-    let at = dir;
+    // Through links first, as git reports it: a folder that links elsewhere has its parents there, not where the link stands.
+    let at = (await $.fs.stat(dir, { resolve: true })).realPath ?? dir;
     for (let depth = 0; depth < 64; depth++) {
       if (await $.fs.exists(`${at}/.git`)) {
-        const top = (await $.fs.stat(at, { resolve: true })).realPath ?? '';
+        const top = at;
         if (!top.startsWith('/')) return null;
         if (repoRoots.size >= REPO_ROOT_CACHE) repoRoots.clear();
         repoRoots.set(dir, top);
