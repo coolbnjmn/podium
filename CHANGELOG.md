@@ -14,6 +14,8 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-27
+
 ### Added
 
 - **A plan for sessions that keep theirs in HANDOFF.md or beads.** A session with no TaskCreate or TodoWrite plan now shows the open items of the HANDOFF.md it last read or wrote (the bullets, numbered items and checkboxes under headings such as "Open items", "In flight" or "Next"), and when there is none, its open beads from `bd list` in the HANDOFF.md's folder or the session's own. HANDOFF.md comes first because it is written just before a clear and may not be in beads yet. The plan's source is `handoff` or `beads`; a session's own plan always wins. The mod reads one capped file and runs one capped `bd list` every 10 seconds, and a missing file or tracker just means no plan.
@@ -827,7 +829,8 @@ and a plugin you can install from a marketplace.
 - The project was renamed from `claude-dashboard` to `podium`
   (`eengelking/podium`). (PR #5)
 
-[Unreleased]: https://github.com/eengelking/podium/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/coolbnjmn/podium/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/coolbnjmn/podium/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/eengelking/podium/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/eengelking/podium/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/eengelking/podium/compare/v1.2.1...v1.2.2

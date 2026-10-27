@@ -116,7 +116,7 @@ import {
   toolDenied,
 } from './respond.ts';
 
-export const VERSION = '1.3.1';
+export const VERSION = '1.4.0';
 /** The poll timers tick this often; a tick spawns only when the session's cadence says a read is due. */
 const POLL_TICK_MS = 10_000;
 /** Time between two git or plan reads of one session: while it works, and while it waits for the person (each read spawns processes). */
