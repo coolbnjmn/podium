@@ -27,7 +27,7 @@ This page shows how the reporter mod, the server and the UI connect, for a contr
   wait on the network.
 - A `$.clock.every` timer reads `$.session.id()`, `$.session.usage()` and `$.agent.list()`, and posts a full
   snapshot plus unacknowledged events (`transport.ts`).
-- Git is polled every 10 s (`pollGit` in `register.ts`, reading through `git.ts`).
+- Git is polled every 30 s while the session works and every 60 s while it waits, once when a turn ends and at once on a move (`pollGit` in `register.ts`, reading through `git.ts`); the 10 s timer only checks whether a read is due.
 - `session.end` sends the final report inside a 1 s deadline.
 - A changed session id (after `/clear` or a resume) closes the old id with a `done` report and starts over under
   the new one.
