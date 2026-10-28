@@ -30,6 +30,54 @@ export function defaultHookFiles(home: string): string[] {
   return [path.join(home, '.cmuxterm', 'claude-hook-sessions.json'), path.join(home, '.cmuxterm', 'codex-hook-sessions.json')];
 }
 
+/** Where the tab titles are kept for a server that cmux will not talk to (one started by launchd rather than inside cmux). */
+export function defaultTitlesFile(home: string): string {
+  return path.join(home, '.podium', 'cmux-titles.json');
+}
+
+/** How old the titles file may be and still name a card; a writer that stopped leaves the last names, not these. */
+export const TITLES_FILE_MAX_AGE_MS = 10 * 60_000;
+const TITLES_FILE_MAX_BYTES = 1024 * 1024;
+
+/** The `cmux workspace list --json` texts a writer saved, or null when the file is missing, garbled, oversized, or not written within the last ten minutes. */
+export function readTitlesFile(file: string, nowMs: number): string[] | null {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      if (fs.fstatSync(fd).size > TITLES_FILE_MAX_BYTES) return null;
+      const doc = JSON.parse(fs.readFileSync(fd, 'utf8')) as { writtenAt?: unknown; lists?: unknown };
+      if (typeof doc.writtenAt !== 'number' || !Array.isArray(doc.lists) || !doc.lists.every((t) => typeof t === 'string')) return null;
+      if (Math.abs(nowMs - doc.writtenAt) > TITLES_FILE_MAX_AGE_MS) return null;
+      return doc.lists as string[];
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** Saves the lists whole (a temporary file renamed over the old one), readable by the owner only. */
+export function writeTitlesFile(file: string, lists: string[], nowMs: number): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ writtenAt: nowMs, lists }), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+/** Asks cmux first; when cmux refuses, the titles file a process started inside cmux keeps. With neither, the cmux error stands. */
+export function withTitlesFile(primary: ListRunner, file: string, now: () => number = Date.now): ListRunner {
+  return async () => {
+    try {
+      return await primary();
+    } catch (err) {
+      const saved = readTitlesFile(file, now());
+      if (saved === null) throw err;
+      return saved;
+    }
+  };
+}
+
 function execText(bin: string, args: string[], timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(bin, args, { timeout: timeoutMs, maxBuffer: LIST_MAX_BYTES, encoding: 'utf8', windowsHide: true }, (err, stdout) => {
@@ -210,5 +258,5 @@ export class CmuxNames implements NameSource {
 /** `force` builds it for a feature that needs the session-to-tab map (the context nudge) even when the cards are not renamed. */
 export function cmuxNamesFromEnv(env: NodeJS.ProcessEnv, logger: Logger, home: string = os.homedir(), force = false): CmuxNames | null {
   if (!force && !cmuxNamesOn(env)) return null;
-  return new CmuxNames(logger, execList(env.PODIUM_CMUX_BIN || CMUX_BIN), defaultHookFiles(home));
+  return new CmuxNames(logger, withTitlesFile(execList(env.PODIUM_CMUX_BIN || CMUX_BIN), defaultTitlesFile(home)), defaultHookFiles(home));
 }

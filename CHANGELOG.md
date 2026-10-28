@@ -30,6 +30,7 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ### Fixed
 
+- **Card names survive a server started at login.** cmux refuses any process not started inside it, so after a reboot the launchd-started server and the Codex sidecar lost the tab names. `scripts/cmux-titles-writer.mjs`, run from inside cmux, saves the tab titles to `~/.podium/cmux-titles.json` every 15 seconds; when cmux refuses the server, it reads that file instead (never when cmux answers, and not when the file is older than ten minutes). The cmux error is still logged once when neither works.
 - **The server no longer scans every sample of a session that has no cost.** A session with no cost figure and no usage (a Codex card, a local model) made each spend calculation walk all of its samples, about 60,000 a day, twice per session on every tick and every state request; with a couple of dozen such sessions the server sat near 100% CPU and `/api/fleet/state` took seconds. Such a session adds nothing to spend, so the lookup is skipped; every figure is unchanged.
 
 ## [1.4.0] - 2026-10-27
