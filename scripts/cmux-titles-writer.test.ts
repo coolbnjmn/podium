@@ -3,11 +3,11 @@ import { USAGE, parseArgs } from "./cmux-titles-writer.mjs";
 
 describe("cmux-titles-writer arguments", () => {
   it("defaults to a 15 second loop with the standard file", () => {
-    expect(parseArgs([])).toEqual({ once: false, intervalMs: 15_000, file: null });
+    expect(parseArgs([])).toEqual({ once: false, intervalMs: 15_000, file: null, help: false });
   });
 
   it("reads --once, --interval and --file", () => {
-    expect(parseArgs(["--once", "--interval", "30", "--file", "/tmp/t.json"])).toEqual({ once: true, intervalMs: 30_000, file: "/tmp/t.json" });
+    expect(parseArgs(["--once", "--interval", "30", "--file", "/tmp/t.json"])).toEqual({ once: true, intervalMs: 30_000, file: "/tmp/t.json", help: false });
   });
 
   it("rejects an interval under a second, a missing value and an unknown flag", () => {

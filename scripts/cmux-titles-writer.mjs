@@ -13,7 +13,7 @@ Writes the cmux tab titles to ~/.podium/cmux-titles.json (--file changes it) eve
 Run it from inside cmux; stop it with kill <pid>.`;
 
 export function parseArgs(argv) {
-  const out = { once: false, intervalMs: 15_000, file: null };
+  const out = { once: false, intervalMs: 15_000, file: null, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--once') out.once = true;
