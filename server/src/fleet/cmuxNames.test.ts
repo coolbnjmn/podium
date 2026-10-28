@@ -263,7 +263,7 @@ describe('the titles file', () => {
   };
 
   it('lives under the Podium folder', () => {
-    expect(defaultTitlesFile('/home/ben')).toBe(path.join('/home/ben', '.podium', 'cmux-titles.json'));
+    expect(defaultTitlesFile('/home/user')).toBe(path.join('/home/user', '.podium', 'cmux-titles.json'));
   });
 
   it('names the cards from the file when cmux refuses the server, so a login-started server keeps the tab names', async () => {
