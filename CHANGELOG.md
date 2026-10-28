@@ -28,6 +28,10 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 - **The activity feed leaves out headless runs.** A `claude -p` or `codex exec` run reports through the mod like any session, so every scan added a start and an end line and buried the real activity. The server now records whether any report ever said a client was attached (`sessions.attached_ever`, migration 24) and keeps the lines of a run nobody was ever attached to out of the feed, live and listed. The wall, the costs and sessions stored before this change are untouched. `SHOW_HEADLESS_FEED=1` brings the lines back.
 
+### Fixed
+
+- **The server no longer scans every sample of a session that has no cost.** A session with no cost figure and no usage (a Codex card, a local model) made each spend calculation walk all of its samples, about 60,000 a day, twice per session on every tick and every state request; with a couple of dozen such sessions the server sat near 100% CPU and `/api/fleet/state` took seconds. Such a session adds nothing to spend, so the lookup is skipped; every figure is unchanged.
+
 ## [1.4.0] - 2026-10-27
 
 ### Added

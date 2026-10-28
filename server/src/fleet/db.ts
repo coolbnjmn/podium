@@ -598,10 +598,10 @@ export class FleetDb {
   private spendSince(since: number, cost: CostOf): SessionSpend[] {
     const rows = this.stmt(
       `SELECT s.id AS id, s.name AS name, s.model AS model, s.owner AS owner, g.name AS grp, s.cost_usd AS cost_usd, s.usage_json AS usage_json, s.started_at AS started_at, s.last_seen_at AS last_seen_at,
-         COALESCE(
+         CASE WHEN s.cost_usd IS NULL THEN NULL ELSE COALESCE(
            (SELECT m.cost_usd FROM samples m WHERE m.session_id = s.id AND m.t < :sec AND m.cost_usd IS NOT NULL ORDER BY m.t DESC LIMIT 1),
            (SELECT m.cost_usd FROM samples m WHERE m.session_id = s.id AND m.cost_usd IS NOT NULL ORDER BY m.t ASC LIMIT 1)
-         ) AS base
+         ) END AS base
        FROM sessions s LEFT JOIN people p ON p.name = s.owner LEFT JOIN groups g ON g.id = p.group_id
        WHERE s.started_at >= :since OR s.ended_at IS NULL OR s.ended_at >= :since`,
     ).all({ since, sec: Math.floor(since / 1000) }) as unknown as (CostRow & {
@@ -621,7 +621,8 @@ export class FleetDb {
       if (r.started_at >= since) return { ...id, usd: total };
       // No ledger figure now (the mod sends none on a local model): split by the priced usage on the sample before
       // `since` instead, so the Claude spend of an earlier part of the day is not lost (#286).
-      if (r.cost_usd === null) return { ...id, usd: Math.max(0, total - this.pricedUsageAt(r.id, since, cost)) };
+      // A session priced at nothing owes nothing; looking up its earlier usage would only scan all its samples to subtract from 0.
+      if (r.cost_usd === null) return { ...id, usd: total === 0 ? 0 : Math.max(0, total - this.pricedUsageAt(r.id, since, cost)) };
       const ledger = r.cost_usd;
       const share = r.base === null || ledger <= 0 ? 0 : Math.max(0, ledger - r.base) / ledger;
       return { ...id, usd: total * share };
