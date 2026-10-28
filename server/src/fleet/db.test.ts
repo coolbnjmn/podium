@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -243,6 +243,21 @@ describe('openDb', () => {
       f.upsertSession(session({ id: 'done', started_at: MIDNIGHT - 7_200_000, ended_at: MIDNIGHT - 60_000, cost_usd: 5 }));
       sample(f, 'done', MIDNIGHT / 1000 - 70, 5);
       expect(f.costSince(MIDNIGHT)).toBeCloseTo(6, 9);
+    });
+
+    it('does not scan the samples of a session with no cost and no usage', () => {
+      const f = new FleetDb(openDb(':memory:'));
+      f.upsertSession(session({ id: 'local', started_at: MIDNIGHT - 3_600_000, cost_usd: null, usage_json: null }));
+      for (let t = 0; t < 200; t++) f.upsertSample({ session_id: 'local', t: MIDNIGHT / 1000 - 100 + t, tokens_total: 0, tokens_delta: 0, peak_context: 0, running_agents: 0, cost_usd: null });
+      const lookup = vi.spyOn(f as unknown as { pricedUsageAt: () => number }, 'pricedUsageAt');
+      expect(f.costSince(MIDNIGHT)).toBe(0);
+      expect(lookup).not.toHaveBeenCalled();
+      // One that is priced from its usage still has its earlier share taken off.
+      const priced = (r: { usage_json: string | null }) => (r.usage_json === null ? null : 10);
+      f.upsertSession(session({ id: 'usage', started_at: MIDNIGHT - 3_600_000, cost_usd: null, usage_json: '{"x":1}' }));
+      f.upsertSample({ session_id: 'usage', t: MIDNIGHT / 1000 - 5, tokens_total: 0, tokens_delta: 0, peak_context: 0, running_agents: 0, cost_usd: null, usage_json: '{"x":1}' });
+      expect(f.costSince(MIDNIGHT, priced)).toBe(0);
+      expect(lookup).toHaveBeenCalledTimes(1);
     });
 
     it('follows repricing in proportion, and the owner split adds up to the total', () => {
