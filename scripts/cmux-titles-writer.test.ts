@@ -12,6 +12,8 @@ describe("cmux-titles-writer arguments", () => {
 
   it("rejects an interval under a second, a missing value and an unknown flag", () => {
     expect(() => parseArgs(["--interval", "0"])).toThrow("--interval");
+    expect(() => parseArgs(["--interval", "301"])).toThrow("--interval");
+    expect(() => parseArgs(["--interval", "2147484"])).toThrow("--interval");
     expect(() => parseArgs(["--interval"])).toThrow("--interval");
     expect(() => parseArgs(["--file"])).toThrow("--file");
     expect(() => parseArgs(["--bogus"])).toThrow("unknown argument");

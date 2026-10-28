@@ -314,6 +314,14 @@ describe('the titles file', () => {
     expect(fs.readdirSync(path.dirname(titles))).toEqual(['cmux-titles.json']);
   });
 
+  it('does not replace a good file with one the reader would refuse', () => {
+    const titles = path.join(dir, 'cmux-titles.json');
+    writeTitlesFile(titles, ['good'], NOW);
+    expect(() => writeTitlesFile(titles, ['x'.repeat(600_000), 'y'.repeat(600_000)], NOW)).toThrow('titles_file_too_large');
+    expect(readTitlesFile(titles, NOW)).toEqual(['good']);
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('refuses a file over the size cap', () => {
     const titles = path.join(dir, 'cmux-titles.json');
     fs.writeFileSync(titles, JSON.stringify({ writtenAt: NOW, lists: ['x'.repeat(1_100_000)] }));

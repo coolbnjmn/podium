@@ -60,8 +60,11 @@ export function readTitlesFile(file: string, nowMs: number): string[] | null {
 /** Saves the lists whole (a temporary file renamed over the old one), readable by the owner only. */
 export function writeTitlesFile(file: string, lists: string[], nowMs: number): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const body = JSON.stringify({ writtenAt: nowMs, lists });
+  // What the reader would refuse is not written, so the last good file stays instead of being replaced by one nobody can read.
+  if (Buffer.byteLength(body) > TITLES_FILE_MAX_BYTES) throw new Error('titles_file_too_large');
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ writtenAt: nowMs, lists }), { mode: 0o600 });
+  fs.writeFileSync(tmp, body, { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 

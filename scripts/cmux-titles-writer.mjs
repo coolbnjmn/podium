@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 export const USAGE = `Usage: node scripts/cmux-titles-writer.mjs [--once] [--interval <seconds>] [--file <path>]
 
-Writes the cmux tab titles to ~/.podium/cmux-titles.json (--file changes it) every --interval seconds (default 15).
+Writes the cmux tab titles to ~/.podium/cmux-titles.json (--file changes it) every --interval seconds (default 15, at most 300: the server ignores a file older than ten minutes).
 --once writes one time and exits (status 1 when cmux refuses). PODIUM_CMUX_BIN names another cmux binary.
 Run it from inside cmux; stop it with kill <pid>.`;
 
@@ -19,7 +19,7 @@ export function parseArgs(argv) {
     if (a === '--once') out.once = true;
     else if (a === '--interval') {
       const n = Number(argv[++i]);
-      if (!Number.isFinite(n) || n < 1) throw new Error('--interval needs a number of seconds, 1 or more');
+      if (!Number.isFinite(n) || n < 1 || n > 300) throw new Error('--interval needs a number of seconds from 1 to 300');
       out.intervalMs = n * 1000;
     } else if (a === '--file') {
       out.file = argv[++i];
@@ -37,7 +37,11 @@ async function main() {
   const file = args.file ?? defaultTitlesFile(os.homedir());
   const list = execList(process.env.PODIUM_CMUX_BIN || CMUX_BIN);
   let lastError = '';
+  let running = false;
   const tick = async () => {
+    // A slow cmux call must not let a later refresh be overwritten by an earlier one.
+    if (running) return false;
+    running = true;
     try {
       writeTitlesFile(file, await list(), Date.now());
       lastError = '';
@@ -47,6 +51,8 @@ async function main() {
       if (err.message !== lastError) console.error(`cmux_titles_writer.failed reason=${JSON.stringify(String(err.message).slice(0, 200))}`);
       lastError = err.message;
       return false;
+    } finally {
+      running = false;
     }
   };
   if (args.once) process.exit((await tick()) ? 0 : 1);
