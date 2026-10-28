@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CMUX_BIN, CmuxNames, defaultHookFiles, execList } from '../fleet/cmuxNames.js';
+import { CMUX_BIN, CmuxNames, defaultHookFiles, defaultTitlesFile, execList, withTitlesFile } from '../fleet/cmuxNames.js';
 import type { Report } from '../fleet/protocol.js';
 import { createLogger, type Logger } from '../logging/logger.js';
 import { ACTIVE_WINDOW_MS, buildReports, isHeadless, type RunInfo } from './cards.js';
@@ -339,7 +339,7 @@ export function makeSidecar(env: NodeJS.ProcessEnv = process.env, home: string =
   const config = configFromEnv(env, home);
   if (!config.enabled) return null;
   const logger = createLogger({ format: 'json', service: 'podium-codex', secrets: config.token ? [config.token] : [] });
-  const names = new CmuxNames(logger, execList(env.PODIUM_CMUX_BIN || CMUX_BIN), defaultHookFiles(home));
+  const names = new CmuxNames(logger, withTitlesFile(execList(env.PODIUM_CMUX_BIN || CMUX_BIN), defaultTitlesFile(home)), defaultHookFiles(home));
   return new Sidecar({ config, logger, fetch, names, now: Date.now, processTab: processTabLookup() });
 }
 

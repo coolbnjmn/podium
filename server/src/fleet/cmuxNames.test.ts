@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { cleanTitle, CmuxNames, cmuxNamesFromEnv, cmuxNamesOn, defaultHookFiles, execList, parseHookSessions, parseWindowIds, parseWorkspaceTitles } from './cmuxNames.js';
+import { cleanTitle, CmuxNames, cmuxNamesFromEnv, cmuxNamesOn, defaultHookFiles, defaultTitlesFile, execList, parseHookSessions, parseWindowIds, parseWorkspaceTitles, readTitlesFile, withTitlesFile, writeTitlesFile } from './cmuxNames.js';
 import { silentLogger, type Logger } from '../logging/logger.js';
 
 const WS_A = '191435E4-457D-43F6-A92B-FC731B8391EA';
@@ -253,5 +253,78 @@ describe('the switch', () => {
     await gone.refresh();
     expect(gone.titleFor('sess1')).toBeNull();
     expect(warnings.at(-1)!.event).toBe('cmux_names.refresh_failed');
+  });
+});
+
+describe('the titles file', () => {
+  const NOW = 1_800_000_000_000;
+  const refused = async (): Promise<string[]> => {
+    throw new Error('Access denied - only processes started inside cmux can connect');
+  };
+
+  it('lives under the Podium folder', () => {
+    expect(defaultTitlesFile('/home/user')).toBe(path.join('/home/user', '.podium', 'cmux-titles.json'));
+  });
+
+  it('names the cards from the file when cmux refuses the server, so a login-started server keeps the tab names', async () => {
+    const titles = path.join(dir, 'cmux-titles.json');
+    writeTitlesFile(titles, [list({ id: WS_A, custom_title: 'Orchestrator' })], NOW - 30_000);
+    fs.writeFileSync(file, hooks({ sess1: WS_A }));
+    const names = new CmuxNames(logger, withTitlesFile(refused, titles, () => NOW), [file]);
+    await names.refresh();
+    expect(names.titleFor('sess1')).toBe('Orchestrator');
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('prefers cmux while it answers, and the file never overrides a live list', async () => {
+    const titles = path.join(dir, 'cmux-titles.json');
+    writeTitlesFile(titles, [list({ id: WS_A, custom_title: 'Old name' })], NOW);
+    fs.writeFileSync(file, hooks({ sess1: WS_A }));
+    const names = new CmuxNames(logger, withTitlesFile(async () => [list({ id: WS_A, custom_title: 'New name' })], titles, () => NOW), [file]);
+    await names.refresh();
+    expect(names.titleFor('sess1')).toBe('New name');
+  });
+
+  it('logs the cmux refusal and keeps the last names when the file is stale, missing, garbled or the wrong shape', async () => {
+    const titles = path.join(dir, 'cmux-titles.json');
+    fs.writeFileSync(file, hooks({ sess1: WS_A }));
+    const cases: [string, () => void][] = [
+      ['stale', () => writeTitlesFile(titles, [list({ id: WS_A, custom_title: 'Stale' })], NOW - 11 * 60_000)],
+      ['missing', () => fs.rmSync(titles, { force: true })],
+      ['garbled', () => fs.writeFileSync(titles, '{nope')],
+      ['wrong shape', () => fs.writeFileSync(titles, JSON.stringify({ writtenAt: NOW, lists: 'x' }))],
+      ['future', () => writeTitlesFile(titles, [list({ id: WS_A, custom_title: 'Future' })], NOW + 11 * 60_000)],
+    ];
+    for (const [label, arrange] of cases) {
+      warnings.length = 0;
+      arrange();
+      const names = new CmuxNames(logger, withTitlesFile(refused, titles, () => NOW), [file]);
+      await names.refresh();
+      expect(names.titleFor('sess1'), label).toBeNull();
+      expect(warnings, label).toHaveLength(1);
+      expect(warnings[0].fields, label).toMatchObject({ source: 'cmux', reason: expect.stringContaining('only processes started inside cmux') });
+    }
+  });
+
+  it('writes the file whole, owner-only, and reads back what it wrote', () => {
+    const titles = path.join(dir, 'nested', 'cmux-titles.json');
+    writeTitlesFile(titles, ['a', 'b'], NOW);
+    expect(readTitlesFile(titles, NOW)).toEqual(['a', 'b']);
+    expect(fs.statSync(titles).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(path.dirname(titles))).toEqual(['cmux-titles.json']);
+  });
+
+  it('does not replace a good file with one the reader would refuse', () => {
+    const titles = path.join(dir, 'cmux-titles.json');
+    writeTitlesFile(titles, ['good'], NOW);
+    expect(() => writeTitlesFile(titles, ['x'.repeat(600_000), 'y'.repeat(600_000)], NOW)).toThrow('titles_file_too_large');
+    expect(readTitlesFile(titles, NOW)).toEqual(['good']);
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('refuses a file over the size cap', () => {
+    const titles = path.join(dir, 'cmux-titles.json');
+    fs.writeFileSync(titles, JSON.stringify({ writtenAt: NOW, lists: ['x'.repeat(1_100_000)] }));
+    expect(readTitlesFile(titles, NOW)).toBeNull();
   });
 });
