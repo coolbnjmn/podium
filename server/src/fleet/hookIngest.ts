@@ -13,7 +13,7 @@ const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 type HookResult =
   | { ok: true; report: Report }
   /** The session is reported by the mod, which knows far more than a hook does: the hook is acknowledged and dropped. */
-  | { ok: true; ignored: true; sessionId: string }
+  | { ok: true; ignored: true; sessionId: string; hookBackground?: BackgroundWait | null }
   | { ok: false; error: string; path: string };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -104,7 +104,10 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
   // A session the mod reports must not be overwritten by a reduced hook view of itself (that would blank
   // its cost, plan and tokens and flip it to the reduced display). The mod's reports are the truth.
   if (stored.session?.reporter_version && stored.session.reporter_version !== HOOKS_REPORTER_VERSION) {
-    return { ok: true, ignored: true, sessionId: sid };
+    // The one thing a hook still tells it: Claude Code can skip the reporter's own Stop handler, so the timers and background
+    // tasks a Stop lists reach the server only here. A new turn or the end of the session clears them.
+    const hookBackground = event === 'Stop' ? backgroundOf(payload) : ['UserPromptSubmit', 'SessionStart', 'SessionEnd'].includes(event) ? null : undefined;
+    return { ok: true, ignored: true, sessionId: sid, hookBackground };
   }
   const cwd = str(payload.cwd, 1024) ?? stored.session?.cwd ?? '/';
   const agentId = str(payload.agent_id);

@@ -444,7 +444,13 @@ export class Fleet {
     const stored = sid ? { session: this.db.getSession(sid), agents: this.db.getAgents(sid) } : { agents: [] };
     const res = hookToReport(payload, stored, this.now());
     if (!res.ok) return res;
-    if ('ignored' in res) return { ok: true, sessionId: res.sessionId };
+    if ('ignored' in res) {
+      if (res.hookBackground !== undefined) {
+        this.db.setHookBackground(res.sessionId, res.hookBackground ? JSON.stringify(res.hookBackground) : null);
+        this.scheduleSession(res.sessionId);
+      }
+      return { ok: true, sessionId: res.sessionId };
+    }
     const v = validateReport(res.report);
     if (!v.ok) return v;
     this.ingest(v.report, owner);

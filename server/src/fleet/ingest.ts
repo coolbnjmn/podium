@@ -121,6 +121,8 @@ function sessionRow(r: Report, prev: SessionRow | undefined, serverTime: number,
     loop_json: json(s.loop),
     files_json: json(s.files),
     background_json: json(s.background ?? null),
+    // What a Stop settings hook listed lasts until the next turn: a report that says the session is running ends it.
+    hook_background_json: s.status === 'running' ? null : prev?.hook_background_json ?? null,
     usage_json: json(s.usageByModel ?? null),
     attached: s.attached == null ? null : s.attached ? 1 : 0,
     attached_ever: attachedEver(s.attached, prev),

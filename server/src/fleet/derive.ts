@@ -246,6 +246,8 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
   const agents = input.agents.map((a) => agentView(a, input.pricing));
   const agentBlows = agents.map((a) => a.blowouts);
   const agentTotal = agentBlows.reduce((a, b) => a + b, 0);
+  // Work a Stop settings hook listed stands in only while the session idles on nothing else the reporter named, never over a wait for approval.
+  const hookWait = row.status === 'waiting' && row.wait_reason !== 'permission' && !row.background_json ? parse<BackgroundWait | null>(row.hook_background_json, null) : null;
   return {
     id: row.id,
     name: input.displayName || row.name,
@@ -264,7 +266,7 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
     modelFamily: family(row.model),
     effort: row.effort,
     status: sessionStatus(row, input.heard, now, staleAfterFor(row, cfg)),
-    waitReason: row.wait_reason === 'permission' || row.wait_reason === 'input' ? row.wait_reason : null,
+    waitReason: hookWait ? null : row.wait_reason === 'permission' || row.wait_reason === 'input' ? row.wait_reason : null,
     waitNote: row.wait_note,
     endReason: row.end_reason,
     startedAt: row.started_at,
@@ -292,7 +294,7 @@ export function sessionView(input: SessionInput, now: number, cfg: DeriveConfig)
     plan: parse<PlanView | null>(row.plan_json, null),
     loop: parse<LoopReport | null>(row.loop_json, null),
     files: parse<FilesReport | null>(row.files_json, null),
-    background: parse<BackgroundWait | null>(row.background_json, null),
+    background: hookWait ?? parse<BackgroundWait | null>(row.background_json, null),
     attached: row.attached === null ? null : row.attached === 1,
     hideAt: input.hideAt ?? null,
     owner: row.owner,

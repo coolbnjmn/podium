@@ -314,6 +314,12 @@ CREATE INDEX IF NOT EXISTS person_certificates_person ON person_certificates(per
     // (a session stored before this column that was not attached then, or one whose reporter does not send `attached`).
     sql: 'ALTER TABLE sessions ADD COLUMN attached_ever INTEGER; UPDATE sessions SET attached_ever = 1 WHERE attached = 1;',
   },
+  {
+    version: 25,
+    // The scheduled wake-ups and background tasks a Stop settings hook listed for a session the mod reports (BackgroundWait as
+    // JSON), kept apart from background_json because the reporter's own reports overwrite that one on every flush; NULL when none.
+    sql: 'ALTER TABLE sessions ADD COLUMN hook_background_json TEXT;',
+  },
 ];
 
 export interface SessionRow {
@@ -353,6 +359,7 @@ export interface SessionRow {
   loop_json: string | null;
   files_json: string | null;
   background_json: string | null;
+  hook_background_json: string | null;
   usage_json: string | null;
   attached: number | null;
   /** 1 once any report said a client was attached, 0 while every report said none, NULL when unknown. */
@@ -545,6 +552,11 @@ export class FleetDb {
       `INSERT INTO sessions (${cols.join(', ')}) VALUES (${cols.map((c) => `:${c}`).join(', ')}) ` +
       `ON CONFLICT(id) DO UPDATE SET ${cols.filter((c) => c !== 'id').map((c) => `${c} = excluded.${c}`).join(', ')}`;
     this.stmt(sql).run(row as unknown as Params);
+  }
+
+  /** Sets or clears the background work a settings hook listed for a session; the reporter's reports leave it alone. */
+  setHookBackground(id: string, backgroundJson: string | null): void {
+    this.stmt('UPDATE sessions SET hook_background_json = ? WHERE id = ?').run(backgroundJson, id);
   }
 
   getSession(id: string): SessionRow | undefined {
