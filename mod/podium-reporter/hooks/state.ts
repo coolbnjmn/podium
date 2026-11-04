@@ -490,6 +490,18 @@ export function setBackground(s: SessionState, i: BackgroundInput, now: number):
   return withStatus(next);
 }
 
+/**
+ * What `/podium` prints about the last Stop hook: its field names and how many background tasks and wake-ups it listed,
+ * so a session that shows no timer can say whether Claude Code sent any. Never a value: no prompt, command or path.
+ */
+export function describeStopPayload(e: unknown): string {
+  if (e === null || typeof e !== 'object') return 'Last Stop hook: none seen yet'
+  const o = e as Record<string, unknown>
+  const count = (k: string) => (!(k in o) ? 'absent' : Array.isArray(o[k]) ? String((o[k] as unknown[]).length) : 'not a list')
+  const keys = Object.keys(o).sort().map((k) => k.replace(/[^\w.-]/g, '?').slice(0, 40)).slice(0, 30)
+  return `Last Stop hook: fields ${keys.join(', ') || 'none'}; background_tasks ${count('background_tasks')}, session_crons ${count('session_crons')}`
+}
+
 /** What `/podium` prints for the background work the mod holds (#128): each entry's type, status and description. */
 export function describeBackground(s: SessionState): string {
   const tasks = s.background?.tasks ?? [];

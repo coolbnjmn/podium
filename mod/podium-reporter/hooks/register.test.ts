@@ -226,6 +226,7 @@ function world(on: On, store: Record<string, unknown> = {}, files: Record<string
   on('classic.Notification', () => ({}))
   on('classic.SessionStart', () => ({}))
   on('classic.UserPromptSubmit', () => ({}))
+  on('classic.Stop', () => ({}))
   return { posts, headers, clock, lastToolUseId: () => toolUseId, sessionId, fetchMode, surfaces, ran, watch, watchOutput, bash, chunks, files: kept, stall, links, place, gitAt, devBuild, hosts, statuses, serverBuild, fetched, toasts }
 }
 
@@ -874,6 +875,20 @@ describe('podium-reporter end to end', () => {
     expect(next.session.status).not.toBe('done')
     expect(next.events.map((e) => e.kind)).toContain('start')
     expect(next.events.every((e) => e.id.startsWith('sess-after-clear:'))).toBe(true)
+  })
+
+  test('/podium reports the fields of the last Stop hook, and forgets them when /clear starts a new session', async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+    const last = async () => ((await $.command.run(podium(''))).text ?? '').split('\n').find((l) => l.startsWith('Last Stop hook:'))
+    expect(await last()).toBe('Last Stop hook: none seen yet')
+    await $.classic.Stop({ session_crons: [{ id: 'c1', schedule: '*/3 * * * *', recurring: true, prompt: 'private prompt' }], background_tasks: [] } as never)
+    expect(await last()).toMatch(/; background_tasks 0, session_crons 1$/)
+    expect(await last()).not.toContain('private')
+    await $.session.end({ reason: 'clear', sessionId: SID, resume: { id: SID } })
+    w.sessionId.value = 'sess-after-clear'
+    await w.clock.advance(1000)
+    expect(await last()).toBe('Last Stop hook: none seen yet')
   })
 
   test('a session id change without session.end still closes the old id', async ($, on) => {
