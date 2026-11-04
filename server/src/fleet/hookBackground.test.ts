@@ -37,6 +37,21 @@ describe('Stop hook for a session the mod reports', () => {
     fleet.close();
   });
 
+  it('carries the wake time the hook worked out in the session\'s own time zone, or none when any wake-up has no readable time', () => {
+    const { fleet, id, idleReport, hook } = setup();
+    fleet.ingest(idleReport());
+    const soon = 1_800_000_000_000 + 180_000;
+    hook('Stop', { session_crons: [{ ...CRON, next_at: soon + 60_000 }, { ...CRON, id: 'c2', next_at: soon }] });
+    expect(fleet.view(id)!.background?.wakeAt).toBe(soon);
+    hook('Stop', { session_crons: [{ ...CRON, next_at: soon }, { ...CRON, id: 'c2' }] });
+    expect(fleet.view(id)!.background?.wakeAt).toBeNull();
+    hook('Stop', { session_crons: [{ ...CRON, next_at: 'tomorrow' }] });
+    expect(fleet.view(id)!.background?.wakeAt).toBeNull();
+    hook('Stop', { session_crons: [{ ...CRON, next_at: 1_800_000_000_000 + 400 * 86_400_000 }] });
+    expect(fleet.view(id)!.background?.wakeAt).toBeNull();
+    fleet.close();
+  });
+
   it('survives the reporter\'s next report, which carries no background work', () => {
     const { fleet, id, idleReport, hook, tick } = setup();
     fleet.ingest(idleReport());
