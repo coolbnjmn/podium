@@ -1,6 +1,6 @@
 // A Stop and UserPromptSubmit settings hook shipped with the reporter. Claude Code can skip the reporter's own Stop handler, so
 // the scheduled wake-ups and background tasks a Stop lists reach Podium only through this hook. It posts a trimmed copy of the
-// payload (the session, its folder, and those two lists; never the prompt, the answer or the transcript path) to the server's
+// payload (the session, its folder, and those two lists; never the person's prompt, the answer or the transcript path) to the server's
 // hook route, and always exits 0 so a stopped server never gets in the session's way.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,6 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const MAX_LIST = 20;
+/** A wake-up's own prompt and a task's description are what the card shows, cut where the server cuts them. */
+const MAX_TEXT = 120;
 const MAX_STDIN = 1024 * 1024;
 const DEFAULT_URL = 'http://127.0.0.1:4317';
 const FORWARDED = new Set(['Stop', 'UserPromptSubmit']);
@@ -17,7 +19,7 @@ const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : undefined);
 /** The fields of one list entry the server reads; the shell command is never forwarded. */
 function entry(e, keys) {
   const out = {};
-  if (e && typeof e === 'object') for (const k of keys) if (typeof e[k] === 'string' || typeof e[k] === 'boolean') out[k] = typeof e[k] === 'string' ? e[k].slice(0, 1000) : e[k];
+  if (e && typeof e === 'object') for (const k of keys) if (typeof e[k] === 'string' || typeof e[k] === 'boolean') out[k] = typeof e[k] === 'string' ? e[k].slice(0, MAX_TEXT) : e[k];
   return out;
 }
 

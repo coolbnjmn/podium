@@ -34,6 +34,11 @@ describe('forwardBody', () => {
     expect(forwardBody('nope')).toBeNull();
   });
 
+  it('cuts a wake-up\'s own prompt to the length the card shows', () => {
+    const long = 'x'.repeat(500);
+    expect(forwardBody({ ...stop, session_crons: [{ id: 'c1', schedule: '* * * * *', prompt: long }] })!.session_crons![0]!.prompt).toHaveLength(120);
+  });
+
   it('caps the lists', () => {
     const many = Array.from({ length: 80 }, (_, i) => ({ id: `c${i}`, schedule: '* * * * *', prompt: 'x' }));
     expect(forwardBody({ ...stop, session_crons: many })!.session_crons).toHaveLength(20);
