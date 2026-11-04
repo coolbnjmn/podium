@@ -52,6 +52,18 @@ describe('Stop hook for a session the mod reports', () => {
     fleet.close();
   });
 
+  it('reads every wake-up\'s time even when the card can list only some of the tasks', () => {
+    const { fleet, id, idleReport, hook } = setup();
+    fleet.ingest(idleReport());
+    const now = 1_800_000_000_000;
+    const shells = Array.from({ length: 19 }, (_, i) => ({ id: `b${i}`, type: 'shell', status: 'running', description: `job ${i}` }));
+    hook('Stop', { background_tasks: shells, session_crons: [{ ...CRON, next_at: now + 3_600_000 }, { ...CRON, id: 'c2', next_at: now + 60_000 }] });
+    const bg = fleet.view(id)!.background!;
+    expect(bg.tasks).toHaveLength(20);
+    expect(bg.wakeAt).toBe(now + 60_000);
+    fleet.close();
+  });
+
   it('survives the reporter\'s next report, which carries no background work', () => {
     const { fleet, id, idleReport, hook, tick } = setup();
     fleet.ingest(idleReport());

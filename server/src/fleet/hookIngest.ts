@@ -50,8 +50,9 @@ function backgroundOf(payload: Record<string, unknown>, now: number): Background
   }
   const times: number[] = [];
   let unreadable = false;
-  for (const c of list(payload.session_crons).slice(0, Math.max(0, 20 - tasks.length))) {
-    tasks.push({ type: 'wakeup', description: str(c.prompt, 120) ?? 'scheduled wake-up', status: 'scheduled' });
+  // Every wake-up's time counts, including one the card has no room to list, since it may fire first.
+  for (const c of list(payload.session_crons).slice(0, 40)) {
+    if (tasks.length < 20) tasks.push({ type: 'wakeup', description: str(c.prompt, 120) ?? 'scheduled wake-up', status: 'scheduled' });
     // The hook works out the next fire in the session's own zone (the server may not share it); anything not a sane time counts as unreadable.
     const at = c.next_at;
     if (typeof at === 'number' && Number.isFinite(at) && at > now - WAKE_PAST_MS && at < now + WAKE_AHEAD_MS) times.push(at);

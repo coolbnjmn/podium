@@ -56,6 +56,27 @@ describe('forwardBody', () => {
     }
   });
 
+  it('never answers with a time in the past when daylight saving ends (the repeated hour), and agrees with the reporter', async () => {
+    const was = process.env.TZ;
+    process.env.TZ = 'America/Chicago';
+    try {
+      const cronFile = fileURLToPath(new URL('../../mod/podium-reporter/hooks/cron.ts', import.meta.url));
+      const { nextCronAt } = (await import(/* @vite-ignore */ cronFile)) as { nextCronAt: (s: string, from: number) => number | null };
+      // 01:30:17 on 2026-11-01 twice: first in CDT (-05:00), then, an hour later, in CST (-06:00).
+      for (const from of [Date.UTC(2026, 10, 1, 6, 30, 17), Date.UTC(2026, 10, 1, 7, 30, 17)]) {
+        for (const sched of ['* * * * *', '0 * * * *', '0 2 * * *', '*/20 1 * * *', '0 0 2 11 *']) {
+          const hook = hookNextCronAt(sched, from);
+          expect(hook, sched).not.toBeNull();
+          expect(hook!, sched).toBeGreaterThan(from);
+          expect(hook, sched).toBe(nextCronAt(sched, from));
+        }
+      }
+    } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
+  });
+
   it('caps the lists', () => {
     const many = Array.from({ length: 80 }, (_, i) => ({ id: `c${i}`, schedule: '* * * * *', prompt: 'x' }));
     expect(forwardBody({ ...stop, session_crons: many })!.session_crons).toHaveLength(20);

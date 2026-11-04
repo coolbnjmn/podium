@@ -61,24 +61,35 @@ export function nextCronAt(schedule, from) {
   // Like cron, a day matches when either day field matches if both are restricted.
   const domAny = f[2] === '*';
   const dowAny = f[4] === '*';
-  const t = new Date(from);
-  t.setSeconds(0, 0);
-  t.setMinutes(t.getMinutes() + 1);
+  // Rounded down to the minute by epoch arithmetic: a local setter would put the second pass through a repeated hour back into the first.
+  const t = new Date(from - (from % 60_000));
+  // A step by the local clock can land earlier than it started while daylight saving ends (the hour repeats), so a step that does not
+  // move forward falls back to the next minute, or the next whole hour for the steps that skip one.
+  const step = (move, floor) => {
+    const before = t.getTime();
+    move();
+    if (t.getTime() <= before) t.setTime(floor(before));
+  };
+  const nextMinute = (b) => b + 60_000;
+  const nextHour = (b) => b + 3_600_000 - (b % 3_600_000);
+  step(() => t.setMinutes(t.getMinutes() + 1), nextMinute);
   // Bounded by a year of steps; each step is at most a minute, usually a day or an hour.
   for (let i = 0; i < 366 * 24 * 60; i++) {
     const dayOk = domAny && dowAny ? true : domAny ? dow.has(t.getDay()) : dowAny ? dom.has(t.getDate()) : dom.has(t.getDate()) || dow.has(t.getDay());
     // Skip a whole day or hour that cannot match instead of walking it a minute at a time.
     if (!month.has(t.getMonth() + 1) || !dayOk) {
-      t.setDate(t.getDate() + 1);
-      t.setHours(0, 0, 0, 0);
+      step(() => {
+        t.setDate(t.getDate() + 1);
+        t.setHours(0, 0, 0, 0);
+      }, nextHour);
       continue;
     }
     if (!hour.has(t.getHours())) {
-      t.setHours(t.getHours() + 1, 0, 0, 0);
+      step(() => t.setHours(t.getHours() + 1, 0, 0, 0), nextHour);
       continue;
     }
     if (minute.has(t.getMinutes())) return t.getTime();
-    t.setMinutes(t.getMinutes() + 1);
+    step(() => t.setMinutes(t.getMinutes() + 1), nextMinute);
   }
   return null;
 }
