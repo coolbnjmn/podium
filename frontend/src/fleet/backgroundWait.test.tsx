@@ -36,6 +36,24 @@ describe("backgroundLead", () => {
     expect(backgroundLead({ tasks: [task("wakeup", "check the deploy")], wakeAt: Date.UTC(2026, 9, 13, 14, 30) })).toMatch(/^Waiting for a scheduled wake-up at \d{1,2}:\d{2}\.$/);
     expect(backgroundLead({ tasks: [task("wakeup", "check the deploy")], wakeAt: null })).toBe("Waiting for a scheduled wake-up.");
   });
+  it("counts down to a scheduled wake-up when it is given the time, and says when it is due", () => {
+    const wakeAt = Date.UTC(2026, 9, 13, 14, 30);
+    const b = { tasks: [task("wakeup", "check the deploy")], wakeAt };
+    expect(backgroundLead(b, wakeAt - 161_000)).toMatch(/^Waiting for a scheduled wake-up in 2:41, at \d{1,2}:\d{2}\.$/);
+    expect(backgroundLead(b, wakeAt - 37_000)).toMatch(/^Waiting for a scheduled wake-up in 37s, at /);
+    expect(backgroundLead(b, wakeAt + 5_000)).toBe("Waiting for a scheduled wake-up, due now.");
+    expect(backgroundLead({ ...b, wakeAt: null }, wakeAt)).toBe("Waiting for a scheduled wake-up.");
+    // With other work in flight the sentence is the one it always was.
+    expect(backgroundLead({ tasks: [task("shell"), task("wakeup")], wakeAt }, wakeAt - 60_000)).toMatch(/^Waiting for 1 background shell to finish, and a scheduled wake-up at \d{1,2}:\d{2}\.$/);
+  });
+  it("ticks on the card: the same session shows less time as now moves on", () => {
+    const wakeAt = 2_000_000 + 161_000;
+    const s = idleOn([task("wakeup", "check the deploy")], wakeAt);
+    const { container, rerender } = render(<SessionCard s={s} now={2_000_000} config={CFG} entering={false} leaving={false} onOpen={() => {}} />);
+    expect(container.textContent).toContain("wake-up in 2:41");
+    rerender(<SessionCard s={s} now={2_060_000} config={CFG} entering={false} leaving={false} onOpen={() => {}} />);
+    expect(container.textContent).toContain("wake-up in 1:41");
+  });
 });
 
 describe("the card", () => {

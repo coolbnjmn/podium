@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { forwardBody, tokenFor } from '../../mod/podium-reporter/hooks/stop-hook.mjs';
+import { forwardBody, tokenFor, nextCronAt as hookNextCronAt } from '../../mod/podium-reporter/hooks/stop-hook.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../../mod/podium-reporter/hooks/stop-hook.mjs', import.meta.url));
 
@@ -37,6 +37,44 @@ describe('forwardBody', () => {
   it('cuts a wake-up\'s own prompt to the length the card shows', () => {
     const long = 'x'.repeat(500);
     expect(forwardBody({ ...stop, session_crons: [{ id: 'c1', schedule: '* * * * *', prompt: long }] })!.session_crons![0]!.prompt).toHaveLength(120);
+  });
+
+  it('adds when each wake-up next fires, in this machine\'s time zone, and leaves it out for a schedule it cannot read', () => {
+    const body = forwardBody({ ...stop, session_crons: [{ id: 'c1', schedule: '*/3 * * * *', prompt: 'x' }, { id: 'c2', schedule: 'every day', prompt: 'y' }] })!;
+    expect(typeof body.session_crons![0]!.next_at).toBe('number');
+    expect(body.session_crons![0]!.next_at! - Date.now()).toBeLessThanOrEqual(180_000);
+    expect(body.session_crons![1]!.next_at).toBeUndefined();
+  });
+
+  it('reads a schedule exactly as the reporter does (the hook carries a copy of its parser)', async () => {
+    // Loaded by a path built at run time: the reporter's source is outside this package's compiled tree.
+    const cronFile = fileURLToPath(new URL('../../mod/podium-reporter/hooks/cron.ts', import.meta.url));
+    const { nextCronAt } = (await import(/* @vite-ignore */ cronFile)) as { nextCronAt: (s: string, from: number) => number | null };
+    const from = new Date(2026, 10, 4, 14, 5, 17).getTime();
+    for (const s of ['*/3 * * * *', '7 */3 * * *', '0 9 * * 1-5', '30 14 4 11 *', '0,30 * * * *', '5-10/2 8 * * 0', '0 0 29 2 *', '* * * * *', '61 * * * *', 'a b c d e', '1 2 3', '0 9 * * 7', '*/0 * * * *']) {
+      expect(hookNextCronAt(s, from), s).toBe(nextCronAt(s, from));
+    }
+  });
+
+  it('never answers with a time in the past when daylight saving ends (the repeated hour), and agrees with the reporter', async () => {
+    const was = process.env.TZ;
+    process.env.TZ = 'America/Chicago';
+    try {
+      const cronFile = fileURLToPath(new URL('../../mod/podium-reporter/hooks/cron.ts', import.meta.url));
+      const { nextCronAt } = (await import(/* @vite-ignore */ cronFile)) as { nextCronAt: (s: string, from: number) => number | null };
+      // 01:30:17 on 2026-11-01 twice: first in CDT (-05:00), then, an hour later, in CST (-06:00).
+      for (const from of [Date.UTC(2026, 10, 1, 6, 30, 17), Date.UTC(2026, 10, 1, 7, 30, 17)]) {
+        for (const sched of ['* * * * *', '0 * * * *', '0 2 * * *', '*/20 1 * * *', '0 0 2 11 *']) {
+          const hook = hookNextCronAt(sched, from);
+          expect(hook, sched).not.toBeNull();
+          expect(hook!, sched).toBeGreaterThan(from);
+          expect(hook, sched).toBe(nextCronAt(sched, from));
+        }
+      }
+    } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
   });
 
   it('caps the lists', () => {

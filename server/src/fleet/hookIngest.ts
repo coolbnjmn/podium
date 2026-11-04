@@ -25,6 +25,9 @@ const effortOf = (v: unknown): Effort | null => {
 const IN_FLIGHT_DONE = /^(completed|complete|done|failed|killed|stopped|cancelled|canceled|error)$/i;
 /** Claude Code's artifact live-update watchers (#128): they run as long as the session does, so they are not work it waits on. */
 const ARTIFACT_WATCHER = /^live updates for artifact /i;
+/** A wake time the server believes: not more than a day behind it, not more than a year ahead (a schedule can name any day of the year). */
+const WAKE_PAST_MS = 86_400_000;
+const WAKE_AHEAD_MS = 366 * 86_400_000;
 const BACKGROUND_TYPES: Record<string, BackgroundKind> = { shell: 'shell', bash: 'shell', subagent: 'agent', agent: 'agent', monitor: 'monitor', workflow: 'workflow' };
 
 /**
@@ -33,7 +36,7 @@ const BACKGROUND_TYPES: Record<string, BackgroundKind> = { shell: 'shell', bash:
  * of its command at most. The wake time is left null: the hook gives a cron schedule in the machine's local
  * time, and the server may not share its zone.
  */
-function backgroundOf(payload: Record<string, unknown>): BackgroundWait | null {
+function backgroundOf(payload: Record<string, unknown>, now: number): BackgroundWait | null {
   const tasks: BackgroundTask[] = [];
   const list = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v.filter(isObj) : []);
   for (const t of list(payload.background_tasks).slice(0, 20)) {
@@ -45,10 +48,19 @@ function backgroundOf(payload: Record<string, unknown>): BackgroundWait | null {
     const word = str(t.command, 400)?.split(/\s+/).find((w) => w !== '' && !w.includes('='))?.split('/').pop() || null;
     tasks.push({ type, description: str(t.description, 120) ?? word ?? type, status });
   }
-  for (const c of list(payload.session_crons).slice(0, Math.max(0, 20 - tasks.length))) {
-    tasks.push({ type: 'wakeup', description: str(c.prompt, 120) ?? 'scheduled wake-up', status: 'scheduled' });
+  const times: number[] = [];
+  let unreadable = false;
+  // Every wake-up's time counts, including one the card has no room to list, since it may fire first.
+  for (const c of list(payload.session_crons).slice(0, 40)) {
+    if (tasks.length < 20) tasks.push({ type: 'wakeup', description: str(c.prompt, 120) ?? 'scheduled wake-up', status: 'scheduled' });
+    // The hook works out the next fire in the session's own zone (the server may not share it); anything not a sane time counts as unreadable.
+    const at = c.next_at;
+    if (typeof at === 'number' && Number.isFinite(at) && at > now - WAKE_PAST_MS && at < now + WAKE_AHEAD_MS) times.push(at);
+    else unreadable = true;
   }
-  return tasks.length ? { tasks, wakeAt: null } : null;
+  // One wake-up whose time cannot be read may fire first, so no time is better than a wrong one.
+  const wakeAt = times.length && !unreadable ? Math.min(...times) : null;
+  return tasks.length ? { tasks, wakeAt } : null;
 }
 
 const lastSegment = (p: string) => p.split('/').filter(Boolean).pop() ?? p;
@@ -106,7 +118,7 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
   if (stored.session?.reporter_version && stored.session.reporter_version !== HOOKS_REPORTER_VERSION) {
     // The one thing a hook still tells it: Claude Code can skip the reporter's own Stop handler, so the timers and background
     // tasks a Stop lists reach the server only here. A new turn or the end of the session clears them.
-    const hookBackground = event === 'Stop' ? backgroundOf(payload) : ['UserPromptSubmit', 'SessionStart', 'SessionEnd'].includes(event) ? null : undefined;
+    const hookBackground = event === 'Stop' ? backgroundOf(payload, now) : ['UserPromptSubmit', 'SessionStart', 'SessionEnd'].includes(event) ? null : undefined;
     return { ok: true, ignored: true, sessionId: sid, hookBackground };
   }
   const cwd = str(payload.cwd, 1024) ?? stored.session?.cwd ?? '/';
@@ -163,7 +175,7 @@ export function hookToReport(payload: unknown, stored: { session?: SessionRow; a
       break;
     case 'Stop': {
       const before = session.background ? backgroundSummary(session.background) : null;
-      idle(backgroundOf(payload));
+      idle(backgroundOf(payload, now));
       // One row each time what it waits on changes, not one per Stop (as the mod does).
       if (session.background && backgroundSummary(session.background) !== before) ev('wait', `waiting on background: ${backgroundSummary(session.background)}`);
       break;

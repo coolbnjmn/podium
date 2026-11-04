@@ -23,6 +23,77 @@ function entry(e, keys) {
   return out;
 }
 
+/** A wake-up with the time it next fires: only this machine's clock and zone can read its schedule, so the hook works it out. */
+function wakeup(e) {
+  const out = entry(e, ['id', 'schedule', 'recurring', 'prompt']);
+  const at = typeof out.schedule === 'string' ? nextCronAt(out.schedule, Date.now()) : null;
+  if (at !== null) out.next_at = at;
+  return out;
+}
+
+// A copy of nextCronAt in cron.ts (server/src/stopHook.test.ts fails if the two read a schedule differently): this script is plain
+// node and cannot load the reporter's TypeScript.
+function field(text, min, max) {
+  const out = new Set();
+  for (const part of text.split(',')) {
+    const m = /^(?:(\*)|(\d+)(?:-(\d+))?)(?:\/(\d+))?$/.exec(part);
+    if (!m) return null;
+    const step = m[4] ? Number(m[4]) : 1;
+    if (step < 1) return null;
+    const lo = m[1] ? min : Number(m[2]);
+    const hi = m[1] ? max : m[3] ? Number(m[3]) : m[4] ? max : lo;
+    if (lo < min || hi > max || lo > hi) return null;
+    for (let v = lo; v <= hi; v += step) out.add(v);
+  }
+  return out;
+}
+
+export function nextCronAt(schedule, from) {
+  const f = schedule.trim().split(/\s+/);
+  if (f.length !== 5) return null;
+  const minute = field(f[0], 0, 59);
+  const hour = field(f[1], 0, 23);
+  const dom = field(f[2], 1, 31);
+  const month = field(f[3], 1, 12);
+  const dowRaw = field(f[4], 0, 7);
+  if (!minute || !hour || !dom || !month || !dowRaw) return null;
+  const dow = new Set([...dowRaw].map((d) => d % 7));
+  // Like cron, a day matches when either day field matches if both are restricted.
+  const domAny = f[2] === '*';
+  const dowAny = f[4] === '*';
+  // Rounded down to the minute by epoch arithmetic: a local setter would put the second pass through a repeated hour back into the first.
+  const t = new Date(from - (from % 60_000));
+  // A step by the local clock can land earlier than it started while daylight saving ends (the hour repeats), so a step that does not
+  // move forward falls back to the next minute, or the next whole hour for the steps that skip one.
+  const step = (move, floor) => {
+    const before = t.getTime();
+    move();
+    if (t.getTime() <= before) t.setTime(floor(before));
+  };
+  const nextMinute = (b) => b + 60_000;
+  const nextHour = (b) => b + 3_600_000 - (b % 3_600_000);
+  step(() => t.setMinutes(t.getMinutes() + 1), nextMinute);
+  // Bounded by a year of steps; each step is at most a minute, usually a day or an hour.
+  for (let i = 0; i < 366 * 24 * 60; i++) {
+    const dayOk = domAny && dowAny ? true : domAny ? dow.has(t.getDay()) : dowAny ? dom.has(t.getDate()) : dom.has(t.getDate()) || dow.has(t.getDay());
+    // Skip a whole day or hour that cannot match instead of walking it a minute at a time.
+    if (!month.has(t.getMonth() + 1) || !dayOk) {
+      step(() => {
+        t.setDate(t.getDate() + 1);
+        t.setHours(0, 0, 0, 0);
+      }, nextHour);
+      continue;
+    }
+    if (!hour.has(t.getHours())) {
+      step(() => t.setHours(t.getHours() + 1, 0, 0, 0), nextHour);
+      continue;
+    }
+    if (minute.has(t.getMinutes())) return t.getTime();
+    step(() => t.setMinutes(t.getMinutes() + 1), nextMinute);
+  }
+  return null;
+}
+
 /** What to post for a hook payload, or null when it is not one this hook forwards. */
 export function forwardBody(payload) {
   if (!payload || typeof payload !== 'object') return null;
@@ -33,9 +104,9 @@ export function forwardBody(payload) {
   const cwd = text(payload.cwd, 1024);
   if (cwd) body.cwd = cwd;
   if (event === 'Stop') {
-    const list = (v, keys) => (Array.isArray(v) ? v.slice(0, MAX_LIST).map((e) => entry(e, keys)) : []);
-    body.background_tasks = list(payload.background_tasks, ['id', 'type', 'status', 'description']);
-    body.session_crons = list(payload.session_crons, ['id', 'schedule', 'recurring', 'prompt']);
+    const list = (v, one) => (Array.isArray(v) ? v.slice(0, MAX_LIST).map(one) : []);
+    body.background_tasks = list(payload.background_tasks, (e) => entry(e, ['id', 'type', 'status', 'description']));
+    body.session_crons = list(payload.session_crons, wakeup);
   }
   return body;
 }
