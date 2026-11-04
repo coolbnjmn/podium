@@ -294,6 +294,8 @@ body.podium-resizing .podium .cols { transition: none; }
 .podium .band .bi { flex: none; display: inline-flex; color: var(--c-text); }
 .podium .band .bi .si { width: 16px; height: 16px; }
 .podium .band .bl { font-weight: 600; min-width: 0; }
+/* The wake-up timer: bold, larger than the sentence, in the band's own colour, with digits of one width so the line does not shift as it counts. */
+.podium .band .wake-timer { font-size: 17px; font-weight: 800; color: var(--c-text); font-variant-numeric: tabular-nums; margin-right: 4px; }
 .podium .band.hot { background: color-mix(in srgb, var(--c) 26%, var(--surface)); }
 .podium .band.running { --c: var(--good); --c-text: var(--good-text); }
 .podium .band.waiting { --c: var(--warn); --c-text: color-mix(in srgb, var(--warn) 60%, var(--ink)); }

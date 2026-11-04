@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { render, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, cleanup, fireEvent, act } from "@testing-library/react";
 import { FleetView } from "./FleetApp";
 import { SessionCard } from "./components/SessionCard";
 import { makeEvent, makeSession } from "./fixtures";
 import { stateFrom } from "./testState";
-import { backgroundLead, backgroundTitle } from "./waiting";
+import { backgroundLead, backgroundTitle, wakeCountdownAt } from "./waiting";
+import { WakeTimer } from "./components/WakeTimer";
 
 afterEach(cleanup);
 
@@ -36,23 +37,68 @@ describe("backgroundLead", () => {
     expect(backgroundLead({ tasks: [task("wakeup", "check the deploy")], wakeAt: Date.UTC(2026, 9, 13, 14, 30) })).toMatch(/^Waiting for a scheduled wake-up at \d{1,2}:\d{2}\.$/);
     expect(backgroundLead({ tasks: [task("wakeup", "check the deploy")], wakeAt: null })).toBe("Waiting for a scheduled wake-up.");
   });
-  it("counts down to a scheduled wake-up when it is given the time, and says when it is due", () => {
+  it("counts down only for a session idle on nothing but scheduled wake-ups that have a time", () => {
     const wakeAt = Date.UTC(2026, 9, 13, 14, 30);
-    const b = { tasks: [task("wakeup", "check the deploy")], wakeAt };
-    expect(backgroundLead(b, wakeAt - 161_000)).toMatch(/^Waiting for a scheduled wake-up in 2:41, at \d{1,2}:\d{2}\.$/);
-    expect(backgroundLead(b, wakeAt - 37_000)).toMatch(/^Waiting for a scheduled wake-up in 37s, at /);
-    expect(backgroundLead(b, wakeAt + 5_000)).toBe("Waiting for a scheduled wake-up, due now.");
-    expect(backgroundLead({ ...b, wakeAt: null }, wakeAt)).toBe("Waiting for a scheduled wake-up.");
-    // With other work in flight the sentence is the one it always was.
-    expect(backgroundLead({ tasks: [task("shell"), task("wakeup")], wakeAt }, wakeAt - 60_000)).toMatch(/^Waiting for 1 background shell to finish, and a scheduled wake-up at \d{1,2}:\d{2}\.$/);
+    expect(wakeCountdownAt({ tasks: [task("wakeup"), task("wakeup")], wakeAt })).toBe(wakeAt);
+    expect(wakeCountdownAt({ tasks: [task("wakeup")], wakeAt: null })).toBeNull();
+    expect(wakeCountdownAt({ tasks: [task("shell"), task("wakeup")], wakeAt })).toBeNull();
+    expect(wakeCountdownAt({ tasks: [], wakeAt })).toBeNull();
   });
-  it("ticks on the card: the same session shows less time as now moves on", () => {
-    const wakeAt = 2_000_000 + 161_000;
-    const s = idleOn([task("wakeup", "check the deploy")], wakeAt);
-    const { container, rerender } = render(<SessionCard s={s} now={2_000_000} config={CFG} entering={false} leaving={false} onOpen={() => {}} />);
-    expect(container.textContent).toContain("wake-up in 2:41");
-    rerender(<SessionCard s={s} now={2_060_000} config={CFG} entering={false} leaving={false} onOpen={() => {}} />);
-    expect(container.textContent).toContain("wake-up in 1:41");
+});
+
+describe("the wake-up timer", () => {
+  beforeEach(() => vi.useFakeTimers({ now: 1_000_000 }));
+  afterEach(() => vi.useRealTimers());
+  const timerText = (c: HTMLElement) => c.querySelector(".wake-timer")?.textContent;
+
+  it("counts down on its own clock, one displayed second at a time, whatever the card's now does", () => {
+    const { container } = render(<WakeTimer at={1_000_000 + 161_000} />);
+    expect(timerText(container)).toBe("2:41");
+    act(() => void vi.advanceTimersByTime(1_000));
+    expect(timerText(container)).toBe("2:40");
+    act(() => void vi.advanceTimersByTime(100_000));
+    expect(timerText(container)).toBe("1:00");
+    act(() => void vi.advanceTimersByTime(23_000));
+    expect(timerText(container)).toBe("37s");
+  });
+
+  it("changes at the moment a second elapses, not on a fixed refresh", () => {
+    const { container } = render(<WakeTimer at={1_000_000 + 61_500} />);
+    expect(timerText(container)).toBe("1:02");
+    act(() => void vi.advanceTimersByTime(499));
+    expect(timerText(container)).toBe("1:02");
+    act(() => void vi.advanceTimersByTime(2));
+    expect(timerText(container)).toBe("1:01");
+  });
+
+  it("says \"now\" once the time has passed, and stops ticking", () => {
+    const { container } = render(<WakeTimer at={1_000_000 + 2_000} />);
+    act(() => void vi.advanceTimersByTime(2_500));
+    expect(timerText(container)).toBe("now");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("follows a new wake time", () => {
+    const { container, rerender } = render(<WakeTimer at={1_000_000 + 60_000} />);
+    expect(timerText(container)).toBe("1:00");
+    rerender(<WakeTimer at={1_000_000 + 180_000} />);
+    expect(timerText(container)).toBe("3:00");
+  });
+
+  it("sits right after the clock icon, before the sentence, on the card", () => {
+    const s = idleOn([task("wakeup", "check the deploy")], 1_000_000 + 161_000);
+    const { container } = render(<SessionCard s={s} now={1_000_000} config={CFG} entering={false} leaving={false} onOpen={() => {}} />);
+    const band = container.querySelector(".band")!;
+    const order = [...band.querySelectorAll(".bi, .wake-timer, .bl")].map((e) => e.className.split(" ")[0]);
+    expect(order[0]).toBe("bi");
+    expect(order).toContain("wake-timer");
+    expect(band.textContent).toMatch(/2:41\s*Waiting for a scheduled wake-up at \d{1,2}:\d{2}\./);
+  });
+
+  it("is not shown for a session that also waits on a shell", () => {
+    const s = idleOn([task("shell"), task("wakeup")], 1_000_000 + 161_000);
+    const { container } = render(<SessionCard s={s} now={1_000_000} config={CFG} entering={false} leaving={false} onOpen={() => {}} />);
+    expect(container.querySelector(".wake-timer")).toBeNull();
   });
 });
 
