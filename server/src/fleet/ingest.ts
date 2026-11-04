@@ -84,6 +84,7 @@ function stampDoneOrder(plan: Plan | null, prevJson: string | null | undefined):
 function sessionRow(r: Report, prev: SessionRow | undefined, serverTime: number, owner: string | null): SessionRow {
   const s = r.session;
   const done = s.status === 'done';
+  const endsHookBackground = s.status === 'running' && r.sentAt >= (prev?.hook_background_at ?? 0);
   return {
     id: s.id,
     name: s.name,
@@ -121,6 +122,10 @@ function sessionRow(r: Report, prev: SessionRow | undefined, serverTime: number,
     loop_json: json(s.loop),
     files_json: json(s.files),
     background_json: json(s.background ?? null),
+    // What a Stop settings hook listed lasts until the next turn: a report built after the hook that says the session is running ends it
+    // (one already in flight when the hook arrived does not).
+    hook_background_json: endsHookBackground ? null : prev?.hook_background_json ?? null,
+    hook_background_at: endsHookBackground ? null : prev?.hook_background_at ?? null,
     usage_json: json(s.usageByModel ?? null),
     attached: s.attached == null ? null : s.attached ? 1 : 0,
     attached_ever: attachedEver(s.attached, prev),
