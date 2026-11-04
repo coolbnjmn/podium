@@ -30,6 +30,7 @@ import {
   reconcile,
   resetForNewId,
   describeBackground,
+  describeStopPayload,
   setBackground,
   sessionEnd,
   NO_FILES,
@@ -370,6 +371,9 @@ function record($: Engine, where: string, err: unknown): void {
     // logging is best effort
   }
 }
+
+/** The last Stop hook's payload, kept only so `/podium` can say which fields it carried. */
+let lastStop: unknown = null;
 
 /** Runs reporter logic for a hook: any throw is remembered, never raised. Timed for /podium. */
 function safe(where: string, fn: (r: Runtime) => void): void {
@@ -2012,6 +2016,7 @@ async function podiumCommand($: Engine, args: string): Promise<string> {
     `Last error: ${t.lastError ?? errors[errors.length - 1]?.message ?? 'none'}`,
     `Session: ${r.state.id}${r.storedName ? ` (named "${r.storedName}")` : ''}`,
     describeBackground(r.state),
+    describeStopPayload(lastStop),
     peersOn(r) ? openRequestsLine(peerOpen.map((id) => peerKnown.get(id)).filter((q): q is PeerRequest => !!q)) : '',
     hooks.length ? `Reporter time per hook: ${hooks.join('; ')}` : '',
     'Name this session: /podium name <text>',
@@ -2422,6 +2427,7 @@ export const register: Register = (on, rawOptions) => {
   // The Stop hook lists the background work and scheduled wake-ups still in flight (#119): a session idle on
   // them is not waiting on the person.
   on('classic.Stop', async ($, e, next) => {
+    lastStop = e
     safe('classic.Stop', (r) => {
       const now = nowMs();
       const crons = (e.session_crons ?? []).map((c) => ({ ...c, nextAt: nextCronAt(c.schedule, now) }));

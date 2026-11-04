@@ -2,7 +2,7 @@ import { describe, test, expect } from 'claude-code/testing'
 import { agentReport, buildReport } from './report.ts'
 import { scriptedReport, scriptedState, T0 } from './scripted.ts'
 import { MAIN_LOOP } from './protocol.ts'
-import { ACTIVITY_KEPT, addActivity, agentRequested, agentSpawned, finishActivity, isWatched, isWatchedOutput, setWatched, setWatchedOutput, blowout, compaction, describeBackground, markTextSent, newSession, reconcile, resetForNewId, sessionEnd, setAttached, setBackground, setExplanation, step, toolResult, turnComplete } from './state.ts'
+import { ACTIVITY_KEPT, addActivity, agentRequested, agentSpawned, finishActivity, isWatched, isWatchedOutput, setWatched, setWatchedOutput, blowout, compaction, describeBackground, describeStopPayload, markTextSent, newSession, reconcile, resetForNewId, sessionEnd, setAttached, setBackground, setExplanation, step, toolResult, turnComplete } from './state.ts'
 
 // The key sets of docs/fixtures/report.sample.json, so a built Report has the shared fixture's shape.
 const REPORT_KEYS = ['agents', 'events', 'reporter', 'sentAt', 'session', 'v']
@@ -369,6 +369,16 @@ describe('background work (#119)', () => {
     expect(describeBackground(idle())).toBe('Background work: none')
     const s = setBackground(idle(), { tasks: [shell, { id: 'm1', type: 'monitor', status: 'exited', description: 'watch logs' }], crons: [] }, T0 + 2)
     expect(describeBackground(s)).toBe('Background work (2):\n  shell, running: nightly build\n  monitor, exited: watch logs')
+  })
+
+  test('describeStopPayload names the fields a Stop hook carried and how many wake-ups and tasks, never their text', () => {
+    expect(describeStopPayload(null)).toBe('Last Stop hook: none seen yet')
+    const e = { session_id: 'abc', cwd: '/x', background_tasks: [{ id: 't1', description: 'secret job' }], session_crons: [{ id: 'c1', schedule: '*/3 * * * *', prompt: 'private prompt' }, { id: 'c2' }] }
+    const line = describeStopPayload(e)
+    expect(line).toBe('Last Stop hook: fields background_tasks, cwd, session_crons, session_id; background_tasks 1, session_crons 2')
+    expect(line).not.toMatch(/secret|private|abc|\/x/)
+    expect(describeStopPayload({ session_id: 'abc' })).toBe('Last Stop hook: fields session_id; background_tasks absent, session_crons absent')
+    expect(describeStopPayload({ background_tasks: 'oops', session_crons: [] })).toBe('Last Stop hook: fields background_tasks, session_crons; background_tasks not a list, session_crons 0')
   })
 
   test('an artifact live-update watcher is not work in flight, so a session with only watchers waits on the person (#128)', () => {
