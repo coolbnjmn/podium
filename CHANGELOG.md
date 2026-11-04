@@ -16,6 +16,9 @@ the changes merged after the reporter's 0.14.3 bump, because it is the first rel
 
 ### Added
 
+- **The wake-up timer sits beside the clock icon, bold, and counts down smoothly.** A card idle on only scheduled wake-ups now reads `[clock] 2:41 Waiting for a scheduled wake-up at 14:30.`: the time left is its own bold element right after the icon (digits of one width, in the band's colour), and it keeps its own clock, so it drops a second at the moment the second passes instead of jumping when the fleet refreshes (every two seconds). Past the time it says "now". It replaces the countdown that was worded into the sentence ("... in 2:41, at 14:30."). A card that also waits on a shell or agent shows no timer.
+  Standards: the wake-up band gains the timer element (requested by the maintainer, 2026-11-04: "put the timer right next to the little clock logo ... more bold/emphasized ... smoothly count down").
+
 - **A live countdown to a scheduled wake-up.** A card idle on only a wake-up now reads "Waiting for a scheduled wake-up in 2:41, at 14:30." and counts down with the card's clock; once the time passes it says "due now" until the session's next turn. The Stop hook works out when each wake-up next fires (the server may not share the session's time zone), using a copy of the reporter's cron parser that a test keeps identical, and sends it as `next_at`; the server believes a time only when every wake-up has one and it is within a day behind and a year ahead, else the card shows no time, as before. A card with other background work in flight keeps its sentence. The earliest time counts every wake-up, including one the card has no room to list, and the parser (the reporter's and the hook's copy) no longer steps back an hour when daylight saving ends.
   Standards: the wake-up callout's text gains the countdown (the maintainer asked for it on 2026-11-04: "I wanna see a live countdown based on the timer").
 

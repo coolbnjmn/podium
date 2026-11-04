@@ -1,4 +1,4 @@
-import { fmtClock, fmtCountdown } from "./format";
+import { fmtClock } from "./format";
 import type { BackgroundWait, SessionView } from "./types";
 
 type WaitReason = SessionView["waitReason"];
@@ -54,13 +54,10 @@ function listOf(parts: string[]): string {
   return parts.length < 2 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
-function sentence(counts: [string, number][], past: boolean, wakeAt: number | null, now: number | null = null): string {
+function sentence(counts: [string, number][], past: boolean, wakeAt: number | null): string {
   const tasks = counts.filter(([k]) => k !== "wakeup");
   const wake = counts.some(([k]) => k === "wakeup");
-  const clock = wakeAt === null ? "" : fmtClock(wakeAt).slice(0, 5);
-  const at = wakeAt === null ? "" : ` at ${clock}`;
-  // Only a wake-up and the card's own clock: count down to it, and say so once it is due (the next turn or Stop replaces the card's state).
-  if (!tasks.length && !past && now !== null && wakeAt !== null) return wakeAt > now ? `Waiting for a scheduled wake-up in ${fmtCountdown((wakeAt - now) / 1000)}, at ${clock}.` : "Waiting for a scheduled wake-up, due now.";
+  const at = wakeAt === null ? "" : ` at ${fmtClock(wakeAt).slice(0, 5)}`;
   const verb = past ? "Waited" : "Waiting";
   if (!tasks.length) return `${verb} for a scheduled wake-up${at}.`;
   const what = listOf(tasks.map(([k, n]) => `${n} ${(KIND_WORD[k] ?? KIND_WORD.other!)[n === 1 ? 0 : 1]}`));
@@ -73,9 +70,14 @@ function countsOf(b: BackgroundWait): [string, number][] {
   return [...n];
 }
 
-/** "Waiting for 1 background shell to finish." or, with only a wake-up, "Waiting for a scheduled wake-up at 14:30." (or, given the card's clock, "in 2:41, at 14:30."). */
-export function backgroundLead(b: BackgroundWait, now: number | null = null): string {
-  return sentence(countsOf(b), false, b.wakeAt, now);
+/** "Waiting for 1 background shell to finish." or, with only a wake-up, "Waiting for a scheduled wake-up at 14:30." */
+export function backgroundLead(b: BackgroundWait): string {
+  return sentence(countsOf(b), false, b.wakeAt);
+}
+
+/** When the card counts down to: the wake time of a session idle on nothing but scheduled wake-ups, else null (a shell or agent in flight has no end time). */
+export function wakeCountdownAt(b: BackgroundWait): number | null {
+  return b.wakeAt !== null && b.tasks.length > 0 && b.tasks.every((t) => t.type === "wakeup") ? b.wakeAt : null;
 }
 
 /** The short status beside the dot: "blocked on shell", "blocked on 2 tasks", "wakes at 14:30". */

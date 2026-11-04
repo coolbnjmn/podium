@@ -6,7 +6,8 @@ import { RespondButton } from "./Respond";
 import { COST_HINT_SESSION, currentStep, delegateText, dropAtOf, inferredStep, planProgress, sessionCounts, sessionElapsedSec, sessionTokens, TOKENS_HINT, treeOrder } from "../logic";
 import type { AgentView, LifecycleConfig, SessionView } from "../types";
 import { AgentChip, BlowBadge, ContextBar, Cost, cssVar, delegatesOf, EffortMeter, FAMILY_COLOR, GitLine, HygieneChip, ModelChip, PlanBar, StateIcon, stateKind, type StateKind } from "./Chips";
-import { backgroundLead, backgroundTitle, toolOfNote, waitLead } from "../waiting";
+import { backgroundLead, backgroundTitle, toolOfNote, wakeCountdownAt, waitLead } from "../waiting";
+import { WakeTimer } from "./WakeTimer";
 import { Sparkline } from "./Sparkline";
 import { OwnerLine } from "./People";
 import { SessionId } from "./SessionId";
@@ -128,7 +129,17 @@ export function delegatingLead(delegates: readonly AgentView[]): string {
 /** What the status band says. One sentence, the same ones the orchestrator page and the activity feed use. */
 export function bandLine(s: SessionView, kind: StateKind, sinceSeen: number, now: number, config: LifecycleConfig, delegates: readonly AgentView[]) {
   if (kind === "deleg") return <span className="bl" title={delegateText(delegates)}>{delegatingLead(delegates)}</span>;
-  if (kind === "bg" && s.background) return <span className="bl" title={backgroundTitle(s.background)}>{backgroundLead(s.background, now)}</span>;
+  if (kind === "bg" && s.background) {
+    const wakeAt = wakeCountdownAt(s.background);
+    // The timer sits right after the clock icon, ahead of the sentence.
+    return (
+      <span className="bl" title={backgroundTitle(s.background)}>
+        {wakeAt !== null && <WakeTimer at={wakeAt} />}
+        {wakeAt !== null && " "}
+        {backgroundLead(s.background)}
+      </span>
+    );
+  }
   if (kind === "waiting") return <span className="bl">{waitSummary(s).lead}</span>;
   if (kind === "stale") {
     return (
