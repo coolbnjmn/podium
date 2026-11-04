@@ -853,6 +853,7 @@ async function switchSession($: Engine, r: Runtime, newId: string, now: number):
     // keep now
   }
   const effort = r.state.main.effort;
+  lastStop = null;
   r.state = addEvent(resetForNewId(r.state, newId, startedAt), 'start', null, `session.start · ${shortName(r.state.main.model)}${effort ? ` ${effort}` : ''}`, now);
   r.storedName = await loadName($, newId);
   r.clearedFrom = cleared ? oldId : null;
