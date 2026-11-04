@@ -72,6 +72,30 @@ describe('Stop hook for a session the mod reports', () => {
     c.fleet.close();
   });
 
+  it('is not erased by a running report that was built before the hook arrived', () => {
+    const { fleet, id, idleReport, runningReport, hook, tick } = setup();
+    fleet.ingest(idleReport());
+    const early = runningReport();
+    tick(1000);
+    hook('Stop', { session_crons: [CRON] });
+    tick(10);
+    fleet.ingest(early);
+    fleet.ingest(idleReport());
+    expect(fleet.view(id)!.background?.tasks).toHaveLength(1);
+    expect(fleet.view(id)!.waitReason).toBeNull();
+    fleet.close();
+  });
+
+  it('refuses a hook for a session another owner reports, and changes nothing', () => {
+    const { fleet, id, idleReport, hook } = setup();
+    fleet.ingest(idleReport(), 'Alice');
+    expect(() => fleet.ingestHook({ hook_event_name: 'Stop', session_id: id, cwd: '/x', session_crons: [CRON] }, 'Bob')).toThrow('belongs to another owner');
+    expect(fleet.view(id)!.background).toBeNull();
+    hook('Stop', { session_crons: [CRON] });
+    expect(fleet.view(id)!.background?.tasks).toHaveLength(1);
+    fleet.close();
+  });
+
   it('never hides a wait for the person\'s approval, and never changes the mod\'s other fields', () => {
     const { fleet, id, hook, tick } = setup();
     const r = fixtureReport();

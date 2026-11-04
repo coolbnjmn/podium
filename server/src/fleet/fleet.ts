@@ -7,7 +7,7 @@ import type { CostOf, EventRow, FleetDb, RetentionPolicy, SessionRow } from './d
 import { activityView, computeKpis, family, isHeadless, isUnused, repriced, sessionStatus, sessionView, shortenHome, staleAfterFor, startOfDay, type DeriveConfig } from './derive.js';
 import { serverBuild } from './build.js';
 import { REPORTER_SUPPORT, serverVersion } from './compat.js';
-import { ingestReport, type IngestResult } from './ingest.js';
+import { ingestReport, OwnerConflict, type IngestResult } from './ingest.js';
 import { hookToReport } from './hookIngest.js';
 import { validateReport } from './protocol.js';
 import type { ActivityView, HistoryRow, Kpis, RemovedReason, Report, ReporterSupport, SessionStatusView, SessionView, StateBody, WallSettingsView } from './protocol.js';
@@ -446,7 +446,10 @@ export class Fleet {
     if (!res.ok) return res;
     if ('ignored' in res) {
       if (res.hookBackground !== undefined) {
-        this.db.setHookBackground(res.sessionId, res.hookBackground ? JSON.stringify(res.hookBackground) : null);
+        // Like a report, a hook may not touch a session someone else owns.
+        const prev = this.db.getSession(res.sessionId);
+        if (owner !== null && prev?.owner && prev.owner !== owner) throw new OwnerConflict('session belongs to another owner');
+        this.db.setHookBackground(res.sessionId, res.hookBackground ? JSON.stringify(res.hookBackground) : null, this.now());
         this.scheduleSession(res.sessionId);
       }
       return { ok: true, sessionId: res.sessionId };
